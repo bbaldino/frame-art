@@ -1,6 +1,6 @@
 import pytest
 
-from frame_art import pipeline
+from frame_art import classify, pipeline
 from frame_art.classify import seasons_for
 from frame_art.model import Work
 
@@ -75,6 +75,26 @@ def test_render_rejects_round_work_on_card(monkeypatch):
 def test_full_screen_only_drops_padded_works():
     works = [work(source_id="1", width=4000, height=2300), work(source_id="2", title="P",
              width=3000, height=4000)]  # fmt: skip
-    cands, rep = pipeline.filter_works(works, None, pipeline.Fit(full_screen_only=True))
+    cands, rep = pipeline.filter_works(works, None, pipeline.Prefs(full_screen_only=True))
     assert [c.work.source_id for c in cands] == ["1"]
     assert rep.rejected["not full screen at this crop level"] == 1
+
+
+def test_nudes_are_filtered_unless_allowed():
+    works = [
+        work(source_id="1", title="Venus and Adonis"),
+        work(source_id="2", title="Woman with a Parrot", tags=["nude"]),
+        work(source_id="3", title="Liggende nøgen kvinde"),
+        work(source_id="4", title="The Harvesters"),
+    ]
+    cands, rep = pipeline.filter_works(works, None)
+    assert [c.work.source_id for c in cands] == ["4"]
+    assert rep.rejected["nude"] == 3
+    cands, _ = pipeline.filter_works(works, None, pipeline.Prefs(allow_nudes=True))
+    assert len(cands) == 4
+
+
+def test_nude_title_needs_whole_words():
+    assert not classify.nude_title("Venusberg Road")  # not the goddess
+    assert not classify.nude_title("Nuns at prayer")
+    assert classify.nude_title("Akt im Atelier")

@@ -95,8 +95,32 @@ def qid_sitelinks(http: Http, qids: list[str]) -> dict[str, int]:
     return out
 
 
+# Wikidata values of "depicts" (P180) or "genre" (P136) that mark a nude: the nude
+# genre, nudity, female nudity, male nudity, male nude.
+NUDE = ("Q40446", "Q10791", "Q121066575", "Q5804321", "Q1317896")
+
+
+def nude_qids(http: Http, qids: list[str]) -> set[str]:
+    out: set[str] = set()
+    nude = " ".join(f"wd:{q}" for q in NUDE)
+    for i in range(0, len(qids), 200):
+        values = " ".join(f"wd:{q}" for q in qids[i : i + 200])
+        sparql = (
+            f"SELECT DISTINCT ?item WHERE {{ VALUES ?item {{ {values} }} VALUES ?n {{ {nude} }} "
+            "{ ?item wdt:P180 ?n } UNION { ?item wdt:P136 ?n } }"
+        )
+        try:
+            rows = _query(http, sparql)
+        except Exception as ex:  # noqa: BLE001 - titles and museum tags still apply
+            log.warning("wikidata: depicts lookup failed: %s", ex)
+            continue
+        out.update(r["item"]["value"].rsplit("/", 1)[-1] for r in rows)
+    return out
+
+
 def annotate(http: Http, works: list[Work], cache_dir: Path) -> None:
-    """Fill in ``wikidata`` and ``sitelinks`` on works in place."""
+    """Fill in ``wikidata`` and ``sitelinks`` on works in place, and tag nudes
+    that Wikidata knows about."""
     by_source: dict[str, list[Work]] = {}
     for w in works:
         by_source.setdefault(w.source, []).append(w)
@@ -113,3 +137,8 @@ def annotate(http: Http, works: list[Work], cache_dir: Path) -> None:
         for w in works:
             if w.wikidata in links:
                 w.sitelinks = links[w.wikidata]
+    nudes = nude_qids(http, sorted({w.wikidata for w in works if w.wikidata}))
+    for w in works:
+        if w.wikidata in nudes and "nude" not in w.tags:
+            w.tags.append("nude")
+    log.info("wikidata: %d works depict nudity", sum(1 for w in works if w.wikidata in nudes))

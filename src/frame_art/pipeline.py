@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from . import imaging
+from . import classify, imaging
 from .model import Work
 from .net import Http
 
@@ -26,15 +26,17 @@ TONDO = re.compile(r"\btondo\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
-class Fit:
-    """How works are fitted to the screen."""
+class Prefs:
+    """Which works are wanted and how they are fitted to the screen."""
 
     max_crop: float = imaging.CROP_LEVELS["strict"]
     # Skip anything that would need a pad rather than crop.
     full_screen_only: bool = False
+    # Nudes (museum subject tags, Wikidata, or the title) are left out unless allowed.
+    allow_nudes: bool = False
 
 
-DEFAULT_FIT = Fit()
+DEFAULT_PREFS = Prefs()
 
 
 @dataclass
@@ -42,7 +44,7 @@ class Candidate:
     work: Work
     plan: imaging.Plan
     score: float
-    fit: Fit = DEFAULT_FIT
+    prefs: Prefs = DEFAULT_PREFS
 
 
 @dataclass
@@ -91,7 +93,7 @@ def score(w: Work, plan: imaging.Plan, season: str | None) -> float:
 
 
 def filter_works(
-    works: list[Work], season: str | None, fit: Fit = DEFAULT_FIT
+    works: list[Work], season: str | None, prefs: Prefs = DEFAULT_PREFS
 ) -> tuple[list[Candidate], FilterReport]:
     report = FilterReport(total=len(works))
     out: list[Candidate] = []
@@ -103,20 +105,23 @@ def filter_works(
         if not (w.iiif or w.image_url):
             report.rejected["no image url"] += 1
             continue
+        if not prefs.allow_nudes and ("nude" in w.tags or classify.nude_title(w.title)):
+            report.rejected["nude"] += 1
+            continue
         if TONDO.search(w.title or ""):
             report.rejected["round (tondo)"] += 1
             continue
         if not imaging.AR_MIN <= w.width / w.height <= imaging.AR_MAX:
             report.rejected["too tall or too wide"] += 1
             continue
-        plan = imaging.plan_for(w.width, w.height, fit.max_crop)
-        if fit.full_screen_only and plan.mode == "pad":
+        plan = imaging.plan_for(w.width, w.height, prefs.max_crop)
+        if prefs.full_screen_only and plan.mode == "pad":
             report.rejected["not full screen at this crop level"] += 1
             continue
         if plan.scale > MAX_UPSCALE:
             report.rejected[f"too small to {plan.mode} (>{MAX_UPSCALE}x upscale)"] += 1
             continue
-        cand = Candidate(w, plan, score(w, plan, season), fit)
+        cand = Candidate(w, plan, score(w, plan, season), prefs)
         ident = identity_key(w)
         prev = seen.get(ident)
         if prev is not None:
@@ -212,8 +217,8 @@ def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
     im = load_work(http, cand)
     # The fetched image may be smaller than the catalogued master, and trimming
     # changes the shape, so plan again from what we actually have.
-    plan = imaging.plan_for(*im.size, cand.fit.max_crop)
-    if cand.fit.full_screen_only and plan.mode == "pad":
+    plan = imaging.plan_for(*im.size, cand.prefs.max_crop)
+    if cand.prefs.full_screen_only and plan.mode == "pad":
         raise NotFullScreen(f"{im.size[0]}x{im.size[1]} after trimming")
     if plan.scale > MAX_UPSCALE:
         raise TooSmall(f"{im.size[0]}x{im.size[1]} needs {plan.scale:.2f}x upscaling")

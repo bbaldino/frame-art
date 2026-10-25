@@ -18,8 +18,8 @@ from .sources import KINDS, all_sources
 log = logging.getLogger("frame_art")
 
 
-def _fit(args) -> pipeline.Fit:
-    return pipeline.Fit(imaging.CROP_LEVELS[args.crop], args.full_screen_only)
+def _prefs(args) -> pipeline.Prefs:
+    return pipeline.Prefs(imaging.CROP_LEVELS[args.crop], args.full_screen_only, args.allow_nudes)
 
 
 def _season(args) -> str:
@@ -62,7 +62,7 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
     works = [w for w in cat.works() if w.kind in args.kinds]
     for src in sorted({w.source for w in works}):
         cands, rep = pipeline.filter_works(
-            [w for w in works if w.source == src], season, _fit(args)
+            [w for w in works if w.source == src], season, _prefs(args)
         )
         per_source[src] = rep
         cands.sort(key=lambda c: c.score, reverse=True)
@@ -116,7 +116,7 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
 def cmd_compare(args, cat: Catalogue, http: Http) -> None:
     """Sheets of works each looser crop level would add: original, padded, cropped."""
     works = [w for w in cat.works() if w.kind in args.kinds]
-    cands, _ = pipeline.filter_works(works, None, pipeline.Fit(imaging.CROP_LEVELS["loose"]))
+    cands, _ = pipeline.filter_works(works, None, pipeline.Prefs(imaging.CROP_LEVELS["loose"]))
     order = diversify(cands, seed=0)
 
     def band_rows(lo: float, hi: float) -> list[report.Comparison]:
@@ -163,7 +163,7 @@ def cmd_compare(args, cat: Catalogue, http: Http) -> None:
 
 def cmd_publish(args, cat: Catalogue, http: Http) -> None:
     seed = args.seed if args.seed is not None else datetime.date.today().toordinal()
-    result = Publisher(cat, http, args.dest, args.pad_style, args.kinds, _fit(args)).run(
+    result = Publisher(cat, http, args.dest, args.pad_style, args.kinds, _prefs(args)).run(
         args.count, args.pool, _season(args), seed
     )
     live = len(cat.published(active=True))
@@ -207,6 +207,8 @@ def main() -> None:
                              "medium 21%%, loose 27%% (default strict)")  # fmt: skip
         sp.add_argument("--full-screen-only", action="store_true",
                         help="skip works that would need a background pad")  # fmt: skip
+        sp.add_argument("--allow-nudes", action="store_true",
+                        help="include nudes (left out by default)")  # fmt: skip
         sp.add_argument("--season", choices=["winter", "spring", "summer", "autumn"])
         if with_kinds:
             sp.add_argument("--kinds", type=kinds, default=("painting",),

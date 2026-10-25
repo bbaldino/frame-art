@@ -95,6 +95,32 @@ def seasons_for(*texts: str | None) -> list[str]:
     return out
 
 
+# Museum subject terms for nudity ("Nudes", "Female nude", "nudity").
+_NUDE_SUBJECT = re.compile(r"\b(nudes?|nudity|naked|semi-nude)\b", re.IGNORECASE)
+# Titles that name a nude outright, in the collections' languages, or a subject
+# classical painters almost always painted nude. Deliberately broad: a false
+# positive only drops one work from a large pool.
+_NUDE_TITLE = re.compile(
+    r"\b("
+    r"nudes?|naked|nu|nue|nus|nues|nudo|nuda|nudi|desnudo|desnuda|naakt|naakte|nackt|nackte|"
+    r"akt|aktstudie|nøgen|nøgne|"
+    r"venus|vénus|bathers?|baigneuses?|badende|odalisque|odalisk|susanna|suzanna|bathsheba|"
+    r"danaë|danae|leda|andromeda|galatea|lucretia|three graces|judge?ment of paris|"
+    r"diana and actaeon|bath of diana|cupid and psyche|amor and psyche|adam and eve|"
+    r"bacchanal|bacchanalia|nymphs?|sebastian"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_nude_subject(*terms: str | None) -> bool:
+    return any(t and _NUDE_SUBJECT.search(t) for t in terms)
+
+
+def nude_title(title: str | None) -> bool:
+    return bool(title and _NUDE_TITLE.search(title))
+
+
 def current_season(month: int) -> str:
     return {
         12: "winter",

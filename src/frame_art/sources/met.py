@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 
-from ..classify import seasons_for
+from ..classify import is_nude_subject, seasons_for
 from ..model import Work
 from ..net import Http
 
@@ -67,6 +67,7 @@ class Met:
         size = http.probe_image_size(url)
         if size is None:
             return None
+        terms = [t["term"] for t in d.get("tags") or []]
         wikidata = (d.get("objectWikidata_URL") or "").rsplit("/", 1)[-1] or None
         return Work(
             source=self.name,
@@ -83,5 +84,6 @@ class Met:
             inventory=d.get("accessionNumber"),
             wikidata=wikidata,
             highlight=bool(d.get("isHighlight")),
-            tags=seasons_for(d.get("title"), *(t["term"] for t in d.get("tags") or [])),
+            tags=seasons_for(d.get("title"), *terms)
+            + (["nude"] if is_nude_subject(*terms) else []),
         )

@@ -89,7 +89,7 @@ class Publisher:
         dest: Path,
         pad_style: str,
         kinds: tuple[str, ...] = ("painting",),
-        fit: pipeline.Fit = pipeline.DEFAULT_FIT,
+        prefs: pipeline.Prefs = pipeline.DEFAULT_PREFS,
     ):
         if pad_style not in imaging.PAD_STYLES:
             raise ValueError(f"pad style must be one of {imaging.PAD_STYLES}")
@@ -98,7 +98,7 @@ class Publisher:
         self.dest = dest
         self.pad_style = pad_style
         self.kinds = kinds
-        self.fit = fit
+        self.prefs = prefs
 
     def run(self, count: int, pool: int, season: str | None, seed: int) -> PublishResult:
         added, failed = self._add(count, season, seed)
@@ -113,7 +113,7 @@ class Publisher:
         blocked |= self.cat.rejected_keys()
         live_hashes = [p.phash for p in history if p.retired_at is None]
         works = [w for w in self.cat.works() if w.kind in self.kinds]
-        cands, _ = pipeline.filter_works(works, season, self.fit)
+        cands, _ = pipeline.filter_works(works, season, self.prefs)
         cands = diversify([c for c in cands if c.work.key not in blocked], seed)
 
         added: list[str] = []

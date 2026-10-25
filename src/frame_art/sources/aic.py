@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from ..classify import seasons_for
+from ..classify import is_nude_subject, seasons_for
 from ..model import Work
 from ..net import Http
 
@@ -53,6 +53,7 @@ class Aic:
                 if not r.get("image_id"):
                     continue
                 seen += 1
+                subjects = r.get("subject_titles") or []
                 yield Work(
                     source=self.name,
                     source_id=str(r["id"]),
@@ -67,7 +68,8 @@ class Aic:
                     page_url=f"https://www.artic.edu/artworks/{r['id']}",
                     inventory=r.get("main_reference_number"),
                     highlight=bool(r.get("is_boosted")),
-                    tags=seasons_for(r.get("title"), *(r.get("subject_titles") or [])),
+                    tags=seasons_for(r.get("title"), *subjects)
+                    + (["nude"] if is_nude_subject(*subjects) else []),
                 )
                 if seen >= limit:
                     return
