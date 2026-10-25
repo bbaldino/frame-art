@@ -1,0 +1,131 @@
+# Home Assistant side of frame-art. Created through HA's config API (not by
+# editing automations.yaml); kept here as the reviewed record.
+#
+# Prerequisite: a Local To-do list named "Frame Art uploads"
+# (todo.frame_art_uploads). It is the allow-list of TV content ids that HA itself
+# uploaded from the frame-art folder; only ids on it are ever deleted.
+#
+# Why each guard exists:
+# - The MQTT broker is anonymous, so anything on the LAN can publish to
+#   frame-art/state. The folder is therefore hardcoded here, never read from the
+#   payload, and deletes are limited to ids on the allow-list (never Brian's own
+#   photos), matching ^MY[_-]F?\d+$, at most 30 per run.
+# - art_upload_batch powers on a TV that is fully off. Uploads only run while
+#   the TV is already on or in Art Mode, so a 2 AM run never lights the bedroom.
+#   Pending work waits for the TV to come on (or the noon retry).
+# - art_set_slideshow forces Art Mode, so it is not called here; the slideshow
+#   setting persists on the TV and was set once by hand.
+# - The samsungtv_smart art services return {"error": ...} instead of raising,
+#   so results are checked and reported, not assumed.
+alias: "Frame Art: sync new art to the bedroom TV"
+description: >-
+  Uploads new frame-art works to the Master Bedroom Frame TV and deletes retired
+  ones, when frame-art reports pending work and the TV is awake. frame-art never
+  talks to the TV; this automation is the only path.
+mode: single
+max_exceeded: silent
+triggers:
+  - trigger: state
+    entity_id: sensor.frame_art
+    not_from: [unavailable, unknown]
+    not_to: [unavailable, unknown]
+    note: "State is a sequence number that rises when frame-art has new work."
+  - trigger: media_player.turned_on
+    target:
+      entity_id: media_player.master_bedroom_frame_tv
+    note: "Retry pending work once the TV is awake."
+  - trigger: state
+    entity_id: switch.master_bedroom_frame_tv_art_mode
+    to: "on"
+  - trigger: time
+    at: "12:00:00"
+    note: "Daily retry in case the TV stayed in Art Mode through a missed trigger."
+conditions:
+  - condition: state
+    entity_id: sensor.frame_art
+    attribute: pending
+    state: true
+  - or:
+      - condition: state
+        entity_id: media_player.master_bedroom_frame_tv
+        attribute: art_mode_status
+        state: "on"
+      - condition: state
+        entity_id: media_player.master_bedroom_frame_tv
+        state: "on"
+    note: "Never wake a TV that is fully off: art_upload_batch would power it on."
+actions:
+  - action: samsungtv_smart.art_upload_batch
+    target:
+      entity_id: media_player.master_bedroom_frame_tv
+    data:
+      folder: /config/frame_art_pool/full
+      matte_id: none
+      throttle: 3
+    response_variable: up
+  - action: mqtt.publish
+    data:
+      topic: frame-art/ack
+      payload: "{{ {'upload': up} | to_json }}"
+  - if:
+      - "{{ up.error is defined or (up.failed | default([]) | length) > 0 }}"
+    then:
+      - action: notify.persistent_notification
+        data:
+          title: Frame Art upload problem
+          message: >-
+            {% if up.error is defined %}{{ up.error }}{% else %}{{ up.failed | length }}
+            file(s) failed to upload: {{ up.failed | join(', ') }}{% endif %}
+      - action: notify.mobile_app_pixel_9_pro_xl
+        data:
+          title: Frame Art upload problem
+          message: >-
+            {% if up.error is defined %}{{ up.error }}{% else %}{{ up.failed | length }}
+            file(s) failed to upload{% endif %}
+  - repeat:
+      for_each: "{{ up.uploaded | default([]) }}"
+      sequence:
+        - action: todo.add_item
+          target:
+            entity_id: todo.frame_art_uploads
+          data:
+            item: "{{ repeat.item }}"
+    note: "Record what HA uploaded: the allow-list for later deletes."
+  - action: todo.get_items
+    target:
+      entity_id: todo.frame_art_uploads
+    data:
+      status: needs_action
+    response_variable: owned
+  - variables:
+      allowed: "{{ owned['todo.frame_art_uploads']['items'] | map(attribute='summary') | list }}"
+      to_delete: >-
+        {{ ((state_attr('sensor.frame_art', 'retire') or [])
+            | select('in', allowed)
+            | select('match', '^MY[_-]F?\d+$')
+            | unique | list)[:30] }}
+  - repeat:
+      for_each: "{{ to_delete }}"
+      sequence:
+        - variables:
+            deleted: {}
+        - action: samsungtv_smart.art_delete
+          target:
+            entity_id: media_player.master_bedroom_frame_tv
+          data:
+            content_id: "{{ repeat.item }}"
+          response_variable: deleted
+          continue_on_error: true
+        - if:
+            - "{{ deleted.success | default(false) }}"
+          then:
+            - action: todo.remove_item
+              target:
+                entity_id: todo.frame_art_uploads
+              data:
+                item: "{{ repeat.item }}"
+            - action: mqtt.publish
+              data:
+                topic: frame-art/ack
+                payload: "{{ {'deleted': repeat.item} | to_json }}"
+    note: "Only ids HA uploaded itself (on the to-do allow-list) are deleted."
