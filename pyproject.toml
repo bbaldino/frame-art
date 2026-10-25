@@ -1,7 +1,7 @@
 [project]
 name = "frame-art"
 version = "0.1.0"
-description = "Add your description here"
+description = "Public-domain art for a Samsung Frame TV, published for Home Assistant to upload"
 readme = "README.md"
 authors = [
     { name = "bbaldino", email = "bbaldino@gmail.com" }
@@ -23,8 +23,6 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
-    "ruff>=0.17.2",
+    "ruff==0.16.1",
 ]
 
-[tool.ruff]
-line-length = 100

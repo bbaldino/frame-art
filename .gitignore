@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 data-deep/
 preview/
+.ruff_cache/
