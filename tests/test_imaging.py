@@ -55,3 +55,32 @@ def test_phash_matches_resized_copy_not_different_image():
     c = Image.effect_noise((600, 400), 80).convert("RGB")
     assert imaging.hamming(imaging.phash(a), imaging.phash(b)) <= 8
     assert imaging.hamming(imaging.phash(a), imaging.phash(c)) > 8
+
+
+def _tondo(bg=(250, 250, 250)) -> Image.Image:
+    im = Image.new("RGB", (1200, 1200), bg)
+    disc = Image.effect_noise((1100, 1100), 70).convert("RGB")
+    mask = Image.new("L", disc.size, 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, 1099, 1099), fill=255)
+    im.paste(disc, (50, 50), mask)
+    return im
+
+
+def test_artwork_mask_finds_round_work_on_card():
+    mask = imaging.artwork_mask(_tondo())
+    assert mask is not None
+    assert mask.getpixel((5, 5)) < 20  # corner is backdrop
+    assert mask.getpixel((600, 600)) > 235  # centre is the work
+
+
+def test_artwork_mask_ignores_ordinary_paintings():
+    assert imaging.artwork_mask(Image.effect_noise((900, 1200), 60).convert("RGB")) is None
+
+
+def test_tondo_render_has_no_white_corners():
+    im = _tondo()
+    out = imaging.render(im, imaging.plan_for(*im.size), "blur")
+    # Just inside the work's bounding square, at its corner, should not be white.
+    left = (imaging.PANEL[0] - round(1200 * imaging.plan_for(1200, 1200).scale)) // 2
+    top = (imaging.PANEL[1] - round(1200 * imaging.plan_for(1200, 1200).scale)) // 2
+    assert sum(out.getpixel((left + 10, top + 10))) < 600

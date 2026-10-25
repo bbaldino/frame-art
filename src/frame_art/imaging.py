@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageCms, ImageDraw, ImageEnhance, ImageFilter
+from PIL import Image, ImageChops, ImageCms, ImageDraw, ImageEnhance, ImageFilter, ImageStat
 
 # Museum masters run past 100MP; Pillow's bomb guard stops at ~89MP.
 Image.MAX_IMAGE_PIXELS = 400_000_000
@@ -158,6 +158,53 @@ def _solid_background(im: Image.Image) -> Image.Image:
     return Image.new("RGB", PANEL, tuple(int(c * 0.3) for c in mean))
 
 
+def artwork_mask(im: Image.Image) -> Image.Image | None:
+    """Mask (255 = artwork) for a work photographed on a flat backdrop, else None.
+
+    Round and irregular works (tondi, fans, cut-out objects) are often scanned on
+    a white or grey card. When all four corners show the same flat colour, flood
+    the backdrop in from the corners so only the work itself gets pasted.
+    """
+    small = im.copy()
+    small.thumbnail((400, 400))
+    px = np.asarray(small, dtype=np.float32)
+    h, w = px.shape[:2]
+    k = max(4, min(w, h) // 25)
+    corners = [px[:k, :k], px[:k, -k:], px[-k:, :k], px[-k:, -k:]]
+    if any(c.std(axis=(0, 1)).max() > 4 for c in corners):
+        return None
+    means = np.array([c.mean(axis=(0, 1)) for c in corners])
+    if np.abs(means - means.mean(axis=0)).max() > 12:
+        return None
+    # Only near-white, neutral card. Dark corners are usually painted background
+    # (flooding them would cut into the painting), and grey card with soft
+    # shadows leaves a halo; both look fine left as they are.
+    bg_colour = means.mean(axis=0)
+    if bg_colour.min() < 215 or bg_colour.max() - bg_colour.min() > 18:
+        return None
+
+    marked = small.copy()
+    sentinel = (255, 0, 255)
+    # Seed from every backdrop-coloured border pixel, not just the corners: where
+    # a round work touches the edge it splits the backdrop into separate pockets.
+    border = [(x, 0) for x in range(w)] + [(x, h - 1) for x in range(w)]
+    border += [(0, y) for y in range(h)] + [(w - 1, y) for y in range(h)]
+    for x, y in border:
+        if np.abs(px[y, x] - bg_colour).max() <= 24 and marked.getpixel((x, y)) != sentinel:
+            ImageDraw.floodfill(marked, (x, y), sentinel, thresh=24)
+    bg = np.all(np.asarray(marked) == sentinel, axis=2)
+    frac = bg.mean()
+    # Too little backdrop: just a scan edge. Too much: the fill leaked into the work.
+    if not 0.03 <= frac <= 0.6:
+        return None
+    mask = Image.fromarray(np.where(bg, 0, 255).astype(np.uint8))
+    # The flood only reaches backdrop connected to the border, so there are no
+    # pinholes to close. Pull the edge in a pixel past the anti-aliased rim,
+    # then feather it slightly.
+    mask = mask.filter(ImageFilter.MinFilter(3))
+    return mask.resize(im.size, Image.BILINEAR).filter(ImageFilter.GaussianBlur(1))
+
+
 def render(im: Image.Image, plan: Plan, pad_style: str = "blur") -> Image.Image:
     """Render to the panel. With ``pad_style="matte"`` a padded work is only
     scaled to fit, keeping its own shape, so the TV's matte can frame it."""
@@ -170,17 +217,27 @@ def render(im: Image.Image, plan: Plan, pad_style: str = "blur") -> Image.Image:
         return im.resize((round(w * fit), round(h * fit)), Image.LANCZOS)
 
     size = (round(w * plan.scale), round(h * plan.scale))
+    mask = artwork_mask(im)
+    source = im
+    if mask is not None:
+        # Keep the scan backdrop out of the background too: swap it for the
+        # work's average colour before blurring/sampling.
+        mean = ImageStat.Stat(im, mask=mask.point(lambda v: 255 if v > 128 else 0)).mean
+        source = Image.composite(im, Image.new("RGB", im.size, tuple(map(int, mean))), mask)
+    canvas = _background(source) if pad_style == "blur" else _solid_background(source)
     art = im.resize(size, Image.LANCZOS)
-    canvas = _background(im) if pad_style == "blur" else _solid_background(im)
     pos = ((PANEL[0] - size[0]) // 2, (PANEL[1] - size[1]) // 2)
-    # Soft drop shadow so the work reads as an object on the background.
+    # Soft drop shadow, shaped like the work, so it reads as an object.
     shadow = Image.new("L", PANEL, 0)
-    ImageDraw.Draw(shadow).rectangle(
-        (pos[0] + 6, pos[1] + 12, pos[0] + size[0] + 6, pos[1] + size[1] + 12), fill=150
-    )
-    shadow = shadow.filter(ImageFilter.GaussianBlur(24))
+    if mask is None:
+        ImageDraw.Draw(shadow).rectangle(
+            (pos[0], pos[1], pos[0] + size[0], pos[1] + size[1]), fill=150
+        )
+    else:
+        shadow.paste(mask.resize(size, Image.BILINEAR).point(lambda v: v * 150 // 255), pos)
+    shadow = ImageChops.offset(shadow, 6, 12).filter(ImageFilter.GaussianBlur(24))
     canvas.paste(Image.new("RGB", PANEL, (0, 0, 0)), (0, 0), shadow)
-    canvas.paste(art, pos)
+    canvas.paste(art, pos, None if mask is None else mask.resize(size, Image.LANCZOS))
     return canvas
 
 

@@ -164,7 +164,10 @@ def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
     needed = cand.plan.needed_width(w.width)
     im = imaging.load(data, max_side=max(needed, round(needed * w.height / w.width)))
     del data
-    im = imaging.trim_borders(im)
+    if imaging.artwork_mask(im) is None:
+        # A masked work (on white card) keeps its margin: trimming would cut
+        # flat chords into a round edge, and the mask removes the card anyway.
+        im = imaging.trim_borders(im)
     # The fetched image may be smaller than the catalogued master, and trimming
     # changes the shape, so plan again from what we actually have.
     plan = imaging.plan_for(*im.size)
