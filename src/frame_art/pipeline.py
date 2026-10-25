@@ -60,7 +60,9 @@ class FilterReport:
 
 
 # Letters NFKD doesn't decompose into ASCII.
-_TRANSLIT = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ł": "l", "đ": "d"})
+_TRANSLIT = str.maketrans(
+    {"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ł": "l", "đ": "d"}
+)
 
 
 def slug(text: str | None) -> str:
@@ -175,7 +177,9 @@ def fetch(http: Http, w: Work, plan: imaging.Plan) -> bytes:
     needed = plan.needed_width(w.width)
     if not w.iiif:
         return http.get_bytes(image_request(w))
-    widths = [needed] + [x for x in WIDTH_LADDER if needed < x < w.width] + [3000, w.width]
+    widths = (
+        [needed] + [x for x in WIDTH_LADDER if needed < x < w.width] + [3000, w.width]
+    )
     got = (0, 0)
     for width in dict.fromkeys(widths):
         data = http.get_bytes(image_request(w, width))
@@ -222,7 +226,9 @@ def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
         raise NotFullScreen(f"{im.size[0]}x{im.size[1]} after trimming")
     if plan.scale > MAX_UPSCALE:
         raise TooSmall(f"{im.size[0]}x{im.size[1]} needs {plan.scale:.2f}x upscaling")
-    return Output(cand.work, plan, imaging.phash(im), imaging.render(im, plan, pad_style))
+    return Output(
+        cand.work, plan, imaging.phash(im), imaging.render(im, plan, pad_style)
+    )
 
 
 def folder_for(plan: imaging.Plan, pad_style: str) -> str:

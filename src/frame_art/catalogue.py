@@ -75,7 +75,9 @@ class Catalogue:
             q, args = q + " where source = ?", (source,)
         return [Work.from_dict(json.loads(d)) for (d,) in self.db.execute(q, args)]
 
-    def record_render(self, key: str, phash: int, mode: str, scale: float, path: Path) -> None:
+    def record_render(
+        self, key: str, phash: int, mode: str, scale: float, path: Path
+    ) -> None:
         with self.db:
             self.db.execute(
                 "insert or replace into rendered values (?, ?, ?, ?, ?, ?)",
@@ -83,12 +85,15 @@ class Catalogue:
             )
 
     def rendered_hashes(self) -> dict[str, int]:
-        return {k: int(h, 16) for k, h in self.db.execute("select key, phash from rendered")}
+        return {
+            k: int(h, 16) for k, h in self.db.execute("select key, phash from rendered")
+        }
 
     def record_reject(self, key: str, reason: str) -> None:
         with self.db:
             self.db.execute(
-                "insert or replace into rejected values (?, ?, ?)", (key, reason, time.time())
+                "insert or replace into rejected values (?, ?, ?)",
+                (key, reason, time.time()),
             )
 
     def rejected_keys(self) -> set[str]:

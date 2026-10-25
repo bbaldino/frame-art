@@ -198,7 +198,10 @@ def artwork_mask(im: Image.Image) -> Image.Image | None:
     border = [(x, 0) for x in range(w)] + [(x, h - 1) for x in range(w)]
     border += [(0, y) for y in range(h)] + [(w - 1, y) for y in range(h)]
     for x, y in border:
-        if np.abs(px[y, x] - bg_colour).max() <= 24 and marked.getpixel((x, y)) != sentinel:
+        if (
+            np.abs(px[y, x] - bg_colour).max() <= 24
+            and marked.getpixel((x, y)) != sentinel
+        ):
             ImageDraw.floodfill(marked, (x, y), sentinel, thresh=24)
     bg = np.all(np.asarray(marked) == sentinel, axis=2)
     frac = bg.mean()
@@ -241,7 +244,9 @@ def render(im: Image.Image, plan: Plan, pad_style: str = "blur") -> Image.Image:
 
 def save_jpeg(im: Image.Image, path: Path) -> None:
     # Baseline 8-bit sRGB: the Frame silently fails to render progressive JPEGs.
-    im.save(path, "JPEG", quality=90, optimize=True, progressive=False, subsampling="4:2:0")
+    im.save(
+        path, "JPEG", quality=90, optimize=True, progressive=False, subsampling="4:2:0"
+    )
 
 
 _DCT = None

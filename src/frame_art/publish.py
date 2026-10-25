@@ -100,16 +100,24 @@ class Publisher:
         self.kinds = kinds
         self.prefs = prefs
 
-    def run(self, count: int, pool: int, season: str | None, seed: int) -> PublishResult:
+    def run(
+        self, count: int, pool: int, season: str | None, seed: int
+    ) -> PublishResult:
         added, failed = self._add(count, season, seed)
         retired = self._retire(pool)
         self._write_meta()
         return PublishResult(added, retired, failed)
 
-    def _add(self, count: int, season: str | None, seed: int) -> tuple[list[str], list[str]]:
+    def _add(
+        self, count: int, season: str | None, seed: int
+    ) -> tuple[list[str], list[str]]:
         now = time.time()
         history = self.cat.published()
-        blocked = {p.key for p in history if p.retired_at is None or now - p.retired_at < COOLDOWN}
+        blocked = {
+            p.key
+            for p in history
+            if p.retired_at is None or now - p.retired_at < COOLDOWN
+        }
         blocked |= self.cat.rejected_keys()
         live_hashes = [p.phash for p in history if p.retired_at is None]
         works = [w for w in self.cat.works() if w.kind in self.kinds]
@@ -134,8 +142,13 @@ class Publisher:
                 log.warning("%s: render failed: %s", cand.work.key, ex)
                 failed.append(cand.work.key)
                 continue
-            if any(imaging.hamming(out.phash, h) <= pipeline.PHASH_DISTANCE for h in live_hashes):
-                log.info("%s: looks like a work already in the pool; skipping", cand.work.key)
+            if any(
+                imaging.hamming(out.phash, h) <= pipeline.PHASH_DISTANCE
+                for h in live_hashes
+            ):
+                log.info(
+                    "%s: looks like a work already in the pool; skipping", cand.work.key
+                )
                 continue
             folder = pipeline.folder_for(out.plan, self.pad_style)
             path = self.dest / folder / pipeline.filename(cand.work)
@@ -160,7 +173,10 @@ class Publisher:
             self.cat.record_retire(p.filename, content_id)
             retired.append(f"{p.folder}/{p.filename}")
             log.info(
-                "retired %s/%s (TV id %s)", p.folder, p.filename, content_id or "never uploaded"
+                "retired %s/%s (TV id %s)",
+                p.folder,
+                p.filename,
+                content_id or "never uploaded",
             )
         return retired
 

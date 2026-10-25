@@ -20,7 +20,9 @@ class Source(Protocol):
 KINDS = ("painting", "drawing", "print")
 
 
-def all_sources(cache_dir: Path, kinds: tuple[str, ...] = ("painting",)) -> list[Source]:
+def all_sources(
+    cache_dir: Path, kinds: tuple[str, ...] = ("painting",)
+) -> list[Source]:
     """One adapter instance per (source, kind)."""
     from . import aic, cleveland, met, nga, rijks, smk
 

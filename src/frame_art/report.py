@@ -95,7 +95,9 @@ def markdown(
         "## Filter funnel (crawled sample per source)",
         "",
     ]
-    lines.append("| source | crawled | passed | crop | pad | rejected (reason: n) | season tags |")
+    lines.append(
+        "| source | crawled | passed | crop | pad | rejected (reason: n) | season tags |"
+    )
     lines.append("|---|---|---|---|---|---|---|")
     for name, r in per_source.items():
         rej = "; ".join(f"{k}: {v}" for k, v in r.rejected.most_common()) or "-"
@@ -112,7 +114,9 @@ def markdown(
             f"{it.mode} at {it.scale:.2f}x, {w.license}, <{w.page_url}>"
         )
     if dupes:
-        lines += ["", "## Perceptual duplicates dropped", ""] + [f"- {d}" for d in dupes]
+        lines += ["", "## Perceptual duplicates dropped", ""] + [
+            f"- {d}" for d in dupes
+        ]
     return "\n".join(lines) + "\n"
 
 
@@ -149,6 +153,13 @@ def comparison_sheet(rows: list[Comparison], dest: Path, title: str) -> None:
         w = row.work
         who = ", ".join(x for x in (w.artist, w.date) if x) or "unknown"
         line = _fit(draw, f"{w.title} · {who}", small, sheet.width - 2 * gap)
-        draw.text((gap + 4, y + label_h + TILE[1] + 4), line, font=small, fill=(235, 235, 235))
-        draw.text((gap + 4, y + label_h + TILE[1] + 24), row.note, font=tiny, fill=(175, 175, 175))
+        draw.text(
+            (gap + 4, y + label_h + TILE[1] + 4), line, font=small, fill=(235, 235, 235)
+        )
+        draw.text(
+            (gap + 4, y + label_h + TILE[1] + 24),
+            row.note,
+            font=tiny,
+            fill=(175, 175, 175),
+        )
     sheet.save(dest, "JPEG", quality=88)

@@ -43,7 +43,9 @@ class Nga:
 
     def iter_works(self, http: Http, limit: int) -> Iterator[Work]:
         images: dict[str, dict] = {}
-        with open(self._csv(http, "published_images"), newline="", encoding="utf-8") as f:
+        with open(
+            self._csv(http, "published_images"), newline="", encoding="utf-8"
+        ) as f:
             for row in csv.DictReader(f):
                 if row["viewtype"] == "primary" and row["openaccess"] == "1":
                     images[row["depictstmsobjectid"]] = row
@@ -52,7 +54,9 @@ class Nga:
         nudes: set[str] = set()
         with open(self._csv(http, "objects_terms"), newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                if row["termtype"] in ("Keyword", "Theme") and is_nude_subject(row["term"]):
+                if row["termtype"] in ("Keyword", "Theme") and is_nude_subject(
+                    row["term"]
+                ):
                     nudes.add(row["objectid"])
 
         works = []

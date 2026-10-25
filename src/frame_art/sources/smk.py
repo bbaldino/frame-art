@@ -22,7 +22,9 @@ def _title(titles: list[dict]) -> str:
 def _artist(production: list[dict]) -> str | None:
     for p in production:
         if p.get("creator_forename") or p.get("creator_surname"):
-            return " ".join(x for x in (p.get("creator_forename"), p.get("creator_surname")) if x)
+            return " ".join(
+                x for x in (p.get("creator_forename"), p.get("creator_surname")) if x
+            )
         if p.get("creator"):
             return p["creator"]
     return None

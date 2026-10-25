@@ -86,7 +86,9 @@ def seasons_for(*texts: str | None) -> list[str]:
     for season, rx in _SEASON_RE.items():
         for m in rx.finditer(text):
             word = m.group(1).lower()
-            if word == "may" and not re.search(r"\b(in|of) may\b|\bmay \d", text, re.IGNORECASE):
+            if word == "may" and not re.search(
+                r"\b(in|of) may\b|\bmay \d", text, re.IGNORECASE
+            ):
                 continue
             if word == "fall" and re.search(r"\bfall of\b", text, re.IGNORECASE):
                 continue

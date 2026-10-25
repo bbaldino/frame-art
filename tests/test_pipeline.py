@@ -24,7 +24,9 @@ def test_seasons():
 
 def test_slug_transliterates():
     assert pipeline.slug("Vilhelm Hammershøi") == "vilhelm-hammershoi"
-    assert pipeline.slug("Skovinteriør med kroget træ") == "skovinterior-med-kroget-trae"
+    assert (
+        pipeline.slug("Skovinteriør med kroget træ") == "skovinterior-med-kroget-trae"
+    )
 
 
 def test_filter_dedupes_by_identity_keeping_larger():
@@ -75,7 +77,9 @@ def test_render_rejects_round_work_on_card(monkeypatch):
 def test_full_screen_only_drops_padded_works():
     works = [work(source_id="1", width=4000, height=2300), work(source_id="2", title="P",
              width=3000, height=4000)]  # fmt: skip
-    cands, rep = pipeline.filter_works(works, None, pipeline.Prefs(full_screen_only=True))
+    cands, rep = pipeline.filter_works(
+        works, None, pipeline.Prefs(full_screen_only=True)
+    )
     assert [c.work.source_id for c in cands] == ["1"]
     assert rep.rejected["not full screen at this crop level"] == 1
 

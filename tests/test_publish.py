@@ -20,7 +20,9 @@ def make_work(i: int, width=4000, height=2250) -> Work:
 @pytest.fixture
 def setup(tmp_path, monkeypatch):
     cat = Catalogue(tmp_path / "db.sqlite")
-    works = [make_work(i) for i in range(10)] + [make_work(i, 2000, 3000) for i in range(10, 14)]
+    works = [make_work(i) for i in range(10)] + [
+        make_work(i, 2000, 3000) for i in range(10, 14)
+    ]
     cat.upsert(works)
 
     def fake_render(http, cand, pad_style="blur"):
@@ -36,7 +38,9 @@ def setup(tmp_path, monkeypatch):
 
 def test_publish_adds_count_and_writes_index(setup):
     cat, dest = setup
-    res = publish.Publisher(cat, None, dest, "blur").run(count=4, pool=50, season=None, seed=1)
+    res = publish.Publisher(cat, None, dest, "blur").run(
+        count=4, pool=50, season=None, seed=1
+    )
     assert len(res.added) == 4
     assert len(list((dest / "full").glob("*.jpg"))) == 4
     index = json.loads((dest / "_meta" / "index.json").read_text())
@@ -68,7 +72,9 @@ def test_retire_oldest_reads_sidecar_and_lists_content_ids(setup):
     retire = json.loads((dest / "_meta" / "retire.json").read_text())
     assert sorted(retire["content_ids"]) == sorted(sidecar[f.split("/")[1]]["content_id"]
                                                    for f in res.retired)  # fmt: skip
-    assert (dest / "full" / publish.SIDECAR).read_text() == sidecar_before  # never written
+    assert (
+        dest / "full" / publish.SIDECAR
+    ).read_text() == sidecar_before  # never written
     assert len(cat.published(active=True)) == 4
 
 

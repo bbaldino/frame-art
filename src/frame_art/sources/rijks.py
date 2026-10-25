@@ -62,7 +62,9 @@ def _image(obj: dict) -> tuple[str, str] | None:
     """Return (iiif_base, license_url) of the object's public-domain image."""
     for subj in obj.get("subject_of") or []:
         for carrier in subj.get("digitally_carried_by") or []:
-            licenses = [r.get("content", "") for r in carrier.get("referred_to_by") or []]
+            licenses = [
+                r.get("content", "") for r in carrier.get("referred_to_by") or []
+            ]
             for ap in carrier.get("access_point") or []:
                 url = ap.get("id", "")
                 if "iiif" in url and url.endswith("/full/max/0/default.jpg"):
@@ -106,7 +108,12 @@ class Rijks:
         ranked = sorted(table.items(), key=lambda kv: kv[1][1], reverse=True)
         for inv, _ in ranked:
             page = http.get_json(
-                SEARCH, params={"objectNumber": inv, "type": self.kind, "imageAvailable": "true"}
+                SEARCH,
+                params={
+                    "objectNumber": inv,
+                    "type": self.kind,
+                    "imageAvailable": "true",
+                },
             )
             for item in page.get("orderedItems") or []:
                 yield item["id"]

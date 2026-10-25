@@ -19,7 +19,9 @@ log = logging.getLogger("frame_art")
 
 
 def _prefs(args) -> pipeline.Prefs:
-    return pipeline.Prefs(imaging.CROP_LEVELS[args.crop], args.full_screen_only, args.allow_nudes)
+    return pipeline.Prefs(
+        imaging.CROP_LEVELS[args.crop], args.full_screen_only, args.allow_nudes
+    )
 
 
 def _season(args) -> str:
@@ -29,7 +31,9 @@ def _season(args) -> str:
 def cmd_crawl(args, cat: Catalogue, http: Http) -> None:
     cache = args.data / "cache"
     sources = [
-        s for s in all_sources(cache, args.kinds) if not args.source or s.name in args.source
+        s
+        for s in all_sources(cache, args.kinds)
+        if not args.source or s.name in args.source
     ]
 
     def crawl(src):
@@ -38,7 +42,9 @@ def cmd_crawl(args, cat: Catalogue, http: Http) -> None:
             works.extend(src.iter_works(http, args.limit))
         except Exception:
             # Keep whatever arrived before the failure.
-            log.exception("%s/%s: crawl stopped after %d works", src.name, src.kind, len(works))
+            log.exception(
+                "%s/%s: crawl stopped after %d works", src.name, src.kind, len(works)
+            )
         return src, works
 
     # Sources crawl in parallel; the SQLite connection stays on this thread.
@@ -89,7 +95,11 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
             if res is None:
                 continue
             match = next(
-                (k for h, k in hashes if imaging.hamming(h, res.phash) <= pipeline.PHASH_DISTANCE),
+                (
+                    k
+                    for h, k in hashes
+                    if imaging.hamming(h, res.phash) <= pipeline.PHASH_DISTANCE
+                ),
                 None,
             )
             if match:
@@ -100,8 +110,12 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
             path = out / "rendered" / folder / pipeline.filename(res.work)
             path.parent.mkdir(parents=True, exist_ok=True)
             pipeline.write_atomic(res.image, path, out / ".staging")
-            cat.record_render(res.work.key, res.phash, res.plan.mode, res.plan.scale, path)
-            rendered.append(report.Rendered(res.work, path, res.plan.mode, res.plan.scale))
+            cat.record_render(
+                res.work.key, res.phash, res.plan.mode, res.plan.scale, path
+            )
+            rendered.append(
+                report.Rendered(res.work, path, res.plan.mode, res.plan.scale)
+            )
 
     report.contact_sheet(
         rendered,
@@ -116,14 +130,20 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
 def cmd_compare(args, cat: Catalogue, http: Http) -> None:
     """Sheets of works each looser crop level would add: original, padded, cropped."""
     works = [w for w in cat.works() if w.kind in args.kinds]
-    cands, _ = pipeline.filter_works(works, None, pipeline.Prefs(imaging.CROP_LEVELS["loose"]))
+    cands, _ = pipeline.filter_works(
+        works, None, pipeline.Prefs(imaging.CROP_LEVELS["loose"])
+    )
     order = diversify(cands, seed=0)
 
     def band_rows(lo: float, hi: float) -> list[report.Comparison]:
         rows = []
         for c in order:
             loss = imaging.crop_loss(c.work.width, c.work.height)
-            if len(rows) >= args.per_band or not lo < loss <= hi or c.plan.mode != "crop":
+            if (
+                len(rows) >= args.per_band
+                or not lo < loss <= hi
+                or c.plan.mode != "crop"
+            ):
                 continue
             try:
                 im = pipeline.load_work(http, c)
@@ -141,7 +161,10 @@ def cmd_compare(args, cat: Catalogue, http: Http) -> None:
                     f"crop cuts {100 * imaging.crop_loss(*im.size):.0f}%",
                     [
                         ("original", im),
-                        (f"padded ({args.pad_style})", imaging.render(im, pad, args.pad_style)),
+                        (
+                            f"padded ({args.pad_style})",
+                            imaging.render(im, pad, args.pad_style),
+                        ),
                         ("cropped to full screen", imaging.render(im, crop)),
                     ],
                 )
@@ -163,9 +186,9 @@ def cmd_compare(args, cat: Catalogue, http: Http) -> None:
 
 def cmd_publish(args, cat: Catalogue, http: Http) -> None:
     seed = args.seed if args.seed is not None else datetime.date.today().toordinal()
-    result = Publisher(cat, http, args.dest, args.pad_style, args.kinds, _prefs(args)).run(
-        args.count, args.pool, _season(args), seed
-    )
+    result = Publisher(
+        cat, http, args.dest, args.pad_style, args.kinds, _prefs(args)
+    ).run(args.count, args.pool, _season(args), seed)
     live = len(cat.published(active=True))
     log.info(
         "publish: %d added, %d retired, %d failed; %d live in %s",
@@ -174,7 +197,9 @@ def cmd_publish(args, cat: Catalogue, http: Http) -> None:
 
 
 def cmd_nightly(args, cat: Catalogue, http: Http) -> None:
-    newest = max((t for (t,) in cat.db.execute("select crawled_at from works")), default=0)
+    newest = max(
+        (t for (t,) in cat.db.execute("select crawled_at from works")), default=0
+    )
     if time.time() - newest > args.recrawl_days * 86400:
         cmd_crawl(args, cat, http)
     cmd_publish(args, cat, http)
@@ -182,7 +207,9 @@ def cmd_nightly(args, cat: Catalogue, http: Http) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="frame-art")
-    p.add_argument("--data", type=Path, default=Path("data"), help="state and cache directory")
+    p.add_argument(
+        "--data", type=Path, default=Path("data"), help="state and cache directory"
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -190,12 +217,18 @@ def main() -> None:
         out = tuple(k.strip() for k in value.split(",") if k.strip())
         bad = [k for k in out if k not in KINDS]
         if bad:
-            raise argparse.ArgumentTypeError(f"unknown kind(s) {bad}; choose from {KINDS}")
+            raise argparse.ArgumentTypeError(
+                f"unknown kind(s) {bad}; choose from {KINDS}"
+            )
         return out
 
     def add_crawl_args(sp):
-        sp.add_argument("--limit", type=int, default=300, help="max candidates per source and kind")
-        sp.add_argument("--source", action="append", help="only these sources (repeatable)")
+        sp.add_argument(
+            "--limit", type=int, default=300, help="max candidates per source and kind"
+        )
+        sp.add_argument(
+            "--source", action="append", help="only these sources (repeatable)"
+        )
         sp.add_argument("--kinds", type=kinds, default=("painting",),
                         help="comma-separated: painting,drawing,print (default painting)")  # fmt: skip
 
@@ -215,27 +248,41 @@ def main() -> None:
                             help="comma-separated kinds to show (default painting)")  # fmt: skip
 
     def add_publish_args(sp):
-        sp.add_argument("--dest", type=Path, required=True, help="folder HA uploads from")
+        sp.add_argument(
+            "--dest", type=Path, required=True, help="folder HA uploads from"
+        )
         sp.add_argument("--count", type=int, default=7, help="new works per run")
-        sp.add_argument("--pool", type=int, default=150, help="works kept live on the TV")
-        sp.add_argument("--seed", type=int, help="selection seed (default: today's date)")
+        sp.add_argument(
+            "--pool", type=int, default=150, help="works kept live on the TV"
+        )
+        sp.add_argument(
+            "--seed", type=int, help="selection seed (default: today's date)"
+        )
 
     c = sub.add_parser("crawl", help="refresh the catalogue from sources")
     add_crawl_args(c)
 
-    d = sub.add_parser("dry-run", help="filter, render a sample, write a report and contact sheet")
+    d = sub.add_parser(
+        "dry-run", help="filter, render a sample, write a report and contact sheet"
+    )
     d.add_argument("--per-source", type=int, default=6)
-    d.add_argument("--workers", type=int, default=2, help="parallel renders (memory-bound)")
+    d.add_argument(
+        "--workers", type=int, default=2, help="parallel renders (memory-bound)"
+    )
     d.add_argument("--out", type=Path, default=Path("out"))
     add_render_args(d)
 
-    cmp = sub.add_parser("compare", help="side-by-side sheets of what looser crop levels add")
+    cmp = sub.add_parser(
+        "compare", help="side-by-side sheets of what looser crop levels add"
+    )
     cmp.add_argument("--per-band", type=int, default=8)
     cmp.add_argument("--out", type=Path, default=Path("out"))
     cmp.add_argument("--pad-style", choices=imaging.PAD_STYLES, default="blur")
     cmp.add_argument("--kinds", type=kinds, default=("painting",))
 
-    pub = sub.add_parser("publish", help="add new works to the pool and retire the oldest")
+    pub = sub.add_parser(
+        "publish", help="add new works to the pool and retire the oldest"
+    )
     add_publish_args(pub)
     add_render_args(pub)
 

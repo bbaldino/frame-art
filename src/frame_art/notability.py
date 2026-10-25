@@ -42,13 +42,17 @@ def norm_inventory(inv: str | None) -> str:
 
 
 def _query(http: Http, sparql: str) -> list[dict]:
-    resp = http.request("GET", SPARQL, params={"query": sparql}, headers=HEADERS, timeout=120)
+    resp = http.request(
+        "GET", SPARQL, params={"query": sparql}, headers=HEADERS, timeout=120
+    )
     if resp.status_code != 200:
         raise RuntimeError(f"WDQS HTTP {resp.status_code}")
     return resp.json()["results"]["bindings"]
 
 
-def collection_sitelinks(http: Http, source: str, cache_dir: Path) -> dict[str, tuple[str, int]]:
+def collection_sitelinks(
+    http: Http, source: str, cache_dir: Path
+) -> dict[str, tuple[str, int]]:
     """Map normalised inventory number -> (QID, sitelinks) for a museum's notable items."""
     qid = COLLECTIONS.get(source)
     if qid is None:
@@ -141,4 +145,6 @@ def annotate(http: Http, works: list[Work], cache_dir: Path) -> None:
     for w in works:
         if w.wikidata in nudes and "nude" not in w.tags:
             w.tags.append("nude")
-    log.info("wikidata: %d works depict nudity", sum(1 for w in works if w.wikidata in nudes))
+    log.info(
+        "wikidata: %d works depict nudity", sum(1 for w in works if w.wikidata in nudes)
+    )
