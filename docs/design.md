@@ -201,6 +201,10 @@ Source API probes (keyless, all worked):
   the Picker API, or a shared album exported/synced to a folder. Evaluate when we get to it.
 - **AI restyling** (e.g. Gemini "nano banana" image editing): turn personal photos into paintings in chosen styles.
   It would be an optional processing stage, before crop/pad, with its own pool and cost limits. The API key would be read from a file.
+  Brian doesn't want it fully dynamic every day. Plan it as an occasional themed batch (seasonal or holiday, about 10–20
+  images), generated at 2K and upscaled locally to 3840x2160, then mixed into the normal rotation. There is a hard
+  monthly spend cap. The estimate is about $0.05–0.25 per 4K image via OpenRouter (Nano Banana 2/Pro); generating at
+  2K is cheaper. It runs as a separate command, not as part of the nightly run.
 
 ## Phase 1 findings
 - With 300 crawled per tier-1 source, 85–99% pass the filters. Most works are padded rather than cropped (about 5–10% are close
