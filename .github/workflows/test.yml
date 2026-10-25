@@ -1,0 +1,20 @@
+name: test
+on:
+  workflow_call:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # uv, not pip + requirements-dev.txt: the project is managed with uv and
+      # uv.lock pins ruff (0.16.1) along with everything else. --locked fails if
+      # the lockfile is stale, the equivalent of `cargo test --locked`.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.10.0'
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run pytest
