@@ -33,6 +33,11 @@ create table if not exists published (
     retired_at real,
     content_id text
 );
+create table if not exists rejected (
+    key text primary key references works(key),
+    reason text not null,
+    rejected_at real not null
+);
 """
 
 
@@ -79,6 +84,15 @@ class Catalogue:
 
     def rendered_hashes(self) -> dict[str, int]:
         return {k: int(h, 16) for k, h in self.db.execute("select key, phash from rendered")}
+
+    def record_reject(self, key: str, reason: str) -> None:
+        with self.db:
+            self.db.execute(
+                "insert or replace into rejected values (?, ?, ?)", (key, reason, time.time())
+            )
+
+    def rejected_keys(self) -> set[str]:
+        return {k for (k,) in self.db.execute("select key from rejected")}
 
     def record_publish(self, filename: str, folder: str, key: str, phash: int) -> None:
         with self.db:

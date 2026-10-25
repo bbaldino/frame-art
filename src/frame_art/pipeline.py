@@ -20,6 +20,9 @@ log = logging.getLogger(__name__)
 MAX_UPSCALE = 1.35
 # Perceptual hashes this close are treated as the same picture.
 PHASH_DISTANCE = 8
+# Round works are skipped; titles catch some before download, the scan-card
+# check in render() catches the rest.
+TONDO = re.compile(r"\btondo\b", re.IGNORECASE)
 
 
 @dataclass
@@ -85,6 +88,9 @@ def filter_works(works: list[Work], season: str | None) -> tuple[list[Candidate]
         if not (w.iiif or w.image_url):
             report.rejected["no image url"] += 1
             continue
+        if TONDO.search(w.title or ""):
+            report.rejected["round (tondo)"] += 1
+            continue
         if not imaging.AR_MIN <= w.width / w.height <= imaging.AR_MAX:
             report.rejected["too tall or too wide"] += 1
             continue
@@ -120,7 +126,15 @@ def image_request(w: Work, width: int | None = None) -> str:
     return w.image_url
 
 
-class TooSmall(Exception):
+class Rejected(Exception):
+    """The work is unsuitable once fetched; don't try it again."""
+
+
+class TooSmall(Rejected):
+    pass
+
+
+class NotRectangular(Rejected):
     pass
 
 
@@ -164,10 +178,11 @@ def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
     needed = cand.plan.needed_width(w.width)
     im = imaging.load(data, max_side=max(needed, round(needed * w.height / w.width)))
     del data
-    if imaging.artwork_mask(im) is None:
-        # A masked work (on white card) keeps its margin: trimming would cut
-        # flat chords into a round edge, and the mask removes the card anyway.
-        im = imaging.trim_borders(im)
+    if imaging.artwork_mask(im) is not None:
+        # Round or irregular work on a white scan card (tondi, fans): it can't
+        # fill the screen, and padding them leaves the white card showing.
+        raise NotRectangular("round or irregular work on a scan card")
+    im = imaging.trim_borders(im)
     # The fetched image may be smaller than the catalogued master, and trimming
     # changes the shape, so plan again from what we actually have.
     plan = imaging.plan_for(*im.size)

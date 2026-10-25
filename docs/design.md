@@ -224,6 +224,12 @@ Source API probes (keyless, all worked):
   WDQS rejects generic library User-Agents, so it gets its own descriptive UA.
 - Drawings and prints: `--kinds painting,drawing,print` on crawl, dry-run and publish (default painting only).
 
+## Brian's answers (2026-10-25)
+- Pad style: **blur** (the default).
+- Round works (tondi): **skip** rather than mask. Titles with "tondo" are dropped in the filter; anything else on a
+  flat white scan card (detected after download) raises `NotRectangular`. Rejected works (this and `TooSmall`) are
+  recorded in the `rejected` table, so nightly runs don't download them again.
+
 ## Open questions for Brian
 1. **Where should it run?** My recommendation is a sibling container on the HA Docker host (192.168.1.73). The alternative is Unraid. Which host
    runs the HA container, and what is the host path of HA's `/config`?

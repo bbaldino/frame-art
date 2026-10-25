@@ -83,6 +83,21 @@ def test_matte_style_puts_padded_works_in_matted(setup):
         assert f.startswith("matted/") == portrait
 
 
+def test_rejected_work_is_recorded_and_not_retried(setup, monkeypatch):
+    cat, dest = setup
+    real = pipeline.render
+
+    def render(http, cand, pad_style="blur"):
+        if cand.work.source_id == "0":
+            raise pipeline.NotRectangular("round")
+        return real(http, cand, pad_style)
+
+    monkeypatch.setattr(pipeline, "render", render)
+    res = publish.Publisher(cat, None, dest, "blur").run(14, 50, None, seed=1)
+    assert len(res.added) == 13 and not res.failed
+    assert cat.rejected_keys() == {"s0:0"}
+
+
 def test_diversify_interleaves_sources():
     cands = [
         pipeline.Candidate(make_work(i), imaging.plan_for(4000, 2250), score=10 - i)

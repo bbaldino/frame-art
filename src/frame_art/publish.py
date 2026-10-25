@@ -108,6 +108,7 @@ class Publisher:
         now = time.time()
         history = self.cat.published()
         blocked = {p.key for p in history if p.retired_at is None or now - p.retired_at < COOLDOWN}
+        blocked |= self.cat.rejected_keys()
         live_hashes = [p.phash for p in history if p.retired_at is None]
         works = [w for w in self.cat.works() if w.kind in self.kinds]
         cands, _ = pipeline.filter_works(works, season)
@@ -120,6 +121,10 @@ class Publisher:
                 break
             try:
                 out = pipeline.render(self.http, cand, self.pad_style)
+            except pipeline.Rejected as ex:
+                log.info("%s: skipped for good: %s", cand.work.key, ex)
+                self.cat.record_reject(cand.work.key, str(ex))
+                continue
             except Exception as ex:  # noqa: BLE001 - one bad image must not stop the run
                 log.warning("%s: render failed: %s", cand.work.key, ex)
                 failed.append(cand.work.key)

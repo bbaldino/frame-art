@@ -75,12 +75,3 @@ def test_artwork_mask_finds_round_work_on_card():
 
 def test_artwork_mask_ignores_ordinary_paintings():
     assert imaging.artwork_mask(Image.effect_noise((900, 1200), 60).convert("RGB")) is None
-
-
-def test_tondo_render_has_no_white_corners():
-    im = _tondo()
-    out = imaging.render(im, imaging.plan_for(*im.size), "blur")
-    # Just inside the work's bounding square, at its corner, should not be white.
-    left = (imaging.PANEL[0] - round(1200 * imaging.plan_for(1200, 1200).scale)) // 2
-    top = (imaging.PANEL[1] - round(1200 * imaging.plan_for(1200, 1200).scale)) // 2
-    assert sum(out.getpixel((left + 10, top + 10))) < 600

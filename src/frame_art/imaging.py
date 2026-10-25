@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageChops, ImageCms, ImageDraw, ImageEnhance, ImageFilter, ImageStat
+from PIL import Image, ImageCms, ImageDraw, ImageEnhance, ImageFilter
 
 # Museum masters run past 100MP; Pillow's bomb guard stops at ~89MP.
 Image.MAX_IMAGE_PIXELS = 400_000_000
@@ -162,8 +162,9 @@ def artwork_mask(im: Image.Image) -> Image.Image | None:
     """Mask (255 = artwork) for a work photographed on a flat backdrop, else None.
 
     Round and irregular works (tondi, fans, cut-out objects) are often scanned on
-    a white or grey card. When all four corners show the same flat colour, flood
-    the backdrop in from the corners so only the work itself gets pasted.
+    a white card. When all four corners show the same flat colour, flood the
+    backdrop in from the edges. The pipeline uses this to skip such works: they
+    don't fill a 16:9 screen well.
     """
     small = im.copy()
     small.thumbnail((400, 400))
@@ -217,27 +218,17 @@ def render(im: Image.Image, plan: Plan, pad_style: str = "blur") -> Image.Image:
         return im.resize((round(w * fit), round(h * fit)), Image.LANCZOS)
 
     size = (round(w * plan.scale), round(h * plan.scale))
-    mask = artwork_mask(im)
-    source = im
-    if mask is not None:
-        # Keep the scan backdrop out of the background too: swap it for the
-        # work's average colour before blurring/sampling.
-        mean = ImageStat.Stat(im, mask=mask.point(lambda v: 255 if v > 128 else 0)).mean
-        source = Image.composite(im, Image.new("RGB", im.size, tuple(map(int, mean))), mask)
-    canvas = _background(source) if pad_style == "blur" else _solid_background(source)
     art = im.resize(size, Image.LANCZOS)
+    canvas = _background(im) if pad_style == "blur" else _solid_background(im)
     pos = ((PANEL[0] - size[0]) // 2, (PANEL[1] - size[1]) // 2)
-    # Soft drop shadow, shaped like the work, so it reads as an object.
+    # Soft drop shadow so the work reads as an object on the background.
     shadow = Image.new("L", PANEL, 0)
-    if mask is None:
-        ImageDraw.Draw(shadow).rectangle(
-            (pos[0], pos[1], pos[0] + size[0], pos[1] + size[1]), fill=150
-        )
-    else:
-        shadow.paste(mask.resize(size, Image.BILINEAR).point(lambda v: v * 150 // 255), pos)
-    shadow = ImageChops.offset(shadow, 6, 12).filter(ImageFilter.GaussianBlur(24))
+    ImageDraw.Draw(shadow).rectangle(
+        (pos[0] + 6, pos[1] + 12, pos[0] + size[0] + 6, pos[1] + size[1] + 12), fill=150
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(24))
     canvas.paste(Image.new("RGB", PANEL, (0, 0, 0)), (0, 0), shadow)
-    canvas.paste(art, pos, None if mask is None else mask.resize(size, Image.LANCZOS))
+    canvas.paste(art, pos)
     return canvas
 
 
