@@ -91,7 +91,7 @@ and a User-Agent that includes a contact address.
 <dest>/_meta/index.json   "full/<file>" -> {title, artist, date, source, license, url}
 <dest>/_meta/retire.json  {"updated", "content_ids": [...], "files": [...]}
 ```
-- `<dest>` is proposed as `/config/www/frame_upload/frame-art` so Brian's existing files in frame_upload are left alone.
+- `<dest>` is `/config/www/frame_upload/frame-art` (Brian approved), so his existing files in frame_upload are left alone.
 - Filename: `<source>-<id>-<artist-slug>-<title-slug>.jpg`. Published files are immutable: the integration skips
   on filename + mtime, so rewriting a file would upload a duplicate.
 - Pool rotation: each run adds `--count` (7) new works and retires the oldest beyond `--pool` (150).
@@ -147,7 +147,8 @@ actions:
     data: { duration: 1h, shuffle: true, category_id: 2 }
 mode: single
 ```
-Upgrading samsungtv_smart (8.13.0 -> 8.13.2) first is recommended. That is Brian's call.
+Brian has upgraded samsungtv_smart to 8.14.2. The art services return `{"error": ...}` instead of raising, so the
+real automation should capture `response_variable` on the batch upload and log or notify on an error.
 
 ## Things to evaluate (phase 1, read-only research)
 - **Frame Gallery**: reuse its catalogue (Apache-2.0) and possibly its source/crop metadata.
@@ -159,7 +160,9 @@ Upgrading samsungtv_smart (8.13.0 -> 8.13.2) first is recommended. That is Brian
   the Plex API (copyrighted, personal display only, kept as a separate opt-in pool).
 
 ## Findings from read-only checks (2026-10-25)
-Integration source: TheFab21/ha-samsungtv-smart (read at tag 8.14.2; Brian is on 8.13.0 and HACS offers 8.13.2).
+Integration source: TheFab21/ha-samsungtv-smart. Brian now runs **8.14.2**. A diff of 8.13.0..8.14.2 shows no change to
+`art_upload_batch`, `art_delete`, `art_set_slideshow` or the upload sidecar. The only art service change is a new `wake`
+option on `art_select_image`, which we don't use. Everything below still holds.
 - `art_upload_batch` returns `{uploaded: [content_id...], skipped, skipped_duplicate, failed: [path...]}`.
   The response does **not** map filenames to content_ids. The mapping is in the per-folder sidecar
   `frame_upload/.samsungtv_upload.json`, which holds `{filename: {content_id, modified}}`.
@@ -194,7 +197,6 @@ Source API probes (keyless, all worked):
 - It runs as a sibling container on the Proxmox HA host. Deployment details are coordinated with the proxmox agent (homelab-stacks/Komodo).
 - Taste: "good pieces" plus some seasonal art. Highlights come first, and works tagged with the current season get a boost.
 - Defaults: portraits get the blurred-background pad; the TV pool is about 150 with 7 new per night; written in Python; v1 uses keyless sources only.
-- Upgrading the integration (now 8.13.2) needs Brian's explicit OK.
 
 ## Post-v1 ideas (from Brian)
 - **Google Photos** as a personal source. The Library API no longer lists a whole library, so this probably means
@@ -233,16 +235,15 @@ Source API probes (keyless, all worked):
 - Round works (tondi): **skip** rather than mask. Titles with "tondo" are dropped in the filter; anything else on a
   flat white scan card (detected after download) raises `NotRectangular`. Rejected works (this and `TooSmall`) are
   recorded in the `rejected` table, so nightly runs don't download them again.
+- Cropping: Brian is torn ("feels wrong to do that to the art", but padding breaks the immersion), so crop tolerance is a
+  setting: `--crop native|strict|medium|loose` (crops may cut 2/13/21/27%), plus `--full-screen-only` to skip
+  anything needing a pad. `frame-art compare` renders sheets of what each level adds (original | padded | cropped).
+- Nudes: **filtered out by default** (`--allow-nudes` to include). The signals are museum subject terms (AIC subjects,
+  Met tags, NGA keywords), Wikidata depicts/genre (nude, nudity, female/male nudity, male nude), and a multilingual title
+  match on nudes and classical nude subjects (Venus, Susanna, Danaë, bathers, nymphs...). It is deliberately broad. A
+  known miss: an untitled or obliquely titled nude from Cleveland, Rijks or SMK with no Wikidata depicts statement.
+- Folder: `/config/www/frame_upload/frame-art/` is approved.
+- samsungtv_smart: Brian upgraded it to 8.14.2 himself.
 
 ## Open questions for Brian
-1. **Where should it run?** My recommendation is a sibling container on the HA Docker host (192.168.1.73). The alternative is Unraid. Which host
-   runs the HA container, and what is the host path of HA's `/config`?
-2. **Taste**: eras, movements and artists to favour or exclude? Paintings only, or also drawings, prints and Japanese
-   woodblocks? Any religious or graphic subjects to skip? Include NASA or photography?
-3. **Portrait works**: blurred-background pad (fills the screen) or native aspect with a TV matte? If a matte, which style?
-4. **Pool size and cadence**: about 150 on the TV and about 7 new per night OK? Slideshow interval (15min/1h/12h)?
-5. **Keys**: which keyed sources do you want? Save each to `~/.config/<service>/key` (chmod 600) and don't
-   paste them on the bus.
-6. **Language**: Python is my default for this (best imaging libraries). Any objection, or would you rather have Rust?
-7. OK to upgrade samsungtv_smart to 8.13.1 before we automate?
-8. HA was confirmed as Container (not OS), so this question is settled.
+All answered (see the decisions and Brian's answers above), except the phase 3 go-ahead.
