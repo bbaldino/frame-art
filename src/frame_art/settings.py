@@ -40,7 +40,9 @@ class Settings:
     run_at: str = "02:00"  # local time, HH:MM
     paused: bool = False
     recrawl_days: float = 7
-    crawl_limit: int = 300  # works per source and kind
+    # Works per source and kind. 2000 takes ~40 min and gives ~660 full-screen
+    # paintings at the strict crop level (AIC caps its search at 1000).
+    crawl_limit: int = 2000
 
     def prefs(self) -> pipeline.Prefs:
         return pipeline.Prefs(
