@@ -22,6 +22,8 @@ class Work:
     height: int | None = None
     page_url: str | None = None
     wikidata: str | None = None
+    inventory: str | None = None  # museum accession / object number
+    sitelinks: int = 0  # Wikipedia articles about the work (notability)
     highlight: bool = False
     tags: list[str] = field(default_factory=list)
 

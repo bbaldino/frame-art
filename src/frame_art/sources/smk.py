@@ -7,8 +7,8 @@ from ..model import Work
 from ..net import Http
 
 API = "https://api.smk.dk/api/v1/art/search/"
-# SMK's Danish object names -> our kinds.
-KINDS = {"maleri": "painting", "tegning": "drawing", "grafik": "print"}
+# Our kinds -> SMK's Danish object names.
+KINDS = {"painting": "maleri", "drawing": "tegning", "print": "grafik"}
 
 
 def _title(titles: list[dict]) -> str:
@@ -22,9 +22,7 @@ def _title(titles: list[dict]) -> str:
 def _artist(production: list[dict]) -> str | None:
     for p in production:
         if p.get("creator_forename") or p.get("creator_surname"):
-            return " ".join(
-                x for x in (p.get("creator_forename"), p.get("creator_surname")) if x
-            )
+            return " ".join(x for x in (p.get("creator_forename"), p.get("creator_surname")) if x)
         if p.get("creator"):
             return p["creator"]
     return None
@@ -33,8 +31,9 @@ def _artist(production: list[dict]) -> str | None:
 class Smk:
     name = "smk"
 
-    def __init__(self, object_name: str = "maleri"):
-        self.object_name = object_name
+    def __init__(self, kind: str = "painting"):
+        self.kind = kind
+        self.object_name = KINDS[kind]
 
     def iter_works(self, http: Http, limit: int) -> Iterator[Work]:
         seen: set[str] = set()
@@ -68,12 +67,13 @@ class Smk:
                         title=_title(i.get("titles") or []),
                         artist=_artist(i.get("production") or []),
                         date=dates[0].get("period"),
-                        kind=KINDS.get(self.object_name, "painting"),
+                        kind=self.kind,
                         license="PDM",
                         iiif=i["image_iiif_id"],
                         width=i.get("image_width"),
                         height=i.get("image_height"),
                         page_url=i.get("frontend_url"),
+                        inventory=sid,
                         highlight=bool(i.get("on_display")),
                         tags=seasons_for(
                             _title(i.get("titles") or []),

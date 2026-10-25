@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from PIL import Image
 
 from . import imaging
 from .model import Work
@@ -39,9 +42,7 @@ class FilterReport:
 
 
 # Letters NFKD doesn't decompose into ASCII.
-_TRANSLIT = str.maketrans(
-    {"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ł": "l", "đ": "d"}
-)
+_TRANSLIT = str.maketrans({"ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "ß": "ss", "ł": "l", "đ": "d"})
 
 
 def slug(text: str | None) -> str:
@@ -61,8 +62,9 @@ def score(w: Work, plan: imaging.Plan, season: str | None) -> float:
     s = 0.0
     if w.highlight:
         s += 3
-    if w.wikidata:
-        s += 1  # notable enough to have a Wikidata item
+    if w.sitelinks:
+        # Notability: Wikipedia articles about the work, with diminishing returns.
+        s += min(4.0, math.log2(1 + w.sitelinks))
     if season and season in w.tags:
         s += 1.5
     if plan.mode == "crop":
@@ -72,9 +74,7 @@ def score(w: Work, plan: imaging.Plan, season: str | None) -> float:
     return s
 
 
-def filter_works(
-    works: list[Work], season: str | None
-) -> tuple[list[Candidate], FilterReport]:
+def filter_works(works: list[Work], season: str | None) -> tuple[list[Candidate], FilterReport]:
     report = FilterReport(total=len(works))
     out: list[Candidate] = []
     seen: dict[str, Candidate] = {}
@@ -134,9 +134,7 @@ def fetch(http: Http, w: Work, plan: imaging.Plan) -> bytes:
     needed = plan.needed_width(w.width)
     if not w.iiif:
         return http.get_bytes(image_request(w))
-    widths = (
-        [needed] + [x for x in WIDTH_LADDER if needed < x < w.width] + [3000, w.width]
-    )
+    widths = [needed] + [x for x in WIDTH_LADDER if needed < x < w.width] + [3000, w.width]
     got = (0, 0)
     for width in dict.fromkeys(widths):
         data = http.get_bytes(image_request(w, width))
@@ -152,23 +150,37 @@ def filename(w: Work) -> str:
     return "-".join(p for p in parts if p) + ".jpg"
 
 
-def render(
-    http: Http, cand: Candidate, out_dir: Path
-) -> tuple[Path, int, imaging.Plan]:
+@dataclass
+class Output:
+    work: Work
+    plan: imaging.Plan
+    phash: int
+    image: Image.Image  # final pixels, ready to save
+
+
+def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
     w = cand.work
     data = fetch(http, w, cand.plan)
     needed = cand.plan.needed_width(w.width)
     im = imaging.load(data, max_side=max(needed, round(needed * w.height / w.width)))
+    del data
     im = imaging.trim_borders(im)
     # The fetched image may be smaller than the catalogued master, and trimming
     # changes the shape, so plan again from what we actually have.
     plan = imaging.plan_for(*im.size)
     if plan.scale > MAX_UPSCALE:
         raise TooSmall(f"{im.size[0]}x{im.size[1]} needs {plan.scale:.2f}x upscaling")
-    ph = imaging.phash(im)
-    out = imaging.render(im, plan)
-    path = out_dir / filename(w)
-    tmp = path.with_suffix(".part")
-    imaging.save_jpeg(out, tmp)
+    return Output(w, plan, imaging.phash(im), imaging.render(im, plan, pad_style))
+
+
+def folder_for(plan: imaging.Plan, pad_style: str) -> str:
+    """Full-screen renders upload with no matte; native-shape ones get the TV's matte."""
+    return "matted" if pad_style == "matte" and plan.mode == "pad" else "full"
+
+
+def write_atomic(im: Image.Image, path: Path, staging: Path) -> None:
+    """Save via a staging dir and rename, so HA never sees a half-written file."""
+    staging.mkdir(parents=True, exist_ok=True)
+    tmp = staging / path.name
+    imaging.save_jpeg(im, tmp)
     tmp.replace(path)
-    return path, ph, plan

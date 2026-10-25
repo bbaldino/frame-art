@@ -14,11 +14,15 @@ SEARCH = "https://collectionapi.metmuseum.org/public/collection/v1.1/search"
 OBJECT = "https://collectionapi.metmuseum.org/public/collection/v1/objects/{}"
 
 
+KINDS = {"painting": "Paintings", "drawing": "Drawings", "print": "Prints"}
+
+
 class Met:
     name = "met"
 
-    def __init__(self, medium: str = "Paintings"):
-        self.medium = medium
+    def __init__(self, kind: str = "painting"):
+        self.kind = kind
+        self.medium = KINDS[kind]
 
     def _ids(self, http: Http, highlight: bool) -> Iterator[int]:
         offset = 0
@@ -70,12 +74,13 @@ class Met:
             title=d.get("title") or "Untitled",
             artist=d.get("artistDisplayName") or None,
             date=d.get("objectDate") or None,
-            kind="painting",
+            kind=self.kind,
             license="CC0",
             image_url=url,
             width=size[0],
             height=size[1],
             page_url=d.get("objectURL"),
+            inventory=d.get("accessionNumber"),
             wikidata=wikidata,
             highlight=bool(d.get("isHighlight")),
             tags=seasons_for(d.get("title"), *(t["term"] for t in d.get("tags") or [])),

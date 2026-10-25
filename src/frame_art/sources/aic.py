@@ -11,19 +11,19 @@ IIIF = "https://www.artic.edu/iiif/2"
 # AIC asks API clients to identify themselves with this header.
 HEADERS = {"AIC-User-Agent": "frame-art (personal Frame TV art fetcher)"}
 
-# artwork_type ids: 1 = Painting, 18 = Print, 14 = Drawing and Watercolor
-KINDS = {1: "painting", 14: "drawing", 18: "print"}
+# Our kinds -> AIC artwork_type ids (14 is "Drawing and Watercolor").
+KINDS = {"painting": 1, "drawing": 14, "print": 18}
 FIELDS = [
     "id", "title", "artist_title", "date_display", "image_id", "thumbnail",
-    "artwork_type_id", "is_boosted", "subject_titles", "term_titles",
+    "artwork_type_id", "is_boosted", "subject_titles", "main_reference_number",
 ]  # fmt: skip
 
 
 class Aic:
     name = "aic"
 
-    def __init__(self, kinds: tuple[int, ...] = (1,)):
-        self.kinds = kinds
+    def __init__(self, kind: str = "painting"):
+        self.kind = kind
 
     def iter_works(self, http: Http, limit: int) -> Iterator[Work]:
         page, seen = 1, 0
@@ -33,7 +33,7 @@ class Aic:
                     "bool": {
                         "must": [
                             {"term": {"is_public_domain": True}},
-                            {"terms": {"artwork_type_id": list(self.kinds)}},
+                            {"term": {"artwork_type_id": KINDS[self.kind]}},
                             {"exists": {"field": "image_id"}},
                         ]
                     }
@@ -59,12 +59,13 @@ class Aic:
                     title=r.get("title") or "Untitled",
                     artist=r.get("artist_title"),
                     date=r.get("date_display"),
-                    kind=KINDS.get(r.get("artwork_type_id"), "painting"),
+                    kind=self.kind,
                     license="CC0",
                     iiif=f"{IIIF}/{r['image_id']}",
                     width=thumb.get("width"),
                     height=thumb.get("height"),
                     page_url=f"https://www.artic.edu/artworks/{r['id']}",
+                    inventory=r.get("main_reference_number"),
                     highlight=bool(r.get("is_boosted")),
                     tags=seasons_for(r.get("title"), *(r.get("subject_titles") or [])),
                 )

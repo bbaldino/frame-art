@@ -57,7 +57,14 @@ def contact_sheet(items: list[Rendered], dest: Path, title: str) -> None:
         x = gap + (i % COLS) * (cell_w + gap)
         y = header + (i // COLS) * (cell_h + gap)
         with Image.open(it.path) as im:
-            sheet.paste(im.resize(TILE, Image.LANCZOS), (x, y))
+            if im.size[0] * TILE[1] == im.size[1] * TILE[0]:
+                sheet.paste(im.resize(TILE, Image.LANCZOS), (x, y))
+            else:
+                # A native-shape work for the TV's matte: preview it on a pale mat.
+                tile = Image.new("RGB", TILE, (226, 224, 218))
+                im.thumbnail((TILE[0] * 0.8, TILE[1] * 0.8), Image.LANCZOS)
+                tile.paste(im, ((TILE[0] - im.width) // 2, (TILE[1] - im.height) // 2))
+                sheet.paste(tile, (x, y))
         w = it.work
         line1 = _fit(draw, w.title, small, cell_w - 8)
         who = ", ".join(x for x in (w.artist, w.date) if x) or "unknown"
@@ -65,6 +72,8 @@ def contact_sheet(items: list[Rendered], dest: Path, title: str) -> None:
         flags = [w.source, it.mode, f"{it.scale:.2f}x"]
         if w.highlight:
             flags.append("highlight")
+        if w.sitelinks:
+            flags.append(f"wiki {w.sitelinks}")
         flags += w.tags
         draw.text((x + 4, y + TILE[1] + 6), line1, font=small, fill=(235, 235, 235))
         draw.text((x + 4, y + TILE[1] + 27), line2, font=tiny, fill=(175, 175, 175))
@@ -86,9 +95,7 @@ def markdown(
         "## Filter funnel (crawled sample per source)",
         "",
     ]
-    lines.append(
-        "| source | crawled | passed | crop | pad | rejected (reason: n) | season tags |"
-    )
+    lines.append("| source | crawled | passed | crop | pad | rejected (reason: n) | season tags |")
     lines.append("|---|---|---|---|---|---|---|")
     for name, r in per_source.items():
         rej = "; ".join(f"{k}: {v}" for k, v in r.rejected.most_common()) or "-"
@@ -105,7 +112,5 @@ def markdown(
             f"{it.mode} at {it.scale:.2f}x, {w.license}, <{w.page_url}>"
         )
     if dupes:
-        lines += ["", "## Perceptual duplicates dropped", ""] + [
-            f"- {d}" for d in dupes
-        ]
+        lines += ["", "## Perceptual duplicates dropped", ""] + [f"- {d}" for d in dupes]
     return "\n".join(lines) + "\n"

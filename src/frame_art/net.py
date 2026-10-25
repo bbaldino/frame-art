@@ -31,9 +31,7 @@ class Http:
     """A small polite HTTP client: per-host pacing plus retry with backoff."""
 
     def __init__(self, timeout: float = 60.0):
-        self._client = httpx.Client(
-            headers=DEFAULT_HEADERS, timeout=timeout, follow_redirects=True
-        )
+        self._client = httpx.Client(headers=DEFAULT_HEADERS, timeout=timeout, follow_redirects=True)
         self._lock = threading.Lock()
         self._next_slot: dict[str, float] = {}
 
@@ -47,9 +45,7 @@ class Http:
         if slot > now:
             time.sleep(slot - now)
 
-    def request(
-        self, method: str, url: str, *, retries: int = 4, **kw
-    ) -> httpx.Response:
+    def request(self, method: str, url: str, *, retries: int = 4, **kw) -> httpx.Response:
         for attempt in range(retries + 1):
             self._wait_turn(url)
             try:
@@ -80,9 +76,7 @@ class Http:
         resp.raise_for_status()
         return resp.content
 
-    def probe_image_size(
-        self, url: str, max_bytes: int = 256 * 1024
-    ) -> tuple[int, int] | None:
+    def probe_image_size(self, url: str, max_bytes: int = 256 * 1024) -> tuple[int, int] | None:
         """Read just enough of a remote image to learn its pixel size."""
         parser = ImageFile.Parser()
         self._wait_turn(url)

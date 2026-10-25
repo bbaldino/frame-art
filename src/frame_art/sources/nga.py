@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 # NGA publishes its open data as CSVs on GitHub (~90MB each); cache them.
 RAW = "https://github.com/NationalGalleryOfArt/opendata/raw/main/data/{}.csv"
 MAX_AGE = 7 * 24 * 3600
-KINDS = {"Painting": "painting", "Drawing": "drawing", "Print": "print"}
+KINDS = {"painting": "Painting", "drawing": "Drawing", "print": "Print"}
 
 csv.field_size_limit(2**31 - 1)
 
@@ -23,11 +23,9 @@ csv.field_size_limit(2**31 - 1)
 class Nga:
     name = "nga"
 
-    def __init__(
-        self, cache_dir: Path, classifications: tuple[str, ...] = ("Painting",)
-    ):
+    def __init__(self, cache_dir: Path, kind: str = "painting"):
         self.cache_dir = cache_dir / "nga"
-        self.classifications = classifications
+        self.kind = kind
 
     def _csv(self, http: Http, name: str) -> Path:
         path = self.cache_dir / f"{name}.csv"
@@ -41,9 +39,7 @@ class Nga:
 
     def iter_works(self, http: Http, limit: int) -> Iterator[Work]:
         images: dict[str, dict] = {}
-        with open(
-            self._csv(http, "published_images"), newline="", encoding="utf-8"
-        ) as f:
+        with open(self._csv(http, "published_images"), newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 if row["viewtype"] == "primary" and row["openaccess"] == "1":
                     images[row["depictstmsobjectid"]] = row
@@ -51,7 +47,7 @@ class Nga:
         works = []
         with open(self._csv(http, "objects"), newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                if row["classification"] not in self.classifications:
+                if row["classification"] != KINDS[self.kind]:
                     continue
                 img = images.get(row["objectid"])
                 if img is None:
@@ -73,13 +69,14 @@ class Nga:
             title=row["title"] or "Untitled",
             artist=row["attribution"] or None,
             date=row["displaydate"] or None,
-            kind=KINDS.get(row["classification"], "painting"),
+            kind=self.kind,
             license="CC0",
             iiif=img["iiifurl"],
             width=width,
             height=height,
             page_url=f"https://www.nga.gov/collection/art-object-page.{row['objectid']}.html",
             wikidata=row.get("wikidataid") or None,
+            inventory=row.get("accessionnum"),
             highlight=bool(row.get("locationid")),
             tags=seasons_for(row["title"]),
         )

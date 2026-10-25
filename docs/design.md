@@ -81,24 +81,40 @@ and a User-Agent that includes a contact address.
 7. **Score/select**: weighted by source tier, presence on a seed list, resolution, aspect fit, and Brian's
    taste filters (movements, eras, artists in or out). Later: thumbs up or down via `art_get_current`.
 
-## Getting files into `/config/www/frame_upload/`
-- The fetcher writes to `frame_upload/.staging/` and then renames each file into place, so HA never sees a
-  half-written file.
-- Filename: `<source>-<id>-<artist-slug>-<title-slug>.jpg`.
-- Metadata: `frame_upload/.meta/index.json` maps filename to {title, artist, date, source, url, licence}.
-  The batch only reads jpg/png, so the JSON files are ignored by the upload.
-- Note: `/config/www` is served unauthenticated at `/local/`. That is fine for public-domain art, but
-  nothing private should go there.
+## Getting files into `/config/www/frame_upload/` (as built in phase 2)
+`frame-art publish --dest <dir>` (or `nightly`) maintains this layout:
 
-### TV storage and rotation
-The TV's My Photos storage is finite (the limit for the 2024 model still needs measuring). Plan:
-- Keep a **pool of N** (start with about 150) on the TV. Each night add K new works (about 5 to 10) and retire the K oldest.
-- The fetcher deletes retired files from the folder and writes `.meta/retire.json` (filenames).
-- To delete them from the TV, HA needs filename -> content_id. The `art_upload_batch` response and the
-  sidecar hold that mapping. **To verify:** the exact response shape. I'll read the integration source
-  before writing the automation.
+```
+<dest>/full/      3840x2160 renders (crops, blur/solid pads); HA uploads with matte none
+<dest>/matted/    native-shape works when --pad-style matte; HA uploads with a matte
+<dest>/.staging/  renders in progress; renamed into place when complete
+<dest>/_meta/index.json   "full/<file>" -> {title, artist, date, source, license, url}
+<dest>/_meta/retire.json  {"updated", "content_ids": [...], "files": [...]}
+```
+- `<dest>` is proposed as `/config/www/frame_upload/frame-art` so Brian's existing files in frame_upload are left alone.
+- Filename: `<source>-<id>-<artist-slug>-<title-slug>.jpg`. Published files are immutable: the integration skips
+  on filename + mtime, so rewriting a file would upload a duplicate.
+- Pool rotation: each run adds `--count` (7) new works and retires the oldest beyond `--pool` (150).
+  Selection is by score with a little daily jitter, interleaved across sources. Live works are never
+  re-picked, and retired ones can come back after a year.
+- Retiring a work deletes its file and looks up its TV content_id in the integration's sidecar
+  (`<folder>/.samsungtv_upload.json`, read-only for us). `retire.json` lists ids retired in the last 14 days,
+  so a night HA misses doesn't leak art onto the TV. Re-deleting an id is harmless with `continue_on_error`.
+- `_meta`, not `.meta`, because HA reads retire.json through `/local/`. Note that `/config/www` is served
+  unauthenticated at `/local/`. That is fine for public-domain art; nothing private should go there.
 
-## HA automation (sketch, not applied)
+## HA automation (draft, not applied)
+A rest sensor exposes the retire list:
+```yaml
+rest:
+  - resource: http://127.0.0.1:8123/local/frame_upload/frame-art/_meta/retire.json
+    scan_interval: 3600
+    sensor:
+      - name: Frame art retire list
+        unique_id: frame_art_retire_list
+        value_template: "{{ value_json.updated }}"
+        json_attributes: [content_ids]
+```
 ```yaml
 alias: Frame art - nightly refresh
 triggers:
@@ -111,19 +127,27 @@ conditions:
         entity_id: media_player.<bedroom_frame>
         state: unavailable
 actions:
+  - action: homeassistant.update_entity
+    target: { entity_id: sensor.frame_art_retire_list }
   - action: samsungtv_smart.art_upload_batch
     target: { entity_id: media_player.<bedroom_frame> }
-    data: { folder: /config/www/frame_upload, matte_id: none, throttle: 3, skip_unchanged: true }
-    response_variable: upload
-  # retire: read retire list (rest sensor on /local/frame_upload/.meta/retire.json or a
-  # command_line sensor), map to content_ids, then repeat/for_each -> samsungtv_smart.art_delete
+    data: { folder: /config/www/frame_upload/frame-art/full, matte_id: none, throttle: 3 }
+  # only when pad style is "matte":
+  # - action: samsungtv_smart.art_upload_batch
+  #   data: { folder: /config/www/frame_upload/frame-art/matted, matte_id: <type_color>, throttle: 3 }
+  - repeat:
+      for_each: "{{ state_attr('sensor.frame_art_retire_list', 'content_ids') or [] }}"
+      sequence:
+        - action: samsungtv_smart.art_delete
+          continue_on_error: true
+          target: { entity_id: media_player.<bedroom_frame> }
+          data: { content_id: "{{ repeat.item }}" }
   - action: samsungtv_smart.art_set_slideshow
     target: { entity_id: media_player.<bedroom_frame> }
     data: { duration: 1h, shuffle: true, category_id: 2 }
 mode: single
 ```
-Recommend upgrading samsungtv_smart from 8.13.0 to 8.13.1 first (it fixes Art Mode being lost on wake).
-That is Brian's call.
+Upgrading samsungtv_smart (8.13.0 -> 8.13.2) first is recommended. That is Brian's call.
 
 ## Things to evaluate (phase 1, read-only research)
 - **Frame Gallery**: reuse its catalogue (Apache-2.0) and possibly its source/crop metadata.
@@ -189,6 +213,16 @@ Source API probes (keyless, all worked):
 - Peak memory is about 1.2GB with 2 parallel renders (100MP masters). Production runs renders one at a time.
 - There is no cross-source duplication between the six museums (they hold different physical works). Dedupe matters
   once Wikimedia and the seed lists are added.
+
+## Phase 2 (done locally, 2026-10-25)
+- `publish` / `nightly` commands with staging, index.json, and retire.json built from the sidecar. These were tested end to end in
+  a local folder with a simulated sidecar (10 added, then 10 added and 5 retired with the right content_ids).
+- Pad style is configurable: `--pad-style blur|solid|matte`. With matte, padded works go to `matted/` for a second
+  batch call with a TV matte.
+- Notability: Wikidata sitelinks, matched by QID or by collection-qualified inventory number (P217 with a P195
+  qualifier). It adds up to +4 to the score. Rijksmuseum crawls notable works first. About 1,000 of 2,500 catalogued works match.
+  WDQS rejects generic library User-Agents, so it gets its own descriptive UA.
+- Drawings and prints: `--kinds painting,drawing,print` on crawl, dry-run and publish (default painting only).
 
 ## Open questions for Brian
 1. **Where should it run?** My recommendation is a sibling container on the HA Docker host (192.168.1.73). The alternative is Unraid. Which host

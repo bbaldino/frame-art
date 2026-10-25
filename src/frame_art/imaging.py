@@ -147,14 +147,31 @@ def _background(im: Image.Image) -> Image.Image:
     return ImageEnhance.Brightness(bg).enhance(0.55)
 
 
-def render(im: Image.Image, plan: Plan) -> Image.Image:
+PAD_STYLES = ("blur", "solid", "matte")
+
+
+def _solid_background(im: Image.Image) -> Image.Image:
+    """A flat, dark colour taken from the work itself."""
+    small = im.copy()
+    small.thumbnail((64, 64))
+    mean = np.asarray(small, dtype=np.float32).reshape(-1, 3).mean(axis=0)
+    return Image.new("RGB", PANEL, tuple(int(c * 0.3) for c in mean))
+
+
+def render(im: Image.Image, plan: Plan, pad_style: str = "blur") -> Image.Image:
+    """Render to the panel. With ``pad_style="matte"`` a padded work is only
+    scaled to fit, keeping its own shape, so the TV's matte can frame it."""
     if plan.mode == "crop":
         return im.crop(crop_box(im)).resize(PANEL, Image.LANCZOS)
 
     w, h = im.size
+    if pad_style == "matte":
+        fit = min(PANEL[0] / w, PANEL[1] / h)
+        return im.resize((round(w * fit), round(h * fit)), Image.LANCZOS)
+
     size = (round(w * plan.scale), round(h * plan.scale))
     art = im.resize(size, Image.LANCZOS)
-    canvas = _background(im)
+    canvas = _background(im) if pad_style == "blur" else _solid_background(im)
     pos = ((PANEL[0] - size[0]) // 2, (PANEL[1] - size[1]) // 2)
     # Soft drop shadow so the work reads as an object on the background.
     shadow = Image.new("L", PANEL, 0)
@@ -169,9 +186,7 @@ def render(im: Image.Image, plan: Plan) -> Image.Image:
 
 def save_jpeg(im: Image.Image, path: Path) -> None:
     # Baseline 8-bit sRGB: the Frame silently fails to render progressive JPEGs.
-    im.save(
-        path, "JPEG", quality=90, optimize=True, progressive=False, subsampling="4:2:0"
-    )
+    im.save(path, "JPEG", quality=90, optimize=True, progressive=False, subsampling="4:2:0")
 
 
 _DCT = None

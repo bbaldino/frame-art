@@ -22,9 +22,7 @@ def test_seasons():
 
 def test_slug_transliterates():
     assert pipeline.slug("Vilhelm Hammershøi") == "vilhelm-hammershoi"
-    assert (
-        pipeline.slug("Skovinteriør med kroget træ") == "skovinterior-med-kroget-trae"
-    )
+    assert pipeline.slug("Skovinteriør med kroget træ") == "skovinterior-med-kroget-trae"
 
 
 def test_filter_dedupes_by_identity_keeping_larger():
