@@ -166,6 +166,30 @@ Source API probes (keyless, all worked):
 3. Brian approves -> the container is deployed on the HA host and the automation is added (with approval).
 4. Keyed sources, seed lists, taste feedback, and optionally Plex and Docent-style tagging.
 
+## Decisions (2026-10-25, via hub)
+- It runs as a sibling container on the Proxmox HA host. Deployment details are coordinated with the proxmox agent (homelab-stacks/Komodo).
+- Taste: "good pieces" plus some seasonal art. Highlights come first, and works tagged with the current season get a boost.
+- Defaults: portraits get the blurred-background pad; the TV pool is about 150 with 7 new per night; written in Python; v1 uses keyless sources only.
+- Upgrading the integration (now 8.13.2) needs Brian's explicit OK.
+
+## Post-v1 ideas (from Brian)
+- **Google Photos** as a personal source. The Library API no longer lists a whole library, so this probably means
+  the Picker API, or a shared album exported/synced to a folder. Evaluate when we get to it.
+- **AI restyling** (e.g. Gemini "nano banana" image editing): turn personal photos into paintings in chosen styles.
+  It would be an optional processing stage, before crop/pad, with its own pool and cost limits. The API key would be read from a file.
+
+## Phase 1 findings
+- With 300 crawled per tier-1 source, 85–99% pass the filters. Most works are padded rather than cropped (about 5–10% are close
+  enough to 16:9 to crop).
+- The AIC CDN answers many IIIF widths with a long-cached 843px fallback and caps real renders at about 3000px. The
+  fetcher checks the size it actually received, steps through standard widths, and refuses anything needing more than 1.35x upscaling.
+- The Met: v1/search was retired on 2026-10-01, so we use v1.1 (paginated). Its CDN answers bursts with 403, so we retry.
+- Rijksmuseum has no highlight flag, so a capped crawl returns arbitrary items (manuscript pages, fans). It needs a quality
+  signal, e.g. a Wikidata sitelink count, or seeding from curated lists.
+- Peak memory is about 1.2GB with 2 parallel renders (100MP masters). Production runs renders one at a time.
+- There is no cross-source duplication between the six museums (they hold different physical works). Dedupe matters
+  once Wikimedia and the seed lists are added.
+
 ## Open questions for Brian
 1. **Where should it run?** My recommendation is a sibling container on the HA Docker host (192.168.1.73). The alternative is Unraid. Which host
    runs the HA container, and what is the host path of HA's `/config`?
