@@ -70,3 +70,11 @@ def test_render_rejects_round_work_on_card(monkeypatch):
     cand = pipeline.Candidate(w, pipeline.imaging.plan_for(3000, 3000), 0)
     with pytest.raises(pipeline.NotRectangular):
         pipeline.render(None, cand)
+
+
+def test_full_screen_only_drops_padded_works():
+    works = [work(source_id="1", width=4000, height=2300), work(source_id="2", title="P",
+             width=3000, height=4000)]  # fmt: skip
+    cands, rep = pipeline.filter_works(works, None, pipeline.Fit(full_screen_only=True))
+    assert [c.work.source_id for c in cands] == ["1"]
+    assert rep.rejected["not full screen at this crop level"] == 1

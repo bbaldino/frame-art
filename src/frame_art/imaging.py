@@ -13,8 +13,10 @@ Image.MAX_IMAGE_PIXELS = 400_000_000
 
 PANEL = (3840, 2160)
 PANEL_AR = PANEL[0] / PANEL[1]
-# Aspect ratios close enough to 16:9 to crop (at most ~13% of the image lost).
-CROP_MIN, CROP_MAX = 1.55, 2.05
+# How much of the picture a crop to 16:9 may cut off; past this the work is padded.
+# strict (13%) is aspect ~1.55-2.05, medium (21%) ~1.40-2.25, loose (27%) ~1.30-2.45;
+# native only crops what is already 16:9 give or take a scan edge.
+CROP_LEVELS = {"native": 0.02, "strict": 0.13, "medium": 0.21, "loose": 0.27}
 # Beyond these a padded work is a sliver on the screen (altarpiece wings, scrolls).
 AR_MIN, AR_MAX = 0.5, 3.5
 # A padded work sits inside this fraction of the panel, leaving a margin.
@@ -32,9 +34,14 @@ class Plan:
         return min(src_width, math.ceil(src_width * self.scale) + 8)
 
 
-def plan_for(width: int, height: int) -> Plan:
+def crop_loss(width: int, height: int) -> float:
+    """Fraction of the picture lost cropping it to the panel's shape."""
     ar = width / height
-    if CROP_MIN <= ar <= CROP_MAX:
+    return 1 - min(ar, PANEL_AR) / max(ar, PANEL_AR)
+
+
+def plan_for(width: int, height: int, max_crop: float = CROP_LEVELS["strict"]) -> Plan:
+    if crop_loss(width, height) <= max_crop:
         return Plan("crop", max(PANEL[0] / width, PANEL[1] / height))
     return Plan("pad", min(PANEL[0] * PAD_FILL / width, PANEL[1] * PAD_FILL / height))
 

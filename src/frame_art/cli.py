@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import itertools
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -11,10 +12,14 @@ from . import imaging, notability, pipeline, report
 from .catalogue import Catalogue
 from .classify import current_season
 from .net import Http
-from .publish import Publisher
+from .publish import Publisher, diversify
 from .sources import KINDS, all_sources
 
 log = logging.getLogger("frame_art")
+
+
+def _fit(args) -> pipeline.Fit:
+    return pipeline.Fit(imaging.CROP_LEVELS[args.crop], args.full_screen_only)
 
 
 def _season(args) -> str:
@@ -56,7 +61,9 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
     picks: list[pipeline.Candidate] = []
     works = [w for w in cat.works() if w.kind in args.kinds]
     for src in sorted({w.source for w in works}):
-        cands, rep = pipeline.filter_works([w for w in works if w.source == src], season)
+        cands, rep = pipeline.filter_works(
+            [w for w in works if w.source == src], season, _fit(args)
+        )
         per_source[src] = rep
         cands.sort(key=lambda c: c.score, reverse=True)
         # Show both treatments: the best crops and the best pads.
@@ -100,15 +107,63 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
         rendered,
         out / "contact-sheet.jpg",
         f"Frame art dry run: {len(rendered)} works, top picks per source "
-        f"(season: {season}, pad: {args.pad_style})",
+        f"(season: {season}, pad: {args.pad_style}, crop: {args.crop})",
     )
     (out / "report.md").write_text(report.markdown(per_source, rendered, dupes))
     log.info("wrote %s and %s", out / "contact-sheet.jpg", out / "report.md")
 
 
+def cmd_compare(args, cat: Catalogue, http: Http) -> None:
+    """Sheets of works each looser crop level would add: original, padded, cropped."""
+    works = [w for w in cat.works() if w.kind in args.kinds]
+    cands, _ = pipeline.filter_works(works, None, pipeline.Fit(imaging.CROP_LEVELS["loose"]))
+    order = diversify(cands, seed=0)
+
+    def band_rows(lo: float, hi: float) -> list[report.Comparison]:
+        rows = []
+        for c in order:
+            loss = imaging.crop_loss(c.work.width, c.work.height)
+            if len(rows) >= args.per_band or not lo < loss <= hi or c.plan.mode != "crop":
+                continue
+            try:
+                im = pipeline.load_work(http, c)
+            except Exception as ex:  # noqa: BLE001 - one bad image must not stop the run
+                log.warning("%s: %s", c.work.key, ex)
+                continue
+            crop = imaging.plan_for(*im.size, max_crop=1.0)
+            if crop.scale > pipeline.MAX_UPSCALE:
+                continue
+            pad = imaging.plan_for(*im.size, max_crop=0.0)
+            rows.append(
+                report.Comparison(
+                    c.work,
+                    f"{c.work.source} · aspect {im.width / im.height:.2f} · "
+                    f"crop cuts {100 * imaging.crop_loss(*im.size):.0f}%",
+                    [
+                        ("original", im),
+                        (f"padded ({args.pad_style})", imaging.render(im, pad, args.pad_style)),
+                        ("cropped to full screen", imaging.render(im, crop)),
+                    ],
+                )
+            )
+            log.info("compare: %s", c.work.key)
+        return rows
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    for (_, lo), (name, hi) in itertools.pairwise(imaging.CROP_LEVELS.items()):
+        dest = args.out / f"compare-{name}.jpg"
+        report.comparison_sheet(
+            band_rows(lo, hi),
+            dest,
+            f"Crop level {name}: works it adds to full screen (crops cutting "
+            f"{100 * lo:.0f}-{100 * hi:.0f}%)",
+        )
+        log.info("wrote %s", dest)
+
+
 def cmd_publish(args, cat: Catalogue, http: Http) -> None:
     seed = args.seed if args.seed is not None else datetime.date.today().toordinal()
-    result = Publisher(cat, http, args.dest, args.pad_style, args.kinds).run(
+    result = Publisher(cat, http, args.dest, args.pad_style, args.kinds, _fit(args)).run(
         args.count, args.pool, _season(args), seed
     )
     live = len(cat.published(active=True))
@@ -147,6 +202,11 @@ def main() -> None:
     def add_render_args(sp, with_kinds: bool = True):
         sp.add_argument("--pad-style", choices=imaging.PAD_STYLES, default="blur",
                         help="how non-16:9 works fill the screen")  # fmt: skip
+        sp.add_argument("--crop", choices=list(imaging.CROP_LEVELS), default="strict",
+                        help="how much a crop to 16:9 may cut off: native 2%%, strict 13%%, "
+                             "medium 21%%, loose 27%% (default strict)")  # fmt: skip
+        sp.add_argument("--full-screen-only", action="store_true",
+                        help="skip works that would need a background pad")  # fmt: skip
         sp.add_argument("--season", choices=["winter", "spring", "summer", "autumn"])
         if with_kinds:
             sp.add_argument("--kinds", type=kinds, default=("painting",),
@@ -166,6 +226,12 @@ def main() -> None:
     d.add_argument("--workers", type=int, default=2, help="parallel renders (memory-bound)")
     d.add_argument("--out", type=Path, default=Path("out"))
     add_render_args(d)
+
+    cmp = sub.add_parser("compare", help="side-by-side sheets of what looser crop levels add")
+    cmp.add_argument("--per-band", type=int, default=8)
+    cmp.add_argument("--out", type=Path, default=Path("out"))
+    cmp.add_argument("--pad-style", choices=imaging.PAD_STYLES, default="blur")
+    cmp.add_argument("--kinds", type=kinds, default=("painting",))
 
     pub = sub.add_parser("publish", help="add new works to the pool and retire the oldest")
     add_publish_args(pub)
@@ -188,6 +254,7 @@ def main() -> None:
     commands = {
         "crawl": cmd_crawl,
         "dry-run": cmd_dry_run,
+        "compare": cmd_compare,
         "publish": cmd_publish,
         "nightly": cmd_nightly,
     }

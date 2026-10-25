@@ -114,3 +114,41 @@ def markdown(
     if dupes:
         lines += ["", "## Perceptual duplicates dropped", ""] + [f"- {d}" for d in dupes]
     return "\n".join(lines) + "\n"
+
+
+@dataclass
+class Comparison:
+    work: Work
+    note: str
+    variants: list[tuple[str, Image.Image]]  # (label, image) side by side
+
+
+def comparison_sheet(rows: list[Comparison], dest: Path, title: str) -> None:
+    """One row per work, its variants side by side, for judging a setting by eye."""
+    cols = max(len(r.variants) for r in rows)
+    header, gap, label_h, caption_h = 56, 12, 24, 44
+    row_h = label_h + TILE[1] + caption_h
+    sheet = Image.new(
+        "RGB",
+        (cols * TILE[0] + (cols + 1) * gap, header + len(rows) * (row_h + gap) + gap),
+        (24, 24, 26),
+    )
+    draw = ImageDraw.Draw(sheet)
+    big, small, tiny = _font(26), _font(16), _font(14)
+    draw.text((gap, 14), title, font=big, fill=(235, 235, 235))
+    for r, row in enumerate(rows):
+        y = header + r * (row_h + gap)
+        for c, (label, im) in enumerate(row.variants):
+            x = gap + c * (TILE[0] + gap)
+            draw.text((x + 4, y + 2), label, font=small, fill=(120, 170, 220))
+            tile = Image.new("RGB", TILE, (40, 40, 44))
+            im = im.copy()
+            im.thumbnail(TILE, Image.LANCZOS)
+            tile.paste(im, ((TILE[0] - im.width) // 2, (TILE[1] - im.height) // 2))
+            sheet.paste(tile, (x, y + label_h))
+        w = row.work
+        who = ", ".join(x for x in (w.artist, w.date) if x) or "unknown"
+        line = _fit(draw, f"{w.title} · {who}", small, sheet.width - 2 * gap)
+        draw.text((gap + 4, y + label_h + TILE[1] + 4), line, font=small, fill=(235, 235, 235))
+        draw.text((gap + 4, y + label_h + TILE[1] + 24), row.note, font=tiny, fill=(175, 175, 175))
+    sheet.save(dest, "JPEG", quality=88)

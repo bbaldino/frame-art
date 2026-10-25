@@ -75,3 +75,14 @@ def test_artwork_mask_finds_round_work_on_card():
 
 def test_artwork_mask_ignores_ordinary_paintings():
     assert imaging.artwork_mask(Image.effect_noise((900, 1200), 60).convert("RGB")) is None
+
+
+def test_crop_levels_match_aspect_bands():
+    strict, medium, loose = (imaging.CROP_LEVELS[k] for k in ("strict", "medium", "loose"))
+    assert imaging.plan_for(1550, 1000, strict).mode == "crop"
+    assert imaging.plan_for(1450, 1000, strict).mode == "pad"
+    assert imaging.plan_for(1450, 1000, medium).mode == "crop"
+    assert imaging.plan_for(1320, 1000, medium).mode == "pad"
+    assert imaging.plan_for(1320, 1000, loose).mode == "crop"
+    assert imaging.plan_for(2400, 1000, loose).mode == "crop"
+    assert imaging.plan_for(1700, 1000, imaging.CROP_LEVELS["native"]).mode == "pad"

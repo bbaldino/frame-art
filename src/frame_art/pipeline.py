@@ -25,11 +25,24 @@ PHASH_DISTANCE = 8
 TONDO = re.compile(r"\btondo\b", re.IGNORECASE)
 
 
+@dataclass(frozen=True)
+class Fit:
+    """How works are fitted to the screen."""
+
+    max_crop: float = imaging.CROP_LEVELS["strict"]
+    # Skip anything that would need a pad rather than crop.
+    full_screen_only: bool = False
+
+
+DEFAULT_FIT = Fit()
+
+
 @dataclass
 class Candidate:
     work: Work
     plan: imaging.Plan
     score: float
+    fit: Fit = DEFAULT_FIT
 
 
 @dataclass
@@ -77,7 +90,9 @@ def score(w: Work, plan: imaging.Plan, season: str | None) -> float:
     return s
 
 
-def filter_works(works: list[Work], season: str | None) -> tuple[list[Candidate], FilterReport]:
+def filter_works(
+    works: list[Work], season: str | None, fit: Fit = DEFAULT_FIT
+) -> tuple[list[Candidate], FilterReport]:
     report = FilterReport(total=len(works))
     out: list[Candidate] = []
     seen: dict[str, Candidate] = {}
@@ -94,11 +109,14 @@ def filter_works(works: list[Work], season: str | None) -> tuple[list[Candidate]
         if not imaging.AR_MIN <= w.width / w.height <= imaging.AR_MAX:
             report.rejected["too tall or too wide"] += 1
             continue
-        plan = imaging.plan_for(w.width, w.height)
+        plan = imaging.plan_for(w.width, w.height, fit.max_crop)
+        if fit.full_screen_only and plan.mode == "pad":
+            report.rejected["not full screen at this crop level"] += 1
+            continue
         if plan.scale > MAX_UPSCALE:
             report.rejected[f"too small to {plan.mode} (>{MAX_UPSCALE}x upscale)"] += 1
             continue
-        cand = Candidate(w, plan, score(w, plan, season))
+        cand = Candidate(w, plan, score(w, plan, season), fit)
         ident = identity_key(w)
         prev = seen.get(ident)
         if prev is not None:
@@ -138,6 +156,10 @@ class NotRectangular(Rejected):
     pass
 
 
+class NotFullScreen(Exception):
+    """Trimming changed the shape so it would need a pad; skipped only under this setting."""
+
+
 def fetch(http: Http, w: Work, plan: imaging.Plan) -> bytes:
     """Download the image, checking the server really sent the size we asked for.
 
@@ -172,7 +194,8 @@ class Output:
     image: Image.Image  # final pixels, ready to save
 
 
-def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
+def load_work(http: Http, cand: Candidate) -> Image.Image:
+    """Download a work at the size its plan needs, reject round works, trim scan margins."""
     w = cand.work
     data = fetch(http, w, cand.plan)
     needed = cand.plan.needed_width(w.width)
@@ -182,13 +205,19 @@ def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
         # Round or irregular work on a white scan card (tondi, fans): it can't
         # fill the screen, and padding them leaves the white card showing.
         raise NotRectangular("round or irregular work on a scan card")
-    im = imaging.trim_borders(im)
+    return imaging.trim_borders(im)
+
+
+def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
+    im = load_work(http, cand)
     # The fetched image may be smaller than the catalogued master, and trimming
     # changes the shape, so plan again from what we actually have.
-    plan = imaging.plan_for(*im.size)
+    plan = imaging.plan_for(*im.size, cand.fit.max_crop)
+    if cand.fit.full_screen_only and plan.mode == "pad":
+        raise NotFullScreen(f"{im.size[0]}x{im.size[1]} after trimming")
     if plan.scale > MAX_UPSCALE:
         raise TooSmall(f"{im.size[0]}x{im.size[1]} needs {plan.scale:.2f}x upscaling")
-    return Output(w, plan, imaging.phash(im), imaging.render(im, plan, pad_style))
+    return Output(cand.work, plan, imaging.phash(im), imaging.render(im, plan, pad_style))
 
 
 def folder_for(plan: imaging.Plan, pad_style: str) -> str:
