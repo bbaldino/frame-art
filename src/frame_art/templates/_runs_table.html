@@ -1,0 +1,22 @@
+<table class="runs">
+  <thead><tr><th>Run</th><th>Started</th><th>Took</th><th>Result</th><th></th></tr></thead>
+  <tbody>
+  {% for r in runs %}
+  <tr class="{{ r.status }}">
+    <td>{{ r.kind }}</td>
+    <td>{{ when(r.started_at) }}</td>
+    <td>{% if r.finished_at %}{{ ((r.finished_at - r.started_at) / 60) | round(1) }} min{% else %}running{% endif %}</td>
+    <td>
+      <span class="badge {{ r.status }}">{{ r.status }}</span>
+      {% set s = r.summary %}
+      {% if s.added is defined %}{{ s.added | length }} added, {{ s.retired | length }} retired{% if s.failed %}, {{ s.failed | length }} failed{% endif %}{% endif %}
+      {% if s.catalogue is defined %} · catalogue {{ s.catalogue }}{% endif %}
+      {% if s.sheets is defined %}{{ s.sheets | length }} sheets{% endif %}
+    </td>
+    <td><a href="/runs?id={{ r.id }}">log</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">No runs yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>

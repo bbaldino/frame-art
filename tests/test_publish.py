@@ -69,9 +69,14 @@ def test_retire_oldest_reads_sidecar_and_lists_content_ids(setup):
     assert set(res.retired) <= set(first)
     for f in res.retired:
         assert not (dest / f).exists()
-    retire = json.loads((dest / "_meta" / "retire.json").read_text())
-    assert sorted(retire["content_ids"]) == sorted(sidecar[f.split("/")[1]]["content_id"]
-                                                   for f in res.retired)  # fmt: skip
+    todo = publish.pending(cat, dest)
+    assert sorted(todo["retire"]) == sorted(sidecar[f.split("/")[1]]["content_id"]
+                                            for f in res.retired)  # fmt: skip
+    # Three live works were never uploaded (not in the sidecar) ...
+    assert len(todo["to_upload"]) == 3
+    # ... and once HA confirms a delete, it drops off the list.
+    cat.record_deleted(todo["retire"][0])
+    assert len(publish.pending(cat, dest)["retire"]) == 1
     assert (
         dest / "full" / publish.SIDECAR
     ).read_text() == sidecar_before  # never written
@@ -111,3 +116,25 @@ def test_diversify_interleaves_sources():
     ]
     order = [c.work.source for c in publish.diversify(cands, seed=0)]
     assert len(set(order[:3])) == 3
+
+
+def test_ban_retires_live_work_and_keeps_it_out(setup):
+    cat, dest = setup
+    added = publish.Publisher(cat, None, dest, "blur").run(3, 50, None, seed=1).added
+    key = next(p.key for p in cat.published(active=True) if p.filename in added[0])
+    cat.set_override(key, "banned")
+    retired = publish.Publisher(cat, None, dest, "blur").sync()
+    assert retired == [added[0]]
+    res = publish.Publisher(cat, None, dest, "blur").run(20, 50, None, seed=2)
+    assert key not in {p.key for p in cat.published(active=True)}
+    assert len(res.added) == 11  # 14 works less the 3 published earlier (1 banned)
+
+
+def test_pinned_work_publishes_first_and_is_never_retired(setup):
+    cat, dest = setup
+    cat.set_override("s1:13", "pinned")
+    res = publish.Publisher(cat, None, dest, "blur").run(1, 50, None, seed=1)
+    assert "-13-" in res.added[0]
+    publish.Publisher(cat, None, dest, "blur").run(5, pool=2, season=None, seed=2)
+    live = {p.key for p in cat.published(active=True)}
+    assert "s1:13" in live and len(live) == 2

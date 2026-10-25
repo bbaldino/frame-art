@@ -1,0 +1,249 @@
+"""The long-running service: a job queue, the nightly schedule, and the HA link.
+
+Jobs run one at a time on a single worker thread, so renders stay serial and
+memory stays bounded; the web UI only queues them.
+"""
+
+from __future__ import annotations
+
+import datetime
+import io
+import logging
+import os
+import queue
+import threading
+import time
+import traceback
+from dataclasses import dataclass, field
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+from . import jobs
+from .catalogue import Catalogue
+from .halink import HaLink
+from .net import Http
+from .publish import Publisher, pending
+from .settings import Settings
+
+log = logging.getLogger(__name__)
+
+JOB_KINDS = {
+    "nightly": "Nightly run (recrawl if stale, then publish)",
+    "crawl": "Recrawl all sources",
+    "publish": "Publish new works now",
+    "compare": "Make crop comparison sheets",
+    "sync": "Apply bans",
+}
+# A missed nightly run (container down at run time) is caught up within this window.
+CATCH_UP = 6 * 3600
+
+
+@dataclass
+class Job:
+    kind: str
+    queued_at: float = field(default_factory=time.time)
+    started_at: float | None = None
+
+
+class _JobLog(logging.Handler):
+    """Collects log lines emitted on the worker thread for the current job."""
+
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
+        )
+        self.buf: io.StringIO | None = None
+        self.thread: int | None = None
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if self.buf is not None and record.thread == self.thread:
+            self.buf.write(self.format(record) + "\n")
+
+
+class Service:
+    def __init__(
+        self,
+        data: Path,
+        dest: Path,
+        ha_folder: str,
+        mqtt_host: str | None,
+        mqtt_port: int,
+        version: str,
+    ):
+        self.data = data
+        self.dest = dest
+        self.ha_folder = ha_folder
+        self.version = version
+        self.tz = ZoneInfo(os.environ.get("TZ", "UTC"))
+        self.settings_path = data / "settings.json"
+        self.compare_dir = data / "compare"
+        self._queue: queue.Queue[Job] = queue.Queue()
+        self._queued: list[Job] = []
+        self.current: Job | None = None
+        self._state_lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._joblog = _JobLog()
+        logging.getLogger("frame_art").addHandler(self._joblog)
+        self.link = (
+            HaLink(mqtt_host, mqtt_port, self._on_ack, version) if mqtt_host else None
+        )
+        if self.link is None:
+            log.warning("no MQTT host configured; HA will not be told about new work")
+
+    # -- plumbing --------------------------------------------------------------
+
+    def catalogue(self) -> Catalogue:
+        """A connection for the calling thread."""
+        return Catalogue(self.data / "frame-art.db")
+
+    def settings(self) -> Settings:
+        return Settings.load(self.settings_path)
+
+    def save_settings(self, s: Settings) -> None:
+        s.save(self.settings_path)
+        self._wake.set()  # the run time may have changed
+
+    def start(self) -> None:
+        threading.Thread(target=self._worker, name="jobs", daemon=True).start()
+        threading.Thread(target=self._scheduler, name="schedule", daemon=True).start()
+        self.publish_state()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self.link:
+            self.link.close()
+
+    # -- jobs ------------------------------------------------------------------
+
+    def submit(self, kind: str) -> bool:
+        """Queue a job unless the same kind is already waiting."""
+        if kind not in JOB_KINDS:
+            raise ValueError(kind)
+        if any(j.kind == kind for j in self._queued):
+            return False
+        job = Job(kind)
+        self._queued.append(job)
+        self._queue.put(job)
+        return True
+
+    def queued(self) -> list[Job]:
+        return list(self._queued)
+
+    def _worker(self) -> None:
+        while not self._stop.is_set():
+            job = self._queue.get()
+            self._queued.remove(job)
+            job.started_at = time.time()
+            self.current = job
+            try:
+                self._run(job)
+            finally:
+                self.current = None
+
+    def _run(self, job: Job) -> None:
+        cat = self.catalogue()
+        run_id = cat.start_run(job.kind)
+        buf = io.StringIO()
+        self._joblog.buf, self._joblog.thread = buf, threading.get_ident()
+        status, summary = "ok", {}
+        try:
+            summary = self._do(job.kind, cat) or {}
+            if summary.get("failed"):
+                status = "partial"
+        except Exception:
+            status = "error"
+            buf.write(traceback.format_exc())
+            log.exception("job %s failed", job.kind)
+        finally:
+            self._joblog.buf = None
+            cat.finish_run(run_id, status, summary, buf.getvalue())
+            self.publish_state(cat)
+
+    def _do(self, kind: str, cat: Catalogue) -> dict | None:
+        s = self.settings()
+        http = Http()
+        if kind == "nightly":
+            return jobs.nightly(cat, http, self.data, self.dest, s)
+        if kind == "crawl":
+            return jobs.crawl(
+                cat, http, self.data / "cache", tuple(s.kinds), s.crawl_limit, s.sources
+            )
+        if kind == "publish":
+            res = jobs.publish(cat, http, self.dest, s)
+            return {"added": res.added, "retired": res.retired, "failed": res.failed}
+        if kind == "compare":
+            sheets = jobs.compare(cat, http, self.compare_dir, s)
+            return {"sheets": [p.name for p in sheets]}
+        if kind == "sync":
+            pub = Publisher(
+                cat, http, self.dest, s.pad_style, tuple(s.kinds), s.prefs()
+            )
+            return {"retired": pub.sync()}
+        raise ValueError(kind)
+
+    # -- schedule --------------------------------------------------------------
+
+    def next_run(self, now: datetime.datetime | None = None) -> datetime.datetime:
+        now = now or datetime.datetime.now(self.tz)
+        hh, mm = map(int, self.settings().run_at.split(":"))
+        at = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        return at if at > now else at + datetime.timedelta(days=1)
+
+    def _due(self, cat: Catalogue) -> bool:
+        """Has today's run time passed without a nightly run since?"""
+        now = datetime.datetime.now(self.tz)
+        last_due = self.next_run(now) - datetime.timedelta(days=1)
+        if (now - last_due).total_seconds() > CATCH_UP:
+            return False
+        started = cat.get("last_nightly", 0)
+        return started < last_due.timestamp()
+
+    def _scheduler(self) -> None:
+        cat = self.catalogue()
+        while not self._stop.is_set():
+            if not self.settings().paused and self._due(cat):
+                cat.put("last_nightly", time.time())
+                log.info("schedule: starting the nightly run")
+                self.submit("nightly")
+            wait = (self.next_run() - datetime.datetime.now(self.tz)).total_seconds()
+            self._wake.wait(timeout=min(max(wait, 1), 300))
+            self._wake.clear()
+
+    # -- Home Assistant --------------------------------------------------------
+
+    def publish_state(self, cat: Catalogue | None = None) -> dict:
+        """Tell HA what to do next. ``seq`` goes up only when there is new work."""
+        cat = cat or self.catalogue()
+        with self._state_lock:  # worker, MQTT and web threads all call this
+            todo = pending(cat, self.dest)
+            work = sorted(todo["to_upload"]) + sorted(todo["retire"])
+            seq = cat.get("ha_seq", 0)
+            if set(work) - set(cat.get("ha_work", [])):
+                seq += 1
+                cat.put("ha_seq", seq)
+            cat.put("ha_work", work)
+            state = {
+                "seq": seq,
+                "pending": bool(work),
+                "to_upload": len(todo["to_upload"]),
+                "retire": todo["retire"],
+                "live": todo["live"],
+                "updated": datetime.datetime.now(self.tz).isoformat(timespec="seconds"),
+            }
+            if self.link:
+                self.link.publish(state)
+        return state
+
+    def _on_ack(self, payload: dict) -> None:
+        cat = self.catalogue()
+        if cid := payload.get("deleted"):
+            log.info("ha: deleted %s from the TV", cid)
+            cat.record_deleted(str(cid))
+        if "upload" in payload:
+            result = payload["upload"] if isinstance(payload["upload"], dict) else {}
+            log.info("ha: upload result %s", result)
+            cat.put("last_upload", {"at": time.time(), "result": result})
+        self.publish_state(cat)

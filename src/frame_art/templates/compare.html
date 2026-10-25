@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Compare crops · Frame Art{% endblock %}
+{% block body %}
+<h1>Compare crop levels</h1>
+<p class="muted">Each sheet shows works that a crop level would add to full screen: the original, the work on a background, and the work cropped to fill the screen. Sheets follow your current kinds, nudes and background settings.</p>
+<form method="post" action="/jobs/compare?next=/compare" class="buttons">
+  <button class="primary" {% if busy %}disabled{% endif %}>{% if busy %}Making sheets…{% else %}Make new sheets{% endif %}</button>
+  <span class="muted small">Downloads about 30 works; takes a few minutes.</span>
+</form>
+{% for name, level, mtime in sheets %}
+<section class="sheet">
+  <h2>{{ crop_labels.get(level, level) }} <span class="muted small">made {{ ago(mtime) }}</span></h2>
+  <a href="/compare/{{ name }}?v={{ mtime | int }}"><img loading="lazy" src="/compare/{{ name }}?v={{ mtime | int }}" alt="Comparison sheet for crop level {{ level }}"></a>
+</section>
+{% else %}
+<p class="muted">No sheets yet.</p>
+{% endfor %}
+{% endblock %}

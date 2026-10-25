@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Frame Art{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css?v={{ version }}">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">Frame Art</a>
+  <nav>
+    {% for key, label in [("overview", "Overview"), ("pool", "On the TV"), ("catalogue", "Catalogue"), ("compare", "Compare crops"), ("settings", "Settings"), ("runs", "Runs")] %}
+    <a href="{{ '/' if key == 'overview' else '/' ~ key }}" {% if page == key %}aria-current="page"{% endif %}>{{ label }}</a>
+    {% endfor %}
+  </nav>
+</header>
+<main>
+{% block body %}{% endblock %}
+</main>
+<footer>frame-art {{ version }} · public-domain art from museum open-access collections</footer>
+</body>
+</html>

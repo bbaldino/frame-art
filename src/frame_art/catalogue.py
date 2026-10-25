@@ -38,6 +38,31 @@ create table if not exists rejected (
     reason text not null,
     rejected_at real not null
 );
+-- Brian's choices from the web UI: 'banned' (never show, retire if live) or
+-- 'pinned' (publish soon, never retire).
+create table if not exists overrides (
+    key text primary key references works(key),
+    state text not null check (state in ('banned', 'pinned')),
+    set_at real not null
+);
+-- Content ids HA has confirmed deleting from the TV, and other small state.
+create table if not exists deleted (
+    content_id text primary key,
+    deleted_at real not null
+);
+create table if not exists kv (
+    key text primary key,
+    value text not null
+);
+create table if not exists runs (
+    id integer primary key,
+    kind text not null,
+    started_at real not null,
+    finished_at real,
+    status text not null,
+    summary text,
+    log text
+);
 """
 
 
@@ -55,7 +80,10 @@ class Published:
 class Catalogue:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(path)
+        # One connection per thread (web requests, the scheduler); WAL lets them
+        # read while a run writes.
+        self.db = sqlite3.connect(path, timeout=30)
+        self.db.execute("pragma journal_mode=wal")
         self.db.executescript(SCHEMA)
 
     def upsert(self, works: Iterable[Work]) -> int:
@@ -99,6 +127,70 @@ class Catalogue:
     def rejected_keys(self) -> set[str]:
         return {k for (k,) in self.db.execute("select key from rejected")}
 
+    def set_override(self, key: str, state: str | None) -> None:
+        with self.db:
+            if state is None:
+                self.db.execute("delete from overrides where key = ?", (key,))
+            else:
+                self.db.execute(
+                    "insert or replace into overrides values (?, ?, ?)",
+                    (key, state, time.time()),
+                )
+
+    def overrides(self) -> dict[str, str]:
+        return dict(self.db.execute("select key, state from overrides"))
+
+    def rejected(self) -> dict[str, str]:
+        return dict(self.db.execute("select key, reason from rejected"))
+
+    def get(self, key: str, default=None):
+        row = self.db.execute("select value from kv where key = ?", (key,)).fetchone()
+        return json.loads(row[0]) if row else default
+
+    def put(self, key: str, value) -> None:
+        with self.db:
+            self.db.execute(
+                "insert or replace into kv values (?, ?)", (key, json.dumps(value))
+            )
+
+    def record_deleted(self, content_id: str) -> None:
+        with self.db:
+            self.db.execute(
+                "insert or replace into deleted values (?, ?)",
+                (content_id, time.time()),
+            )
+
+    def deleted_ids(self) -> set[str]:
+        return {c for (c,) in self.db.execute("select content_id from deleted")}
+
+    def start_run(self, kind: str) -> int:
+        with self.db:
+            cur = self.db.execute(
+                "insert into runs (kind, started_at, status) values (?, ?, 'running')",
+                (kind, time.time()),
+            )
+        return cur.lastrowid
+
+    def finish_run(self, run_id: int, status: str, summary: dict, log: str) -> None:
+        with self.db:
+            self.db.execute(
+                "update runs set finished_at = ?, status = ?, summary = ?, log = ? "
+                "where id = ?",
+                (time.time(), status, json.dumps(summary), log, run_id),
+            )
+
+    def runs(self, limit: int = 30) -> list[dict]:
+        cols = ("id", "kind", "started_at", "finished_at", "status", "summary", "log")
+        rows = self.db.execute(
+            f"select {', '.join(cols)} from runs order by id desc limit ?", (limit,)
+        )
+        out = []
+        for row in rows:
+            r = dict(zip(cols, row, strict=True))
+            r["summary"] = json.loads(r["summary"]) if r["summary"] else {}
+            out.append(r)
+        return out
+
     def record_publish(self, filename: str, folder: str, key: str, phash: int) -> None:
         with self.db:
             self.db.execute(
@@ -111,6 +203,13 @@ class Catalogue:
             self.db.execute(
                 "update published set retired_at = ?, content_id = ? where filename = ?",
                 (time.time(), content_id, filename),
+            )
+
+    def set_content_id(self, filename: str, content_id: str) -> None:
+        with self.db:
+            self.db.execute(
+                "update published set content_id = ? where filename = ?",
+                (content_id, filename),
             )
 
     def published(self, active: bool | None = None) -> list[Published]:

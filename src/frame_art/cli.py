@@ -2,65 +2,51 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import itertools
 import logging
-import time
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import imaging, notability, pipeline, report
+from . import imaging, jobs, pipeline, report
 from .catalogue import Catalogue
 from .classify import current_season
 from .net import Http
-from .publish import Publisher, diversify
-from .sources import KINDS, all_sources
+from .settings import Settings
+from .sources import KINDS
 
 log = logging.getLogger("frame_art")
 
 
-def _prefs(args) -> pipeline.Prefs:
-    return pipeline.Prefs(
-        imaging.CROP_LEVELS[args.crop], args.full_screen_only, args.allow_nudes
-    )
-
-
-def _season(args) -> str:
-    return args.season or current_season(datetime.date.today().month)
+def _settings(args) -> Settings:
+    """Settings from command-line flags, for one-off runs outside the service."""
+    s = Settings()
+    for name in (
+        "crop",
+        "full_screen_only",
+        "allow_nudes",
+        "pad_style",
+        "count",
+        "pool",
+    ):
+        if hasattr(args, name):
+            setattr(s, name, getattr(args, name))
+    if getattr(args, "kinds", None):
+        s.kinds = list(args.kinds)
+    if getattr(args, "source", None):
+        s.sources = args.source
+    if hasattr(args, "limit"):
+        s.crawl_limit = args.limit
+    if hasattr(args, "recrawl_days"):
+        s.recrawl_days = args.recrawl_days
+    return s
 
 
 def cmd_crawl(args, cat: Catalogue, http: Http) -> None:
-    cache = args.data / "cache"
-    sources = [
-        s
-        for s in all_sources(cache, args.kinds)
-        if not args.source or s.name in args.source
-    ]
-
-    def crawl(src):
-        works = []
-        try:
-            works.extend(src.iter_works(http, args.limit))
-        except Exception:
-            # Keep whatever arrived before the failure.
-            log.exception(
-                "%s/%s: crawl stopped after %d works", src.name, src.kind, len(works)
-            )
-        return src, works
-
-    # Sources crawl in parallel; the SQLite connection stays on this thread.
-    with ThreadPoolExecutor(len(sources)) as pool:
-        for src, works in pool.map(crawl, sources):
-            log.info("%s/%s: %d candidates", src.name, src.kind, cat.upsert(works))
-
-    works = cat.works()
-    notability.annotate(http, works, cache)
-    cat.upsert(works)
-    log.info("notability: %d of %d works have Wikipedia articles",
-             sum(1 for w in works if w.sitelinks), len(works))  # fmt: skip
+    jobs.crawl(cat, http, args.data / "cache", args.kinds, args.limit, args.source)
 
 
 def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
-    season = _season(args)
+    season = args.season or current_season(datetime.date.today().month)
     out = args.out
 
     per_source: dict[str, pipeline.FilterReport] = {}
@@ -68,7 +54,7 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
     works = [w for w in cat.works() if w.kind in args.kinds]
     for src in sorted({w.source for w in works}):
         cands, rep = pipeline.filter_works(
-            [w for w in works if w.source == src], season, _prefs(args)
+            [w for w in works if w.source == src], season, _settings(args).prefs()
         )
         per_source[src] = rep
         cands.sort(key=lambda c: c.score, reverse=True)
@@ -128,88 +114,36 @@ def cmd_dry_run(args, cat: Catalogue, http: Http) -> None:
 
 
 def cmd_compare(args, cat: Catalogue, http: Http) -> None:
-    """Sheets of works each looser crop level would add: original, padded, cropped."""
-    works = [w for w in cat.works() if w.kind in args.kinds]
-    cands, _ = pipeline.filter_works(
-        works, None, pipeline.Prefs(imaging.CROP_LEVELS["loose"])
-    )
-    order = diversify(cands, seed=0)
-
-    def band_rows(lo: float, hi: float) -> list[report.Comparison]:
-        rows = []
-        for c in order:
-            loss = imaging.crop_loss(c.work.width, c.work.height)
-            if (
-                len(rows) >= args.per_band
-                or not lo < loss <= hi
-                or c.plan.mode != "crop"
-            ):
-                continue
-            try:
-                im = pipeline.load_work(http, c)
-            except Exception as ex:  # noqa: BLE001 - one bad image must not stop the run
-                log.warning("%s: %s", c.work.key, ex)
-                continue
-            crop = imaging.plan_for(*im.size, max_crop=1.0)
-            if crop.scale > pipeline.MAX_UPSCALE:
-                continue
-            pad = imaging.plan_for(*im.size, max_crop=0.0)
-            rows.append(
-                report.Comparison(
-                    c.work,
-                    f"{c.work.source} · aspect {im.width / im.height:.2f} · "
-                    f"crop cuts {100 * imaging.crop_loss(*im.size):.0f}%",
-                    [
-                        ("original", im),
-                        (
-                            f"padded ({args.pad_style})",
-                            imaging.render(im, pad, args.pad_style),
-                        ),
-                        ("cropped to full screen", imaging.render(im, crop)),
-                    ],
-                )
-            )
-            log.info("compare: %s", c.work.key)
-        return rows
-
-    args.out.mkdir(parents=True, exist_ok=True)
-    for (_, lo), (name, hi) in itertools.pairwise(imaging.CROP_LEVELS.items()):
-        dest = args.out / f"compare-{name}.jpg"
-        report.comparison_sheet(
-            band_rows(lo, hi),
-            dest,
-            f"Crop level {name}: works it adds to full screen (crops cutting "
-            f"{100 * lo:.0f}-{100 * hi:.0f}%)",
-        )
-        log.info("wrote %s", dest)
+    jobs.compare(cat, http, args.out, _settings(args), args.per_band)
 
 
 def cmd_publish(args, cat: Catalogue, http: Http) -> None:
-    seed = args.seed if args.seed is not None else datetime.date.today().toordinal()
-    result = Publisher(
-        cat, http, args.dest, args.pad_style, args.kinds, _prefs(args)
-    ).run(args.count, args.pool, _season(args), seed)
-    live = len(cat.published(active=True))
-    log.info(
-        "publish: %d added, %d retired, %d failed; %d live in %s",
-        len(result.added), len(result.retired), len(result.failed), live, args.dest,
-    )  # fmt: skip
+    jobs.publish(cat, http, args.dest, _settings(args), args.season, args.seed)
 
 
 def cmd_nightly(args, cat: Catalogue, http: Http) -> None:
-    newest = max(
-        (t for (t,) in cat.db.execute("select crawled_at from works")), default=0
+    jobs.nightly(cat, http, args.data, args.dest, _settings(args))
+
+
+def cmd_serve(args, cat: Catalogue, http: Http) -> None:
+    from . import web
+
+    web.serve(
+        args.data,
+        args.dest,
+        args.host,
+        args.port,
+        args.tv_image_url,
+        args.ha_folder,
+        args.mqtt_host,
+        args.mqtt_port,
     )
-    if time.time() - newest > args.recrawl_days * 86400:
-        cmd_crawl(args, cat, http)
-    cmd_publish(args, cat, http)
 
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="frame-art")
-    p.add_argument(
-        "--data", type=Path, default=Path("data"), help="state and cache directory"
-    )
+    p.add_argument("--data", type=Path, default=Path(os.environ.get("FRAME_ART_DATA", "data")),
+                   help="state and cache directory (env FRAME_ART_DATA)")  # fmt: skip
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -279,6 +213,7 @@ def main() -> None:
     cmp.add_argument("--out", type=Path, default=Path("out"))
     cmp.add_argument("--pad-style", choices=imaging.PAD_STYLES, default="blur")
     cmp.add_argument("--kinds", type=kinds, default=("painting",))
+    cmp.add_argument("--allow-nudes", action="store_true")
 
     pub = sub.add_parser(
         "publish", help="add new works to the pool and retire the oldest"
@@ -292,6 +227,29 @@ def main() -> None:
     add_render_args(n, with_kinds=False)
     n.add_argument("--recrawl-days", type=float, default=7)
 
+    sv = sub.add_parser(
+        "serve",
+        help="web UI plus the nightly job on its own schedule (settings in --data)",
+    )
+    sv.add_argument("--dest", type=Path, default=os.environ.get("FRAME_ART_DEST"),
+                    required="FRAME_ART_DEST" not in os.environ,
+                    help="folder HA uploads from (env FRAME_ART_DEST)")  # fmt: skip
+    sv.add_argument("--host", default="0.0.0.0")
+    sv.add_argument(
+        "--port", type=int, default=int(os.environ.get("FRAME_ART_PORT", 8740))
+    )
+    env = os.environ.get
+    sv.add_argument("--ha-folder", default=env("FRAME_ART_HA_FOLDER", "/config/www/frame_upload/frame-art"),
+                    help="where HA sees --dest (env FRAME_ART_HA_FOLDER)")  # fmt: skip
+    sv.add_argument("--mqtt-host", default=env("FRAME_ART_MQTT_HOST"),
+                    help="broker HA listens on (env FRAME_ART_MQTT_HOST)")  # fmt: skip
+    sv.add_argument(
+        "--mqtt-port", type=int, default=int(env("FRAME_ART_MQTT_PORT", 1883))
+    )
+    sv.add_argument("--tv-image-url", default=env("FRAME_ART_TV_IMAGE_URL"),
+                    help="HA's public current-art thumbnail, shown in the UI "
+                         "(env FRAME_ART_TV_IMAGE_URL)")  # fmt: skip
+
     args = p.parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
@@ -304,6 +262,7 @@ def main() -> None:
         "crawl": cmd_crawl,
         "dry-run": cmd_dry_run,
         "compare": cmd_compare,
+        "serve": cmd_serve,
         "publish": cmd_publish,
         "nightly": cmd_nightly,
     }

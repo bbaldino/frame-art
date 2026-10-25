@@ -6,16 +6,16 @@ Layout under the destination folder:
     matted/    native-shape works (pad style "matte"); HA uploads with a matte
     .staging/  renders in progress, renamed into place when complete
     _meta/index.json   filename -> title/artist/date/source for what's live
-    _meta/retire.json  TV content_ids HA should delete with art_delete
 
-(``_meta``, not ``.meta``: HA serves www/ at /local/, and a rest sensor reads
-retire.json from there; hidden paths may not be served.)
+What HA has to do next (uploads, and TV content ids to delete) goes to HA over
+MQTT rather than into this folder, which HA serves publicly at /local/.
 
 HA's art_upload_batch only reads images directly inside the folder it is given,
 and records filename -> content_id in a ``.samsungtv_upload.json`` sidecar there.
 We read that sidecar (never write it) to learn which TV id to delete when a work
-is retired. Published files are never rewritten in place: the integration skips
-by filename + mtime, so a rewrite would upload a duplicate.
+is retired, and report it to HA (see ``pending``). Published files are never
+rewritten in place: the integration skips by filename + mtime, so a rewrite
+would upload a duplicate.
 """
 
 from __future__ import annotations
@@ -108,6 +108,12 @@ class Publisher:
         self._write_meta()
         return PublishResult(added, retired, failed)
 
+    def sync(self) -> list[str]:
+        """Apply bans to the live pool now, without adding anything."""
+        retired = self._retire(pool=None)
+        self._write_meta()
+        return retired
+
     def _add(
         self, count: int, season: str | None, seed: int
     ) -> tuple[list[str], list[str]]:
@@ -119,10 +125,17 @@ class Publisher:
             if p.retired_at is None or now - p.retired_at < COOLDOWN
         }
         blocked |= self.cat.rejected_keys()
+        overrides = self.cat.overrides()
+        blocked |= {k for k, s in overrides.items() if s == "banned"}
+        # A pin overrides the cooldown, but not a work already live.
+        live_keys = {p.key for p in history if p.retired_at is None}
+        blocked -= {k for k, s in overrides.items() if s == "pinned"} - live_keys
         live_hashes = [p.phash for p in history if p.retired_at is None]
         works = [w for w in self.cat.works() if w.kind in self.kinds]
         cands, _ = pipeline.filter_works(works, season, self.prefs)
         cands = diversify([c for c in cands if c.work.key not in blocked], seed)
+        # Pinned works go first, keeping their diversified order.
+        cands.sort(key=lambda c: overrides.get(c.work.key) != "pinned")
 
         added: list[str] = []
         failed: list[str] = []
@@ -160,14 +173,19 @@ class Publisher:
             log.info("published %s/%s", folder, path.name)
         return added, failed
 
-    def _retire(self, pool: int) -> list[str]:
+    def _retire(self, pool: int | None) -> list[str]:
+        """Retire banned works, then the oldest unpinned ones beyond ``pool``."""
+        overrides = self.cat.overrides()
         live = self.cat.published(active=True)
-        excess = len(live) - pool
-        if excess <= 0:
+        banned = [p for p in live if overrides.get(p.key) == "banned"]
+        rest = [p for p in live if p not in banned and overrides.get(p.key) != "pinned"]
+        excess = 0 if pool is None else len(live) - len(banned) - pool
+        doomed = banned + rest[: max(0, excess)]  # oldest first
+        if not doomed:
             return []
         sidecars = {f: read_sidecar(self.dest / f) for f in FOLDERS}
         retired = []
-        for p in live[:excess]:  # oldest first
+        for p in doomed:
             content_id = sidecars.get(p.folder, {}).get(p.filename)
             (self.dest / p.folder / p.filename).unlink(missing_ok=True)
             self.cat.record_retire(p.filename, content_id)
@@ -198,18 +216,26 @@ class Publisher:
             }
         _write_json(self.dest / "_meta" / "index.json", index)
 
-        cutoff = time.time() - RETIRE_WINDOW
-        recent = [
-            p
-            for p in self.cat.published(active=False)
-            if p.content_id and p.retired_at and p.retired_at >= cutoff
-        ]
-        # A dict at the top level so a HA rest sensor can expose it as attributes.
-        _write_json(
-            self.dest / "_meta" / "retire.json",
-            {
-                "updated": int(time.time()),
-                "content_ids": [p.content_id for p in recent],
-                "files": [f"{p.folder}/{p.filename}" for p in recent],
-            },
-        )
+
+def pending(cat: Catalogue, dest: Path) -> dict:
+    """What HA still has to do: live files not yet uploaded, TV ids to delete."""
+    sidecars = {f: read_sidecar(dest / f) for f in FOLDERS}
+    live = cat.published(active=True)
+    to_upload = [
+        f"{p.folder}/{p.filename}"
+        for p in live
+        if p.filename not in sidecars.get(p.folder, {})
+    ]
+    cutoff = time.time() - RETIRE_WINDOW
+    deleted = cat.deleted_ids()
+    retire = []
+    for p in cat.published(active=False):
+        if not p.retired_at or p.retired_at < cutoff:
+            continue
+        content_id = p.content_id or sidecars.get(p.folder, {}).get(p.filename)
+        if content_id and not p.content_id:
+            # Uploaded while we were retiring it; we only learn the id now.
+            cat.set_content_id(p.filename, content_id)
+        if content_id and content_id not in deleted:
+            retire.append(content_id)
+    return {"to_upload": to_upload, "retire": retire, "live": len(live)}

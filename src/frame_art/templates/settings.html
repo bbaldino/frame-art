@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Settings · Frame Art{% endblock %}
+{% block body %}
+<h1>Settings</h1>
+{% if saved %}<p class="notice">Saved. Changes apply from the next run.</p>{% endif %}
+{% if errors %}<div class="error"><strong>Not saved:</strong><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
+<form method="post" action="/settings" class="settings">
+  <fieldset>
+    <legend>Filling the screen</legend>
+    <p class="muted">A work that isn't 16:9 is either cropped to fill the screen or shown whole on a background. The crop level sets how much a crop may cut off; past that the work gets a background. <a href="/compare">Compare the levels</a>.</p>
+    {% for k, label in crop_labels.items() %}
+    <label class="radio"><input type="radio" name="crop" value="{{ k }}" {% if s.crop == k %}checked{% endif %}> {{ label }}</label>
+    {% endfor %}
+    <label class="check"><input type="checkbox" name="full_screen_only" {% if s.full_screen_only %}checked{% endif %}> Full screen only: skip works that would need a background</label>
+    <label>Background for works that don't fill the screen
+      <select name="pad_style">{% for k, label in pad_styles.items() %}<option value="{{ k }}" {% if s.pad_style == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>What to show</legend>
+    <div class="row">
+      <div><div class="label">Kinds</div>
+        {% for k in kinds %}<label class="check"><input type="checkbox" name="kinds" value="{{ k }}" {% if k in s.kinds %}checked{% endif %}> {{ k }}s</label>{% endfor %}
+      </div>
+      <div><div class="label">Museums</div>
+        {% for src in sources %}<label class="check"><input type="checkbox" name="sources" value="{{ src }}" {% if src in s.sources %}checked{% endif %}> {{ source_names[src] }}</label>{% endfor %}
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" name="allow_nudes" {% if s.allow_nudes %}checked{% endif %}> Include nudes <span class="muted">(left out by default)</span></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>The pool on the TV</legend>
+    <div class="row">
+      <label>New works per night <input type="number" name="count" min="0" max="25" value="{{ s.count }}"></label>
+      <label>Works kept on the TV <input type="number" name="pool" min="1" max="1000" value="{{ s.pool }}"></label>
+    </div>
+    <p class="muted small">Each night adds the new works and retires the oldest beyond the pool size. A retired work can come back after a year.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>Schedule</legend>
+    <div class="row">
+      <label>Nightly run at <input type="time" name="run_at" value="{{ s.run_at }}"></label>
+      <label>Recrawl museums every <input type="number" name="recrawl_days" min="1" max="365" step="1" value="{{ s.recrawl_days | int }}"> days</label>
+      <label>Works fetched per museum and kind <input type="number" name="crawl_limit" min="10" max="10000" value="{{ s.crawl_limit }}"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="paused" {% if s.paused %}checked{% endif %}> Pause nightly runs</label>
+    <p class="muted small">Home Assistant uploads new works only while the TV is on or in Art Mode, so a run at night never wakes the screen.</p>
+  </fieldset>
+
+  <button class="primary">Save settings</button>
+</form>
+{% endblock %}

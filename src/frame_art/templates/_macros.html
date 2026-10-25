@@ -1,0 +1,19 @@
+{% macro override_buttons(key, state, next) %}
+<div class="actions">
+  {% if state == "pinned" %}
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear" title="Remove the pin">Unpin</button></form>
+  {% elif state != "banned" %}
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="pinned" title="Publish soon and never retire">Pin</button></form>
+  {% endif %}
+  {% if state == "banned" %}
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear">Unban</button></form>
+  {% else %}
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button class="danger" name="state" value="banned" title="Never show this; take it off the TV">Ban</button></form>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro caption(w) %}
+<div class="title" title="{{ w.title }}">{% if w.page_url %}<a href="{{ w.page_url }}" target="_blank" rel="noopener">{{ w.title }}</a>{% else %}{{ w.title }}{% endif %}</div>
+<div class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %}</div>
+{% endmacro %}

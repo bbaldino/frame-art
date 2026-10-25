@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Runs · Frame Art{% endblock %}
+{% block body %}
+<h1>Runs</h1>
+{% if selected %}
+<section class="log">
+  <h2>{{ selected.kind }} · {{ when(selected.started_at) }} <span class="badge {{ selected.status }}">{{ selected.status }}</span></h2>
+  {% if selected.summary %}<pre class="summary">{{ selected.summary | tojson(indent=2) }}</pre>{% endif %}
+  <pre>{{ selected.log or "(no log yet)" }}</pre>
+</section>
+{% endif %}
+{% include "_runs_table.html" %}
+{% endblock %}

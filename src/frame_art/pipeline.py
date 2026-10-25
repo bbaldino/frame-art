@@ -94,6 +94,26 @@ def score(w: Work, plan: imaging.Plan, season: str | None) -> float:
     return s
 
 
+def exclusion(w: Work, prefs: Prefs = DEFAULT_PREFS) -> str | imaging.Plan:
+    """Why a work is left out, or its plan when it is in."""
+    if not w.width or not w.height:
+        return "no pixel size"
+    if not (w.iiif or w.image_url):
+        return "no image url"
+    if not prefs.allow_nudes and ("nude" in w.tags or classify.nude_title(w.title)):
+        return "nude"
+    if TONDO.search(w.title or ""):
+        return "round (tondo)"
+    if not imaging.AR_MIN <= w.width / w.height <= imaging.AR_MAX:
+        return "too tall or too wide"
+    plan = imaging.plan_for(w.width, w.height, prefs.max_crop)
+    if prefs.full_screen_only and plan.mode == "pad":
+        return "not full screen at this crop level"
+    if plan.scale > MAX_UPSCALE:
+        return f"too small to {plan.mode} (>{MAX_UPSCALE}x upscale)"
+    return plan
+
+
 def filter_works(
     works: list[Work], season: str | None, prefs: Prefs = DEFAULT_PREFS
 ) -> tuple[list[Candidate], FilterReport]:
@@ -101,27 +121,9 @@ def filter_works(
     out: list[Candidate] = []
     seen: dict[str, Candidate] = {}
     for w in works:
-        if not w.width or not w.height:
-            report.rejected["no pixel size"] += 1
-            continue
-        if not (w.iiif or w.image_url):
-            report.rejected["no image url"] += 1
-            continue
-        if not prefs.allow_nudes and ("nude" in w.tags or classify.nude_title(w.title)):
-            report.rejected["nude"] += 1
-            continue
-        if TONDO.search(w.title or ""):
-            report.rejected["round (tondo)"] += 1
-            continue
-        if not imaging.AR_MIN <= w.width / w.height <= imaging.AR_MAX:
-            report.rejected["too tall or too wide"] += 1
-            continue
-        plan = imaging.plan_for(w.width, w.height, prefs.max_crop)
-        if prefs.full_screen_only and plan.mode == "pad":
-            report.rejected["not full screen at this crop level"] += 1
-            continue
-        if plan.scale > MAX_UPSCALE:
-            report.rejected[f"too small to {plan.mode} (>{MAX_UPSCALE}x upscale)"] += 1
+        plan = exclusion(w, prefs)
+        if isinstance(plan, str):
+            report.rejected[plan] += 1
             continue
         cand = Candidate(w, plan, score(w, plan, season), prefs)
         ident = identity_key(w)
@@ -148,6 +150,19 @@ WIDTH_LADDER = (2000, 2500, 3000, 4000, 5000, 6000)
 def image_request(w: Work, width: int | None = None) -> str:
     if w.iiif:
         return f"{w.iiif}/full/{width},/0/default.jpg"
+    return w.image_url
+
+
+def thumb_url(w: Work) -> str | None:
+    """A small image the museum serves, for browsing the catalogue."""
+    if w.iiif:
+        return f"{w.iiif}/full/!400,400/0/default.jpg"
+    if not w.image_url:
+        return None
+    if w.source == "met":
+        return w.image_url.replace("/original/", "/web-large/")
+    if w.source == "cleveland":
+        return re.sub(r"_(print|full)\.(jpg|tif)$", "_web.jpg", w.image_url)
     return w.image_url
 
 

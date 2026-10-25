@@ -6,3 +6,4 @@ __pycache__/
 data-deep/
 preview/
 .ruff_cache/
+.playwright-mcp/

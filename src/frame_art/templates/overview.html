@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="hero">
+  <div class="tv">
+    {% if tv_image_url %}
+    <img src="{{ tv_image_url }}" alt="What the TV is showing now" onerror="this.replaceWith(Object.assign(document.createElement('div'), {className: 'tv-missing', textContent: 'The TV thumbnail is not available right now.'}))">
+    <p class="muted">On the TV now (from Home Assistant)</p>
+    {% else %}
+    <div class="tv-missing">Set FRAME_ART_TV_IMAGE_URL to show what the TV is displaying.</div>
+    {% endif %}
+  </div>
+  <div class="status">
+    <h1>Overview</h1>
+    <dl>
+      <dt>In the pool</dt><dd>{{ state.live }} works <span class="muted">(target {{ settings.pool }}, {{ settings.count }} new per night)</span></dd>
+      <dt>Catalogue</dt><dd>{{ catalogue_size }} works</dd>
+      <dt>Next run</dt><dd>{% if settings.paused %}<span class="warn">Paused</span>{% else %}{{ next_run.strftime("%a %-I:%M %p") }}{% endif %}</dd>
+      <dt>Now</dt><dd>
+        {% if current %}<span class="busy">{{ job_kinds[current.kind] }}</span>, started {{ ago(current.started_at) }}{% else %}Idle{% endif %}
+        {% if queued %}<div class="muted">Queued: {% for j in queued %}{{ job_kinds[j.kind] }}{% if not loop.last %}, {% endif %}{% endfor %}</div>{% endif %}
+      </dd>
+      <dt>Home Assistant</dt><dd>
+        {% if mqtt is none %}<span class="warn">No MQTT broker configured</span>
+        {% elif mqtt %}Connected
+        {% else %}<span class="warn">MQTT disconnected</span>{% endif %}
+        {% if state.pending %}<div>Waiting for HA: {{ state.to_upload }} to upload, {{ state.retire | length }} to delete</div>
+        {% else %}<div class="muted">Nothing waiting for HA</div>{% endif %}
+        {% if last_upload %}<div class="muted">Last upload {{ ago(last_upload.at) }}:
+          {% if last_upload.result.error %}<span class="warn">{{ last_upload.result.error }}</span>
+          {% else %}{{ last_upload.result.uploaded | length if last_upload.result.uploaded is defined else 0 }} uploaded, {{ last_upload.result.failed | length if last_upload.result.failed is defined else 0 }} failed{% endif %}</div>{% endif %}
+      </dd>
+    </dl>
+    <div class="buttons">
+      <form method="post" action="/jobs/nightly"><button class="primary">Run now</button></form>
+      <form method="post" action="/jobs/crawl"><button>Recrawl sources</button></form>
+    </div>
+    <p class="muted small">"Run now" does what the nightly run does: recrawl if the catalogue is over {{ settings.recrawl_days | int }} days old, add {{ settings.count }} works, retire the oldest past {{ settings.pool }}. Home Assistant then uploads them the next time the TV is on.</p>
+  </div>
+</section>
+
+<h2>Recent runs</h2>
+{% include "_runs_table.html" %}
+{% endblock %}

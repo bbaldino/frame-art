@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "_macros.html" import override_buttons, caption %}
+{% block title %}On the TV · Frame Art{% endblock %}
+{% block body %}
+<h1>On the TV <span class="muted">{{ items | length }} works</span></h1>
+<p class="muted">Newest first. Ban takes a work off the TV the next time Home Assistant syncs. A pinned work is never retired.</p>
+<div class="grid">
+{% for it in items %}
+  <article class="card{% if it.state == 'pinned' %} pinned{% endif %}">
+    <img loading="lazy" src="/thumb/{{ it.p.folder }}/{{ it.p.filename }}" alt="">
+    {% if it.w %}{{ caption(it.w) }}{% else %}<div class="title">{{ it.p.filename }}</div>{% endif %}
+    <div class="meta">
+      {% if it.w %}{{ source_names[it.w.source] }} · {% endif %}added {{ ago(it.p.published_at) }}
+      · {% if it.on_tv %}on the TV{% else %}<span class="warn">not uploaded yet</span>{% endif %}
+      {% if it.state == "pinned" %} · <strong>pinned</strong>{% endif %}
+    </div>
+    {{ override_buttons(it.p.key, it.state, "/pool") }}
+  </article>
+{% else %}
+  <p class="muted">Nothing published yet. Use "Run now" on the overview.</p>
+{% endfor %}
+</div>
+{% endblock %}
