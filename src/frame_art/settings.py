@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 
 from . import imaging, pipeline
@@ -103,11 +103,31 @@ class Settings:
         except (OSError, ValueError) as ex:
             log.warning("settings: %s unreadable (%s); using defaults", path, ex)
             return cls()
-        known = {f.name for f in fields(cls)}
-        s = cls(**{k: v for k, v in raw.items() if k in known})
-        if errors := s.validate():
-            log.warning("settings: %s invalid (%s); using defaults", path, errors)
+        if not isinstance(raw, dict):
+            log.warning("settings: %s is not an object; using defaults", path)
             return cls()
+        # Keep every field that is valid on its own, so a file written by a
+        # newer version (an unknown source, say) still keeps the rest.
+        s = cls()
+        for f in fields(cls):
+            if f.name not in raw:
+                continue
+            value = raw[f.name]
+            if f.name in ("sources", "kinds") and isinstance(value, list):
+                value = [
+                    v
+                    for v in value
+                    if v in (SOURCES if f.name == "sources" else ART_KINDS)
+                ]
+            trial = replace(s, **{f.name: value})
+            try:
+                errors = trial.validate()
+            except (TypeError, ValueError):
+                errors = ["wrong type"]
+            if errors:
+                log.warning("settings: ignoring %s=%r (%s)", f.name, value, errors)
+                continue
+            s = trial
         return s
 
     def save(self, path: Path) -> None:

@@ -70,12 +70,18 @@ def test_settings_validate_and_persist(client):
     assert svc.settings().run_at == "03:30"
 
 
-def test_settings_load_falls_back_on_garbage(tmp_path):
+def test_settings_load_keeps_valid_fields(tmp_path):
     p = tmp_path / "settings.json"
     p.write_text('{"crop": "extreme", "count": 3}')
+    assert Settings.load(p) == Settings(count=3)
+    p.write_text('{"count": 3, "unknown_key": 1, "pool": "lots"}')
+    assert Settings.load(p) == Settings(count=3)
+    # A source from a newer version is dropped; the rest of the list stays.
+    p.write_text('{"sources": ["nga", "from-the-future"], "count": 5}')
+    s = Settings.load(p)
+    assert (s.sources, s.count) == (["nga"], 5)
+    p.write_text("[1, 2]")
     assert Settings.load(p) == Settings()
-    p.write_text('{"count": 3, "unknown_key": 1}')
-    assert Settings.load(p).count == 3
 
 
 def test_settings_shows_key_presence_but_never_the_key(client, tmp_path, monkeypatch):
