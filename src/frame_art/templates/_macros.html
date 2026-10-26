@@ -9,6 +9,8 @@
   <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear" data-key="p" title="Remove the pin">Unpin</button></form>
   {% elif state != "banned" %}
   <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="pinned" data-key="p" title="Keep on the TV: publish soon and never retire">Pin</button></form>
+  {% else %}
+  <form><button type="button" disabled title="Unban it first">Pin</button></form>
   {% endif %}
   {% if state == "banned" %}
   <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear" data-key="b">Unban</button></form>

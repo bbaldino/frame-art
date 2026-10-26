@@ -139,7 +139,7 @@ if (tagInput) {
 }
 
 // A closer look: click a card's picture to see it large; arrows step through
-// the cards on the page, Esc or a click outside the picture closes it. The
+// the cards on the page, Esc or a click on the picture closes it. The
 // card's buttons come along (keys C, P and B), acting on the card behind.
 const viewer = document.getElementById("viewer");
 if (viewer) {
@@ -208,7 +208,9 @@ if (viewer) {
   viewer.addEventListener("click", (e) => {
     const step = e.target.closest("[data-step]");
     if (step) show(index + Number(step.dataset.step));
-    else if (e.target === viewer || e.target.closest("[data-close]")) viewer.close();
+    // The picture fills its area, so a click on it (or beside it) closes too.
+    else if (e.target === viewer || e.target === big || e.target.closest("[data-close]"))
+      viewer.close();
   });
   // On the document: a button press replaces the focused button, which can
   // leave focus outside the dialog.
