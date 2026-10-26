@@ -296,3 +296,16 @@ def test_tv_button_without_mqtt_says_so(client):
     c.post("/tv/mine")
     assert svc.catalogue().get("tv_command")["status"] == "unsent"
     assert "not sent" in c.get("/").text
+
+
+def test_tv_request_answered_before_send_returns(client):
+    c, svc = client
+
+    class Quick(FakeLink):
+        def command(self, payload):  # HA answers before publish() returns
+            svc._on_ack({"command": {"id": payload["id"], "ok": True}})
+            return True
+
+    svc.link = Quick()
+    c.post("/tv/mine")
+    assert svc.catalogue().get("tv_command")["status"] == "done"

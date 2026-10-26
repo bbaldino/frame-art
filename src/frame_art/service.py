@@ -302,11 +302,16 @@ class Service:
         cmd: dict = {"id": time.time_ns() // 1_000_000, "action": action}
         if action != "upload":
             cmd["duration"] = self.settings().slideshow
-        sent = self.link.command(cmd) if self.link else False
-        log.info("ha: %s %s", "asked for" if sent else "could not send", cmd)
-        record = {**cmd, "at": time.time(), "status": "sent" if sent else "unsent"}
+        # Recorded before sending: HA can answer within milliseconds.
+        record = {**cmd, "at": time.time(), "status": "sent"}
         cat.put("tv_command", record)
-        return record
+        if not (self.link and self.link.command(cmd)):
+            log.info("ha: could not send %s", cmd)
+            record = {**record, "status": "unsent"}
+            cat.put("tv_command", record)
+            return record
+        log.info("ha: asked for %s", cmd)
+        return cat.get("tv_command")
 
     def _on_command(self, cat: Catalogue, reply) -> None:
         last = cat.get("tv_command") or {}
