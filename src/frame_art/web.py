@@ -35,8 +35,15 @@ from starlette.templating import Jinja2Templates
 from . import imaging, keys, pipeline
 from .classify import current_season
 from .publish import find_content, read_sidecar
-from .service import JOB_KINDS, Service
-from .settings import CHOOSE_FROM, PHOTO_SOURCES, SOURCE_NAMES, SOURCES, Settings
+from .service import JOB_KINDS, TV_ACTIONS, Service
+from .settings import (
+    CHOOSE_FROM,
+    PHOTO_SOURCES,
+    SLIDESHOW,
+    SOURCE_NAMES,
+    SOURCES,
+    Settings,
+)
 from .sources import ART_KINDS, KINDS
 
 log = logging.getLogger(__name__)
@@ -194,6 +201,9 @@ def create_app(svc: Service) -> Starlette:
             job_kinds=JOB_KINDS,
             mqtt=svc.link.connected if svc.link else None,
             last_upload=cat.get("last_upload"),
+            tv_actions=TV_ACTIONS,
+            tv_command=cat.get("tv_command"),
+            slideshow=SLIDESHOW[s.slideshow],
             now=svc.now_showing(cat),
             catalogue_size=len(cat.works()),
         )
@@ -413,6 +423,7 @@ def create_app(svc: Service) -> Starlette:
                 new.photo_crop = form.get("photo_crop", s.photo_crop)
                 new.choose_from = form.get("choose_from", s.choose_from)
                 new.repeat_days = int(form.get("repeat_days", s.repeat_days))
+                new.slideshow = form.get("slideshow", s.slideshow)
             except ValueError as ex:
                 errors.append(f"not a number: {ex}")
             if new.pad_style not in UI_PAD_STYLES:
@@ -432,6 +443,7 @@ def create_app(svc: Service) -> Starlette:
             saved=saved,
             crop_labels=CROP_LABELS,
             choose_from=CHOOSE_FROM,
+            slideshow=SLIDESHOW,
             pad_styles=UI_PAD_STYLES,
             art_sources=[x for x in SOURCES if x not in PHOTO_SOURCES],
             photo_sources=PHOTO_SOURCES,
@@ -477,6 +489,13 @@ def create_app(svc: Service) -> Starlette:
         if kind not in JOB_KINDS:
             return PlainTextResponse("unknown job", 404)
         svc.submit(kind)
+        return back(request)
+
+    async def tv_command(request: Request):
+        action = request.path_params["action"]
+        if action not in TV_ACTIONS:
+            return PlainTextResponse("unknown action", 404)
+        svc.tv_command(action)
         return back(request)
 
     async def set_override(request: Request):
@@ -550,6 +569,7 @@ def create_app(svc: Service) -> Starlette:
             Route("/compare/{name}", compare_image),
             Route("/runs", runs_page),
             Route("/jobs/{kind}", submit_job, methods=["POST"]),
+            Route("/tv/{action}", tv_command, methods=["POST"]),
             Route("/works/{key:path}/override", set_override, methods=["POST"]),
             Route("/thumb/{folder}/{name}", thumb),
             Route("/healthz", healthz),

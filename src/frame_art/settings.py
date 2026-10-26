@@ -33,6 +33,16 @@ CHOOSE_FROM = {
     "auto": "Automatic picks only",
 }
 
+# How often the TV moves to the next picture: art_set_slideshow's presets.
+SLIDESHOW = {
+    "3min": "3 minutes",
+    "15min": "15 minutes",
+    "1h": "1 hour",
+    "12h": "12 hours",
+    "1d": "1 day",
+    "7d": "7 days",
+}
+
 
 @dataclass
 class Settings:
@@ -53,6 +63,7 @@ class Settings:
     repeat_days: int = 60
     count: int = 7  # new works per nightly run
     pool: int = 150  # works kept live
+    slideshow: str = "1h"  # set on the TV by the "Show" buttons
     # Schedule.
     run_at: str = "02:00"  # local time, HH:MM
     paused: bool = False
@@ -110,6 +121,8 @@ class Settings:
             errors.append("new works per night must be 0-25")
         if not 1 <= self.pool <= 1000:
             errors.append("pool size must be 1-1000")
+        if self.slideshow not in SLIDESHOW:
+            errors.append(f"slideshow interval must be one of {list(SLIDESHOW)}")
         if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", self.run_at):
             errors.append("run time must be HH:MM (24-hour)")
         if not 1 <= self.recrawl_days <= 365:

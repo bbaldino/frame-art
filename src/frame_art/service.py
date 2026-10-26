@@ -38,6 +38,12 @@ JOB_KINDS = {
     "compare": "Make crop comparison sheets",
     "sync": "Apply bans",
 }
+# Requests the web UI can send HA for the TV (see halink).
+TV_ACTIONS = {
+    "upload": "Upload new works now",
+    "mine": "Show frame-art's works",
+    "samsung": "Back to Samsung art",
+}
 # TV content ids look like MY_F0123 (uploads) or SAM-S1110748 (Art Store).
 CONTENT_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
 # A missed nightly run (container down at run time) is caught up within this window.
@@ -279,6 +285,9 @@ class Service:
         if cid := payload.get("deleted"):
             log.info("ha: deleted %s from the TV", cid)
             cat.record_deleted(str(cid))
+        if "command" in payload:
+            self._on_command(cat, payload["command"])
+            return
         if "upload" in payload:
             result = payload["upload"] if isinstance(payload["upload"], dict) else {}
             log.info("ha: upload result %s", result)
@@ -286,6 +295,27 @@ class Service:
         self.publish_state(cat)
         # A fresh upload may be what the TV is already showing.
         self.publish_now(cat)
+
+    def tv_command(self, action: str) -> dict:
+        """Ask HA to act on the TV; the outcome arrives later on the ack topic."""
+        cat = self.catalogue()
+        cmd: dict = {"id": time.time_ns() // 1_000_000, "action": action}
+        if action != "upload":
+            cmd["duration"] = self.settings().slideshow
+        sent = self.link.command(cmd) if self.link else False
+        log.info("ha: %s %s", "asked for" if sent else "could not send", cmd)
+        record = {**cmd, "at": time.time(), "status": "sent" if sent else "unsent"}
+        cat.put("tv_command", record)
+        return record
+
+    def _on_command(self, cat: Catalogue, reply) -> None:
+        last = cat.get("tv_command") or {}
+        if not isinstance(reply, dict) or reply.get("id") != last.get("id"):
+            return  # a stale reply, or someone else's request
+        error = reply.get("error")
+        log.info("ha: %s: %s", last.get("action"), error or "done")
+        status = "failed" if error else "done"
+        cat.put("tv_command", {**last, "status": status, "error": error and str(error)})
 
     def _on_current(self, payload: dict) -> None:
         cid = payload.get("content_id")

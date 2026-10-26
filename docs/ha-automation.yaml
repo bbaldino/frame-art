@@ -16,7 +16,8 @@
 # - art_set_slideshow forces Art Mode, so it is not called here; the slideshow
 #   setting persists on the TV and was set once by hand.
 # - The samsungtv_smart art services return {"error": ...} instead of raising,
-#   so results are checked and reported, not assumed.
+#   so results are checked and reported, not assumed. They are entity services,
+#   so HA wraps each response by entity id: {"media_player.<tv>": {...}}.
 alias: "Frame Art: sync new art to the bedroom TV"
 description: >-
   Uploads new frame-art works to the Master Bedroom Frame TV and deletes retired
@@ -62,7 +63,9 @@ actions:
       folder: /config/frame_art_pool/full
       matte_id: none
       throttle: 3
-    response_variable: up
+    response_variable: batch
+  - variables:
+      up: "{{ batch['media_player.master_bedroom_frame_tv'] | default({'error': 'no response'}) }}"
   - action: mqtt.publish
     data:
       topic: frame-art/ack
@@ -117,7 +120,7 @@ actions:
           response_variable: deleted
           continue_on_error: true
         - if:
-            - "{{ deleted.success | default(false) }}"
+            - "{{ (deleted['media_player.master_bedroom_frame_tv'] | default({})).success | default(false) }}"
           then:
             - action: todo.remove_item
               target:
@@ -171,3 +174,122 @@ actions:
         {{ {'content_id': state_attr(s, 'current_content_id'),
             'on': none if p is none and a is none else (p == 'on' or a == 'on')}
            | to_json }}
+---
+# Third automation: the TV buttons on frame-art's overview page. frame-art only
+# publishes a request on frame-art/command; this automation decides whether and
+# how to act, and answers on frame-art/ack with the request's id.
+#
+# Guards:
+# - The broker is anonymous, so the payload is untrusted: only the three known
+#   actions and the six slideshow presets are accepted, and nothing else from
+#   the payload (no folder, content id or category) is used.
+# - Nothing runs while the TV is fully off, so a button never wakes it. While
+#   it is on, "mine" and "samsung" switch it to Art Mode (art_set_slideshow
+#   does that itself).
+# - "upload" only runs the sync automation, with its own conditions, and only
+#   while that automation is turned on.
+# - "mine" shows a work from the allow-list, i.e. something HA uploaded from
+#   frame-art; "samsung" shows one of the TV's Favourites (the Samsung pieces).
+alias: "Frame Art: carry out TV requests from the web UI"
+description: >-
+  Handles the TV buttons on frame-art's overview page: upload pending works now,
+  show frame-art's works (My Photos), or go back to the Samsung art
+  (Favourites), with the slideshow interval set in frame-art. Never wakes a TV
+  that is fully off.
+mode: queued
+max: 3
+triggers:
+  - trigger: mqtt
+    topic: frame-art/command
+variables:
+  tv: media_player.master_bedroom_frame_tv
+  req: "{{ trigger.payload_json if trigger.payload_json is defined and trigger.payload_json is mapping else {} }}"
+  request_id: "{{ req.id | default(none) }}"
+  request: "{{ req.action | default('') }}"
+  duration: "{{ req.duration | default('1h') }}"
+  problem: >-
+    {% if request not in ['upload', 'mine', 'samsung'] %}Unknown request
+    {% elif duration not in ['3min', '15min', '1h', '12h', '1d', '7d'] %}Unknown slideshow interval
+    {% elif not (is_state(tv, 'on') or is_state_attr(tv, 'art_mode_status', 'on')) %}The TV is off; turn it on and try again
+    {% elif request == 'upload' and not is_state('automation.frame_art_sync_new_art_to_the_bedroom_tv', 'on') %}Uploads are turned off in Home Assistant
+    {% elif request == 'upload' and not is_state_attr('sensor.frame_art', 'pending', true) %}Nothing waiting to upload
+    {% endif %}
+  # Declared here so the steps below update them rather than shadow them.
+  choices: []
+  picked: {}
+  result: {}
+actions:
+  - if:
+      - "{{ problem | trim | length > 0 }}"
+    then:
+      - action: mqtt.publish
+        data:
+          topic: frame-art/ack
+          payload: "{{ {'command': {'id': request_id, 'error': problem | trim}} | to_json }}"
+      - stop: "Refused"
+  - choose:
+      - conditions: "{{ request == 'upload' }}"
+        sequence:
+          - action: automation.trigger
+            target:
+              entity_id: automation.frame_art_sync_new_art_to_the_bedroom_tv
+            data:
+              skip_condition: false
+    default:
+      - action: samsungtv_smart.art_set_slideshow
+        target:
+          entity_id: media_player.master_bedroom_frame_tv
+        data:
+          duration: "{{ duration }}"
+          shuffle: true
+          category_id: "{{ 2 if request == 'mine' else 4 }}"
+        response_variable: slideshow
+      - if:
+          - "{{ request == 'mine' }}"
+        then:
+          - action: todo.get_items
+            target:
+              entity_id: todo.frame_art_uploads
+            data:
+              status: needs_action
+            response_variable: owned
+          - variables:
+              choices: >-
+                {{ owned['todo.frame_art_uploads']['items'] | map(attribute='summary')
+                   | select('match', '^MY[_-]F?\d+$') | list }}
+        else:
+          - action: samsungtv_smart.art_available
+            target:
+              entity_id: media_player.master_bedroom_frame_tv
+            data:
+              category_id: MY-C0004
+            response_variable: favourites
+          - variables:
+              choices: >-
+                {{ (favourites['media_player.master_bedroom_frame_tv'].artwork | default([]))
+                   | map(attribute='content_id') | list }}
+      - if:
+          - "{{ choices | length > 0 }}"
+        then:
+          - action: samsungtv_smart.art_select_image
+            target:
+              entity_id: media_player.master_bedroom_frame_tv
+            data:
+              content_id: "{{ choices | random }}"
+              wake: false
+            response_variable: picked
+      - variables:
+          result: >-
+            {% set s = slideshow[tv] | default({'error': 'no response'}) %}
+            {% set p = picked[tv] | default({}) %}
+            {% if s.error is defined %}{{ {'error': 'Slideshow: ' ~ s.error} }}
+            {% elif not choices %}{{ {'error': 'Nothing to show yet: no works uploaded' if request == 'mine' else 'No Favourites on the TV'} }}
+            {% elif p.error is defined %}{{ {'error': 'Picture: ' ~ p.error} }}
+            {% else %}{{ {} }}{% endif %}
+  - action: mqtt.publish
+    data:
+      topic: frame-art/ack
+      payload: >-
+        {% set c = {'id': request_id, 'ok': result.error is not defined} %}
+        {% if result.error is defined %}{% set c = {'id': request_id, 'ok': false, 'error': result.error} %}{% endif %}
+        {{ {'command': c} | to_json }}

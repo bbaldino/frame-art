@@ -36,6 +36,10 @@ size, nightly run time.
 
 Home Assistant learns what to do from an MQTT-discovered `sensor.frame_art` and
 acknowledges on `frame-art/ack`; see `docs/design.md` for the automation.
+The overview's TV buttons (upload now, show frame-art's works, back to the
+Samsung art) only publish a request on `frame-art/command`; a Home Assistant
+automation decides whether to act on it. `docs/ha-automation.yaml` holds all
+three automations.
 
 ## Development
 

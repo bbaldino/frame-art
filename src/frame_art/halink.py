@@ -12,6 +12,16 @@ A second HA automation forwards the TV's current artwork id on
 ``frame-art/current`` ({"content_id": "MY_F0123"}), and we answer with
 ``sensor.frame_art_now_showing``: the work's title, with artist, date, museum,
 description and so on as attributes (empty when the TV shows something else).
+
+The web UI's TV buttons publish requests on ``frame-art/command`` (not
+retained, so a restart never replays one):
+
+    {"id": 1761512345000, "action": "upload"}
+    {"id": 1761512345001, "action": "mine", "duration": "1h"}
+    {"id": 1761512345002, "action": "samsung", "duration": "1h"}
+
+A third HA automation carries them out and answers on ``frame-art/ack`` with
+{"command": {"id": ..., "ok": true}} or {"command": {"id": ..., "error": "..."}}.
 """
 
 from __future__ import annotations
@@ -30,6 +40,7 @@ STATUS = "frame-art/status"
 ACK = "frame-art/ack"
 CURRENT = "frame-art/current"
 NOW = "frame-art/now"
+COMMAND = "frame-art/command"
 DISCOVERY = "homeassistant/sensor/frame_art/state/config"
 NOW_DISCOVERY = "homeassistant/sensor/frame_art/now_showing/config"
 
@@ -141,6 +152,13 @@ class HaLink:
             self._last = state
         if self.connected:
             self.client.publish(STATE, json.dumps(state), qos=1, retain=True)
+
+    def command(self, payload: dict) -> bool:
+        """Ask HA to do something to the TV; False if the request can't be sent."""
+        if not self.connected:
+            return False
+        info = self.client.publish(COMMAND, json.dumps(payload), qos=1)
+        return info.rc == mqtt.MQTT_ERR_SUCCESS
 
     def close(self) -> None:
         self.client.publish(STATUS, "offline", qos=1, retain=True)

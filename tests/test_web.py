@@ -247,3 +247,49 @@ def test_pins_move_into_the_collection_once(client):
     cat.set_override("nga:1", "pinned")  # a pin made after the move stays a pin
     pins_to_collection(cat)
     assert cat.overrides() == {"nga:1": "pinned"}
+
+
+class FakeLink:
+    connected = True
+
+    def __init__(self):
+        self.sent = []
+
+    def command(self, payload):
+        self.sent.append(payload)
+        return True
+
+    def publish(self, state):
+        pass
+
+    def publish_now(self, info):
+        pass
+
+
+def test_tv_buttons_ask_ha_and_show_its_answer(client):
+    c, svc = client
+    svc.link = FakeLink()
+    s = svc.settings()
+    s.slideshow = "15min"
+    svc.save_settings(s)
+    r = c.post("/tv/samsung", follow_redirects=False)
+    assert r.status_code == 303
+    (sent,) = svc.link.sent
+    assert sent["action"] == "samsung" and sent["duration"] == "15min"
+    assert "waiting for Home Assistant" in c.get("/").text
+    svc._on_ack({"command": {"id": sent["id"] - 1, "ok": True}})  # stale: ignored
+    assert svc.catalogue().get("tv_command")["status"] == "sent"
+    svc._on_ack({"command": {"id": sent["id"], "error": "The TV is off"}})
+    assert "The TV is off" in c.get("/").text
+    c.post("/tv/upload")
+    assert "duration" not in svc.link.sent[-1]
+    svc._on_ack({"command": {"id": svc.link.sent[-1]["id"], "ok": True}})
+    assert svc.catalogue().get("tv_command")["status"] == "done"
+    assert c.post("/tv/power-off").status_code == 404
+
+
+def test_tv_button_without_mqtt_says_so(client):
+    c, svc = client
+    c.post("/tv/mine")
+    assert svc.catalogue().get("tv_command")["status"] == "unsent"
+    assert "not sent" in c.get("/").text

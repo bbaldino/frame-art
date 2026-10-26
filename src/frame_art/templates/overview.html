@@ -14,6 +14,15 @@
     <div class="tv-missing">The TV is showing something frame-art didn't put there, such as your own photo or an Art Store piece.</div>
     {% endif %}
     <p class="muted small"><a href="/now">Now showing</a> · as reported by Home Assistant</p>
+    <div class="buttons tv-buttons">
+      {% for k, label in tv_actions.items() %}<form method="post" action="/tv/{{ k }}"><button{% if k == "upload" and not state.pending %} disabled title="Nothing waiting to upload"{% endif %}>{{ label }}</button></form>{% endfor %}
+    </div>
+    <p class="muted small">Home Assistant carries these out while the TV is on or in Art Mode; it never wakes a TV that's off. Both "Show" buttons switch to Art Mode and shuffle, changing the picture every {{ slideshow }} (<a href="/settings">change</a>).
+    {% if tv_command %}<br>Last: {{ tv_actions[tv_command.action] }}, {{ ago(tv_command.at) }} ·
+      {% if tv_command.status == "done" %}done
+      {% elif tv_command.status == "failed" %}<span class="warn">{{ tv_command.error }}</span>
+      {% elif tv_command.status == "unsent" %}<span class="warn">not sent: MQTT is disconnected</span>
+      {% else %}waiting for Home Assistant{% endif %}{% endif %}</p>
   </div>
   <div class="status">
     <h1>Overview</h1>

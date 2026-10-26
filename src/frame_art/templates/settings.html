@@ -68,10 +68,13 @@
       <label>New works per night <input type="number" name="count" min="0" max="25" value="{{ s.count }}"></label>
       <label>Works kept on the TV <input type="number" name="pool" min="1" max="1000" value="{{ s.pool }}"></label>
     </div>
+    <label>On the TV, change the picture every
+      <select name="slideshow">{% for k, label in slideshow.items() %}<option value="{{ k }}" {% if s.slideshow == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    </label>
     <div class="row">
       <label>Collection works can return after <input type="number" name="repeat_days" min="1" max="3650" value="{{ s.repeat_days }}"> days</label>
     </div>
-    <p class="muted small">Each night adds the new works and retires the oldest beyond the pool size. With "collection only", a night adds nothing once every collection work is on the TV or waiting to return. Other retired works can come back after a year.</p>
+    <p class="muted small">Each night adds the new works and retires the oldest beyond the pool size. With "collection only", a night adds nothing once every collection work is on the TV or waiting to return. Other retired works can come back after a year. The picture interval takes effect the next time you press "Show frame-art's works" or "Back to Samsung art" on the overview.</p>
   </fieldset>
 
   <fieldset>
