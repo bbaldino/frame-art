@@ -154,3 +154,18 @@ def test_overview_never_embeds_ha_thumbnail_and_reports_tv_off(client):
         svc.catalogue().get("tv_current")["at"] == first
     )  # same artwork, same "since"
     assert "didn't put there" in c.get("/").text
+
+
+def test_catalogue_filters_on_metadata(client):
+    c, svc = client
+    cat = svc.catalogue()
+    w = cat.works()[0]
+    w.style, w.genre, w.place = "Impressionism", "landscape painting", "France"
+    w.subjects = ["haystacks", "Winter"]
+    cat.upsert([w])
+    assert "1 matching" in c.get("/catalogue?style=Impressionism").text
+    assert "0 matching" in c.get("/catalogue?style=Cubism").text
+    assert "1 matching" in c.get("/catalogue?subject=winter").text
+    assert "1 matching" in c.get("/catalogue?q=france").text
+    page = c.get("/catalogue").text
+    assert "Impressionism (1)" in page and "subject=haystacks" in page

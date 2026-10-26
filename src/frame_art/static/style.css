@@ -166,3 +166,12 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 .card.updating { opacity: 0.6; }
 .card.gone { opacity: 0.4; }
 .card { scroll-margin-top: 1rem; }
+.card .facts a { color: inherit; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+.chip {
+  font-size: 0.72rem; padding: 0.05rem 0.45rem; border-radius: 99px; text-decoration: none;
+  border: 1px solid var(--line); color: var(--muted); background: var(--bg);
+}
+.chip:hover { color: var(--ink); border-color: var(--muted); }
+.chip.active { color: var(--accent); border-color: var(--accent); align-self: center; font-size: 0.85rem; padding: 0.2rem 0.6rem; }
+.filters select { max-width: 14rem; }

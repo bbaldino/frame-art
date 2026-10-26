@@ -12,6 +12,7 @@ import logging
 import math
 import re
 import time
+from collections import Counter
 from dataclasses import fields
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -66,6 +67,12 @@ def _version() -> str:
         return version("frame-art")
     except PackageNotFoundError:
         return "dev"
+
+
+def searchable(w) -> str:
+    """Everything the catalogue's search box matches against, lowercased."""
+    parts = [w.title, w.artist, w.style, w.genre, w.place, w.description, *w.subjects]
+    return " ".join(p for p in parts if p).lower()
 
 
 def _ago(ts: float | None) -> str:
@@ -156,15 +163,29 @@ def create_app(svc: Service) -> Starlette:
         live = {p.key for p in cat.published(active=True)}
         text = (q.get("q") or "").strip().lower()
         source, kind, status = q.get("source"), q.get("kind"), q.get("status")
+        style, genre = q.get("style"), q.get("genre")
+        subject = (q.get("subject") or "").strip().lower()
 
         rows = []
         counts = dict.fromkeys(STATUSES, 0)
-        for w in cat.works():
+        works = cat.works()
+        styles: Counter = Counter()
+        genres: Counter = Counter()
+        for w in works:
             if source and w.source != source:
                 continue
             if kind and w.kind != kind:
                 continue
-            if text and text not in f"{w.title} {w.artist or ''}".lower():
+            # Dropdown counts follow the source and kind filters only.
+            styles[w.style] += 1
+            genres[w.genre] += 1
+            if style and w.style != style:
+                continue
+            if genre and w.genre != genre:
+                continue
+            if subject and subject not in (x.lower() for x in w.subjects):
+                continue
+            if text and text not in searchable(w):
                 continue
             plan = pipeline.exclusion(
                 w, photo_prefs if w.kind == "photograph" else prefs
@@ -219,6 +240,9 @@ def create_app(svc: Service) -> Starlette:
             pageno=page,
             pages=pages,
             link=lambda n: "/catalogue?" + urlencode({**args, "page": n}),
+            filter_link=lambda **kv: "/catalogue?" + urlencode({**args, **kv}),
+            styles=[(k, n) for k, n in styles.most_common(80) if k],
+            genres=[(k, n) for k, n in genres.most_common(60) if k],
             here=str(request.url.path)
             + ("?" + request.url.query if request.url.query else ""),
         )

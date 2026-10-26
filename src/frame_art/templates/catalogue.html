@@ -4,7 +4,7 @@
 {% block body %}
 <h1>Catalogue <span class="muted">{{ total }} matching</span></h1>
 <form class="filters" method="get" action="/catalogue">
-  <input type="search" name="q" value="{{ q.get('q', '') }}" placeholder="Title or artist">
+  <input type="search" name="q" value="{{ q.get('q', '') }}" placeholder="Search title, artist, style, place, subjects">
   <select name="status">
     <option value="">Any status</option>
     {% for k, label in statuses.items() %}<option value="{{ k }}" {% if q.get('status') == k %}selected{% endif %}>{{ label }} ({{ counts[k] }})</option>{% endfor %}
@@ -17,6 +17,15 @@
     <option value="">All kinds</option>
     {% for k in kinds %}<option value="{{ k }}" {% if q.get('kind') == k %}selected{% endif %}>{{ k }}s</option>{% endfor %}
   </select>
+  <select name="style">
+    <option value="">Any style</option>
+    {% for k, n in styles %}<option value="{{ k }}" {% if q.get('style') == k %}selected{% endif %}>{{ k }} ({{ n }})</option>{% endfor %}
+  </select>
+  <select name="genre">
+    <option value="">Any genre</option>
+    {% for k, n in genres %}<option value="{{ k }}" {% if q.get('genre') == k %}selected{% endif %}>{{ k }} ({{ n }})</option>{% endfor %}
+  </select>
+  {% if q.get('subject') %}<input type="hidden" name="subject" value="{{ q.get('subject') }}"><a class="chip active" href="{{ filter_link(subject='', page=1) }}" title="Clear the subject filter">{{ q.get('subject') }} ✕</a>{% endif %}
   <button>Filter</button>
 </form>
 <p class="muted small">Sorted by how likely each work is to be picked: museum highlights and well-known works (Wikipedia articles) first, a boost for the current season.</p>
@@ -32,6 +41,9 @@
       {% if r.mode %} · {{ "fills the screen" if r.mode == "crop" else "on a background" }}{% endif %}
       {% if w.highlight %} · highlight{% endif %}{% if w.sitelinks %} · {{ w.sitelinks }} wiki{% endif %}
     </div>
+    {% set facts = [w.style, w.genre, w.place] | select | list %}
+    {% if facts %}<div class="meta facts">{% for f in facts %}{% if f == w.style %}<a href="{{ filter_link(style=f, page=1) }}">{{ f }}</a>{% elif f == w.genre %}<a href="{{ filter_link(genre=f, page=1) }}">{{ f }}</a>{% else %}{{ f }}{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+    {% if w.subjects %}<div class="chips">{% for x in w.subjects[:6] %}<a class="chip" href="{{ filter_link(subject=x, page=1) }}">{{ x }}</a>{% endfor %}{% if w.subjects | length > 6 %}<span class="muted small" title="{{ w.subjects[6:] | join(', ') }}">+{{ w.subjects | length - 6 }}</span>{% endif %}</div>{% endif %}
     <div class="status-line"><span class="badge {{ r.status }}">{{ statuses[r.status] }}</span>{% if r.reason %} <span class="muted">{{ r.reason }}</span>{% endif %}</div>
     {{ override_buttons(w.key, r.override, here ~ "#" ~ card_id(w.key)) }}
   </article>
