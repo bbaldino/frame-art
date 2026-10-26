@@ -105,6 +105,12 @@ def test_settings_style_mix_validates(client):
     s = svc.settings()
     assert (s.photo_share, s.photo_crop) == (40, "medium")
     assert s.crawl_kinds() == ("painting", "photograph")
+    assert s.shown_kinds() == ("painting", "photograph")
+    zero = Settings(photo_share=0)
+    # Photos are catalogued whenever a photo source is on, but not published at 0%.
+    assert zero.crawl_kinds() == ("painting", "photograph")
+    assert zero.shown_kinds() == ("painting",)
+    assert Settings(sources=["nga"]).crawl_kinds() == ("painting",)
     assert "Not saved" in c.post("/settings", data={**form, "photo_share": "150"}).text
 
 

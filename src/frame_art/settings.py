@@ -64,7 +64,17 @@ class Settings:
         )
 
     def crawl_kinds(self) -> tuple[str, ...]:
-        """Art kinds, plus photographs when the style mix asks for any."""
+        """Art kinds, plus photographs whenever a photo source is enabled.
+
+        The style mix only decides what gets published; photos are catalogued
+        regardless, so they can be browsed, pinned and banned beforehand.
+        """
+        if set(self.sources) & set(PHOTO_SOURCES):
+            return (*self.kinds, "photograph")
+        return tuple(self.kinds)
+
+    def shown_kinds(self) -> tuple[str, ...]:
+        """Kinds the nightly run may publish."""
         return (*self.kinds, "photograph") if self.photo_share else tuple(self.kinds)
 
     def validate(self) -> list[str]:

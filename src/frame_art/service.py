@@ -26,13 +26,14 @@ from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
 from .publish import find_content, pending
-from .settings import SOURCE_NAMES, Settings
+from .settings import PHOTO_SOURCES, SOURCE_NAMES, Settings
 
 log = logging.getLogger(__name__)
 
 JOB_KINDS = {
     "nightly": "Nightly run (recrawl if stale, then publish)",
     "crawl": "Recrawl all sources",
+    "crawl-photos": "Recrawl photo sources only",
     "publish": "Publish new works now",
     "compare": "Make crop comparison sheets",
     "sync": "Apply bans",
@@ -176,6 +177,18 @@ class Service:
         http = Http()
         if kind == "nightly":
             return jobs.nightly(cat, http, self.data, self.dest, s)
+        if kind == "crawl-photos":
+            photo_sources = [x for x in s.sources if x in PHOTO_SOURCES]
+            if not photo_sources:
+                return {"crawled": {}, "note": "no photo source enabled"}
+            return jobs.crawl(
+                cat,
+                http,
+                self.data / "cache",
+                ("photograph",),
+                s.crawl_limit,
+                photo_sources,
+            )
         if kind == "crawl":
             return jobs.crawl(
                 cat,

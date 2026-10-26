@@ -33,6 +33,7 @@
     <div class="buttons">
       <form method="post" action="/jobs/nightly"><button class="primary">Run now</button></form>
       <form method="post" action="/jobs/crawl"><button>Recrawl sources</button></form>
+      <form method="post" action="/jobs/crawl-photos"><button>Recrawl photos</button></form>
     </div>
     <p class="muted small">"Run now" does what the nightly run does: recrawl if the catalogue is over {{ settings.recrawl_days | int }} days old, add {{ settings.count }} works, retire the oldest past {{ settings.pool }}. Home Assistant then uploads them the next time the TV is on.</p>
   </div>

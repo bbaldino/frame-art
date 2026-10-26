@@ -148,7 +148,7 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
         q = request.query_params
         s = svc.settings()
         prefs, photo_prefs = s.prefs(), s.photo_prefs()
-        shown_kinds = s.crawl_kinds()
+        shown_kinds = s.shown_kinds()
         season = current_season(datetime.date.today().month)
         overrides = cat.overrides()
         rejected = cat.rejected()
@@ -179,6 +179,8 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
                 st, reason = "excluded", plan
             elif w.key in rejected:
                 st, reason = "rejected", rejected[w.key]
+            elif w.kind == "photograph" and not s.photo_share:
+                st, reason = "excluded", "photography share is 0%"
             elif w.kind not in shown_kinds or w.source not in s.sources:
                 st, reason = "excluded", "kind or source turned off"
             else:
