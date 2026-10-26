@@ -19,7 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import jobs
+from PIL import Image
+
+from . import imaging, jobs
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
@@ -296,9 +298,22 @@ class Service:
             lon=w.lon,
             description=w.description,
             subjects=w.subjects[:15],
-            colors=cat.palettes().get(w.key, []),
+            colors=self._palette(cat, w.key, self.dest / p.folder / p.filename),
         )
         return info
+
+    def _palette(self, cat: Catalogue, key: str, path: Path) -> list[str]:
+        """The work's palette, computed from its render if it predates palettes."""
+        colors = cat.palettes().get(key)
+        if colors is None and path.exists():
+            try:
+                with Image.open(path) as im:
+                    im.draft("RGB", (480, 270))
+                    colors = imaging.palette(im)
+                cat.set_palette(key, colors)
+            except OSError as ex:
+                log.warning("palette for %s: %s", key, ex)
+        return colors or []
 
     def publish_now(self, cat: Catalogue | None = None) -> dict:
         info = self.now_showing(cat)
