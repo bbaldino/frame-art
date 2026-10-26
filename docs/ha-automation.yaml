@@ -276,7 +276,7 @@ actions:
               entity_id: media_player.master_bedroom_frame_tv
             data:
               content_id: "{{ choices | random }}"
-              wake: false
+            note: "The TV is already awake and in Art Mode (art_set_slideshow saw to it)."
             response_variable: picked
       - variables:
           result: >-
