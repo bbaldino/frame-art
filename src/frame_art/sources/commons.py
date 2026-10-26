@@ -30,9 +30,14 @@ CATEGORIES = {
 DEPTH = 3
 META = (
     "LicenseShortName|Artist|ObjectName|DateTimeOriginal|ImageDescription"
-    "|GPSLatitude|GPSLongitude"
+    "|GPSLatitude|GPSLongitude|Categories"
 )
 _TAGS = re.compile(r"<[^>]+>")
+# Templates like {{label}} and {{date}} add hidden machine-readable copies
+# ("label QS:Lja,...") to the rendered metadata.
+_HIDDEN = re.compile(r"<div style=\"display: ?none;?\">.*?</div>", re.DOTALL)
+# Scans of paintings and other artworks turn up in the landscape categories too.
+_ARTWORK = re.compile(r"^(?:Artworks\b|PD-Art\b)|\bpaintings\b", re.IGNORECASE)
 
 
 def _artist(meta: dict) -> str | None:
@@ -63,6 +68,11 @@ def _subject(cat: str) -> str | None:
     return None if name.startswith("Category:") else name
 
 
+def _is_artwork(meta: dict) -> bool:
+    cats = (meta.get("Categories") or {}).get("value") or ""
+    return any(_ARTWORK.search(c) for c in str(cats).split("|"))
+
+
 def _float(meta: dict, key: str) -> float | None:
     try:
         return round(float(_text(meta, key) or ""), 5)
@@ -74,7 +84,8 @@ def _text(meta: dict, key: str) -> str | None:
     value = (meta.get(key) or {}).get("value")
     if not value:
         return None
-    return " ".join(html.unescape(_TAGS.sub("", str(value))).split()) or None
+    text = _TAGS.sub("", _HIDDEN.sub("", str(value)))
+    return " ".join(html.unescape(text).split()) or None
 
 
 class Commons:
@@ -145,6 +156,8 @@ class Commons:
         if info.get("mime") != "image/jpeg" or not w or not h or w < 3840:
             return None
         meta = info.get("extmetadata") or {}
+        if _is_artwork(meta):
+            return None
         title = _text(meta, "ObjectName") or page["title"].removeprefix("File:")
         title = re.sub(r"\.jpe?g$", "", title, flags=re.IGNORECASE)
         # A 3840px rendition is plenty unless the photo is wider than 16:9,

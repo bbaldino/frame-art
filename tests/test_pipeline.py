@@ -131,6 +131,26 @@ def test_commons_artist_and_date_cleanup():
     assert _date(meta(DateTimeOriginal="Taken on 1")) is None
 
 
+def test_commons_hidden_labels_and_artworks():
+    from frame_art.sources.commons import _date, _is_artwork, _text
+
+    def meta(**kv):
+        return {k: {"value": v} for k, v in kv.items()}
+
+    name = (
+        '<div class="fn"><i>The Siege of Osaka Castle</i>'
+        '<div style="display: none;">label QS:Lja,"大坂"\nlabel QS:Len,"x"</div></div>'
+    )
+    assert _text(meta(ObjectName=name), "ObjectName") == "The Siege of Osaka Castle"
+    date = '17<sup>th</sup> century<div style="display: none;">date QS:P571,+1650</div>'
+    assert _date(meta(DateTimeOriginal=date)) is None
+    assert _is_artwork(
+        meta(Categories="Osaka|Featured pictures of paintings from Japan")
+    )
+    assert _is_artwork(meta(Categories="PD-Art (PD-old-100)"))
+    assert not _is_artwork(meta(Categories="Featured pictures of Japan|Lakes"))
+
+
 def test_loc_image_urls():
     from frame_art.sources.loc import iiif_base, master_tiff, rid_from
 
