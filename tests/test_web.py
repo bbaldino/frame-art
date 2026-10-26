@@ -1,3 +1,5 @@
+import dataclasses
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -167,5 +169,26 @@ def test_catalogue_filters_on_metadata(client):
     assert "0 matching" in c.get("/catalogue?style=Cubism").text
     assert "1 matching" in c.get("/catalogue?subject=winter").text
     assert "1 matching" in c.get("/catalogue?q=france").text
-    page = c.get("/catalogue").text
-    assert "Impressionism (1)" in page and "subject=haystacks" in page
+    assert "1 matching" in c.get("/catalogue?tag=france&tag=WINTER").text
+    assert "0 matching" in c.get("/catalogue?tag=france&tag=summer").text
+    page = c.get("/catalogue?tag=france").text
+    # Card chips add to the filter; active tags come off one at a time.
+    assert "tag=france&amp;tag=haystacks" in page
+    assert 'href="/catalogue?page=1" title="Remove this tag"' in page
+
+
+def test_tag_suggestions(client):
+    c, svc = client
+    cat = svc.catalogue()
+    a = cat.works()[0]
+    a.subjects = ["Winter", "snow"]
+    b = dataclasses.replace(a, source_id="2", subjects=["winter landscape", "boats"])
+    cat.upsert([a, b])
+    tags = [t["tag"] for t in c.get("/tags.json?q=win").json()]
+    assert tags[:2] == ["Winter", "winter landscape"]
+    # Suggestions narrow to works that have the tags already chosen.
+    got = c.get("/tags.json?q=&tag=snow").json()
+    assert {t["tag"] for t in got} >= {"Winter"} and "boats" not in {
+        t["tag"] for t in got
+    }
+    assert "snow" not in {t["tag"].lower() for t in got}

@@ -175,3 +175,14 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 .chip:hover { color: var(--ink); border-color: var(--muted); }
 .chip.active { color: var(--accent); border-color: var(--accent); align-self: center; font-size: 0.85rem; padding: 0.2rem 0.6rem; }
 .filters select { max-width: 14rem; }
+.tagbox { position: relative; flex: 1 1 16rem; min-width: 0; display: flex; }
+.tagbox input[type="text"] { flex: 1; min-width: 0; }
+.suggest {
+  position: absolute; top: 100%; left: 0; right: 0; z-index: 10; margin: 2px 0 0; padding: 0.25rem 0;
+  list-style: none; max-height: 20rem; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: var(--shadow);
+}
+.suggest li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.3rem 0.6rem; cursor: pointer; }
+.suggest li .muted { font-size: 0.8rem; white-space: nowrap; }
+.suggest li:hover, .suggest li[aria-selected="true"] { background: var(--bg); }
+.active-tags { margin-bottom: 0.5rem; align-items: center; }

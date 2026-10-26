@@ -75,6 +75,57 @@ def searchable(w) -> str:
     return " ".join(p for p in parts if p).lower()
 
 
+TAG_PARAMS = ("tag", "subject", "style", "genre")  # the last three: older links
+SUGGESTIONS = 15
+
+
+def tag_pairs(w):
+    """(kind, tag) for everything a work can be filtered by."""
+    for kind in ("artist", "style", "genre", "place"):
+        if getattr(w, kind):
+            yield kind, getattr(w, kind)
+    for x in w.subjects:
+        yield "subject", x
+
+
+def tags_of(w) -> set[str]:
+    return {t.lower() for _, t in tag_pairs(w)}
+
+
+def wanted_tags(q) -> list[str]:
+    """The tag filters in a query string, lowercased, in order, deduplicated."""
+    tags = [v.strip().lower() for k, v in q.multi_items() if k in TAG_PARAMS]
+    return list(dict.fromkeys(t for t in tags if t))
+
+
+def suggest_tags(works, tags: list[str], text: str) -> list[dict]:
+    """Tags of the works matching ``tags``, for the catalogue's autocomplete.
+
+    Word-start matches rank before matches mid-word, then by how many works
+    carry the tag; tags already in the filter are left out.
+    """
+    counts: Counter = Counter()
+    names: dict[str, Counter] = {}
+    for w in works:
+        if tags and not set(tags) <= tags_of(w):
+            continue
+        for key, (kind, tag) in {t.lower(): (k, t) for k, t in tag_pairs(w)}.items():
+            if key in tags or (text and text not in key):
+                continue
+            counts[key] += 1
+            names.setdefault(key, Counter())[(kind, tag)] += 1
+    starts = re.compile(rf"\b{re.escape(text)}") if text else None
+    ranked = sorted(
+        counts,
+        key=lambda k: (bool(starts) and not starts.search(k), -counts[k], k),
+    )
+    out = []
+    for key in ranked[:SUGGESTIONS]:
+        (kind, tag), _ = names[key].most_common(1)[0]
+        out.append({"tag": tag, "kind": kind, "count": counts[key]})
+    return out
+
+
 def _ago(ts: float | None) -> str:
     if not ts:
         return "never"
@@ -163,27 +214,17 @@ def create_app(svc: Service) -> Starlette:
         live = {p.key for p in cat.published(active=True)}
         text = (q.get("q") or "").strip().lower()
         source, kind, status = q.get("source"), q.get("kind"), q.get("status")
-        style, genre = q.get("style"), q.get("genre")
-        subject = (q.get("subject") or "").strip().lower()
+        tags = wanted_tags(q)
 
         rows = []
         counts = dict.fromkeys(STATUSES, 0)
         works = cat.works()
-        styles: Counter = Counter()
-        genres: Counter = Counter()
         for w in works:
             if source and w.source != source:
                 continue
             if kind and w.kind != kind:
                 continue
-            # Dropdown counts follow the source and kind filters only.
-            styles[w.style] += 1
-            genres[w.genre] += 1
-            if style and w.style != style:
-                continue
-            if genre and w.genre != genre:
-                continue
-            if subject and subject not in (x.lower() for x in w.subjects):
+            if tags and not set(tags) <= tags_of(w):
                 continue
             if text and text not in searchable(w):
                 continue
@@ -225,7 +266,15 @@ def create_app(svc: Service) -> Starlette:
         rows.sort(key=lambda r: r["score"], reverse=True)
         pages = max(1, math.ceil(len(rows) / PAGE))
         page = min(max(1, int(q.get("page") or 1)), pages)
-        args = {k: v for k, v in q.items() if k != "page" and v}
+        base = [
+            (k, v) for k, v in q.multi_items() if k not in ("page", *TAG_PARAMS) and v
+        ]
+
+        def url(tags: list[str], page: int = 1) -> str:
+            return "/catalogue?" + urlencode(
+                base + [("tag", t) for t in tags] + [("page", page)]
+            )
+
         return render(
             request,
             "catalogue.html",
@@ -239,13 +288,25 @@ def create_app(svc: Service) -> Starlette:
             q=q,
             pageno=page,
             pages=pages,
-            link=lambda n: "/catalogue?" + urlencode({**args, "page": n}),
-            filter_link=lambda **kv: "/catalogue?" + urlencode({**args, **kv}),
-            styles=[(k, n) for k, n in styles.most_common(80) if k],
-            genres=[(k, n) for k, n in genres.most_common(60) if k],
+            tags=tags,
+            link=lambda n: url(tags, n),
+            add_tag=lambda t: url(list(dict.fromkeys([*tags, t.lower()]))),
+            drop_tag=lambda t: url([x for x in tags if x != t]),
+            clear_tags=url([]),
             here=str(request.url.path)
             + ("?" + request.url.query if request.url.query else ""),
         )
+
+    async def tags_json(request: Request):
+        q = request.query_params
+        source, kind = q.get("source"), q.get("kind")
+        works = [
+            w
+            for w in svc.catalogue().works()
+            if (not source or w.source == source) and (not kind or w.kind == kind)
+        ]
+        text = (q.get("q") or "").strip().lower()
+        return JSONResponse(suggest_tags(works, wanted_tags(q), text))
 
     async def settings_page(request: Request):
         errors: list[str] = []
@@ -394,6 +455,7 @@ def create_app(svc: Service) -> Starlette:
             Route("/render/{folder}/{name}", rendered),
             Route("/pool", pool),
             Route("/catalogue", catalogue),
+            Route("/tags.json", tags_json),
             Route("/settings", settings_page, methods=["GET", "POST"]),
             Route("/compare", compare_page),
             Route("/compare/{name}", compare_image),
