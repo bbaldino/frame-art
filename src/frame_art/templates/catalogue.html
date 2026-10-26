@@ -54,9 +54,9 @@
 </div>
 {% if pages > 1 %}
 <nav class="pager">
-  {% if pageno > 1 %}<a href="{{ link(pageno - 1) }}">← Previous</a>{% endif %}
+  {% if pageno > 1 %}<a href="{{ link(pageno - 1) }}" data-dir="prev">← Previous</a>{% endif %}
   <span>Page {{ pageno }} of {{ pages }}</span>
-  {% if pageno < pages %}<a href="{{ link(pageno + 1) }}">Next →</a>{% endif %}
+  {% if pageno < pages %}<a href="{{ link(pageno + 1) }}" data-dir="next">Next →</a>{% endif %}
 </nav>
 {% endif %}
 {% endblock %}

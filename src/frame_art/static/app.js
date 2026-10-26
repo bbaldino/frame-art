@@ -139,8 +139,9 @@ if (tagInput) {
 }
 
 // A closer look: click a card's picture to see it large; arrows step through
-// the cards on the page, Esc or a click on the picture closes it. The
-// card's buttons come along (keys C, P and B), acting on the card behind.
+// the cards, loading the next or previous page into the grid when they run
+// out. Esc or a click on the picture closes it. The card's buttons come along
+// (keys C, P and B), acting on the card behind.
 const viewer = document.getElementById("viewer");
 if (viewer) {
   const big = viewer.querySelector("img");
@@ -149,6 +150,16 @@ if (viewer) {
   let cards = []; // card ids: a card is replaced whenever its buttons are used
   let index = -1;
   let busy = false;
+  let loading = false;
+  // Pages not yet in the grid, from the pager's links.
+  const pagerLink = (doc, dir) => doc.querySelector(`nav.pager a[data-dir="${dir}"]`)?.href;
+  let prevPage = pagerLink(document, "prev");
+  let nextPage = pagerLink(document, "next");
+
+  const collect = () =>
+    [...document.querySelectorAll(".card")]
+      .filter((c) => c.id && c.querySelector("img[data-full]"))
+      .map((c) => c.id);
 
   const card = () => document.getElementById(cards[index]);
 
@@ -158,7 +169,7 @@ if (viewer) {
   };
 
   const show = (i) => {
-    index = (i + cards.length) % cards.length;
+    index = i;
     const small = card().querySelector("img[data-full]");
     // The thumbnail is cached, so show it at once and swap in the large one.
     big.src = small.currentSrc || small.src;
@@ -192,12 +203,47 @@ if (viewer) {
     if (cards[index] === id) showActions();
   };
 
+  // Add a page's cards to the grid; returns how many were new.
+  const loadPage = async (url, before) => {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const doc = new DOMParser().parseFromString(await resp.text(), "text/html");
+    const fresh = [...doc.querySelectorAll(".grid > .card")].filter(
+      (c) => c.id && !document.getElementById(c.id),
+    );
+    const grid = document.querySelector(".grid");
+    if (before) {
+      grid.prepend(...fresh);
+      prevPage = pagerLink(doc, "prev");
+    } else {
+      grid.append(...fresh);
+      nextPage = pagerLink(doc, "next");
+    }
+    return fresh.filter((c) => c.querySelector("img[data-full]")).length;
+  };
+
+  const stepTo = async (d) => {
+    const i = index + d;
+    if (i >= 0 && i < cards.length) return show(i);
+    const url = d < 0 ? prevPage : nextPage;
+    if (!url || loading) return; // the first or last work
+    loading = true;
+    actions.classList.add("updating");
+    try {
+      const added = await loadPage(url, d < 0);
+      cards = collect();
+      if (added) show(d < 0 ? added - 1 : i);
+    } catch {
+      // Stay on this work; the pager still works.
+    }
+    loading = false;
+    actions.classList.remove("updating");
+  };
+
   document.addEventListener("click", (e) => {
     const img = e.target.closest(".card img[data-full]");
     if (!img) return;
-    cards = [...document.querySelectorAll(".card")]
-      .filter((c) => c.id && c.querySelector("img[data-full]"))
-      .map((c) => c.id);
+    cards = collect();
     show(cards.indexOf(img.closest(".card").id));
     if (!viewer.open) viewer.showModal();
   });
@@ -207,7 +253,7 @@ if (viewer) {
   });
   viewer.addEventListener("click", (e) => {
     const step = e.target.closest("[data-step]");
-    if (step) show(index + Number(step.dataset.step));
+    if (step) stepTo(Number(step.dataset.step));
     // The picture fills its area, so a click on it (or beside it) closes too.
     else if (e.target === viewer || e.target === big || e.target.closest("[data-close]"))
       viewer.close();
@@ -216,12 +262,16 @@ if (viewer) {
   // leave focus outside the dialog.
   document.addEventListener("keydown", (e) => {
     if (!viewer.open || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === "ArrowRight") show(index + 1);
-    else if (e.key === "ArrowLeft") show(index - 1);
+    if (e.key === "ArrowRight") stepTo(1);
+    else if (e.key === "ArrowLeft") stepTo(-1);
     else {
       const button = actions.querySelector(`button[data-key="${e.key.toLowerCase()}"]`);
       if (button) act(button);
     }
   });
-  viewer.addEventListener("close", () => big.removeAttribute("src"));
+  viewer.addEventListener("close", () => {
+    big.removeAttribute("src");
+    // Leave the page at the work last looked at.
+    card()?.scrollIntoView({ block: "center" });
+  });
 }
