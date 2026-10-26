@@ -184,10 +184,14 @@ def create_app(svc: Service) -> Starlette:
             nxt = default
         return RedirectResponse(nxt, status_code=303)
 
+    # A TV request HA hasn't answered by now probably has nobody listening.
+    NO_ANSWER = 120
+
     async def overview(request: Request):
         cat = svc.catalogue()
         s = svc.settings()
         state = svc.publish_state(cat)
+        cmd = cat.get("tv_command")
         return render(
             request,
             "overview.html",
@@ -202,7 +206,10 @@ def create_app(svc: Service) -> Starlette:
             mqtt=svc.link.connected if svc.link else None,
             last_upload=cat.get("last_upload"),
             tv_actions=TV_ACTIONS,
-            tv_command=cat.get("tv_command"),
+            tv_command=cmd,
+            tv_unanswered=bool(
+                cmd and cmd["status"] == "sent" and time.time() - cmd["at"] > NO_ANSWER
+            ),
             slideshow=SLIDESHOW[s.slideshow],
             now=svc.now_showing(cat),
             catalogue_size=len(cat.works()),

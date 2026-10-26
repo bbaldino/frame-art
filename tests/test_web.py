@@ -277,6 +277,9 @@ def test_tv_buttons_ask_ha_and_show_its_answer(client):
     (sent,) = svc.link.sent
     assert sent["action"] == "samsung" and sent["duration"] == "15min"
     assert "waiting for Home Assistant" in c.get("/").text
+    cat = svc.catalogue()
+    cat.put("tv_command", {**cat.get("tv_command"), "at": 0})  # long ago
+    assert "no answer from Home Assistant" in c.get("/").text
     svc._on_ack({"command": {"id": sent["id"] - 1, "ok": True}})  # stale: ignored
     assert svc.catalogue().get("tv_command")["status"] == "sent"
     svc._on_ack({"command": {"id": sent["id"], "error": "The TV is off"}})
