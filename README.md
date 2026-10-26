@@ -27,9 +27,12 @@ docker run -p 8740:8740 \
 | `FRAME_ART_MQTT_HOST`, `FRAME_ART_MQTT_PORT` | Broker Home Assistant listens on |
 | `FRAME_ART_PORT` | Web UI port (default 8740) |
 
-The web UI (no authentication; keep it on the LAN) shows the pool and the
-catalogue, lets you ban or pin works, and holds the settings: crop tolerance,
-background style, kinds, museums, nudes filter, pool size, nightly run time.
+The web UI (no authentication; keep it on the LAN) shows the pool, the
+catalogue and a history of what the TV showed. You collect the works you want
+(nightly runs pick from your collection first, or only), ban the ones you
+don't, and pin the ones that should never leave the TV. It also holds the
+settings: crop tolerance, background style, kinds, museums, nudes filter, pool
+size, nightly run time.
 
 Home Assistant learns what to do from an MQTT-discovered `sensor.frame_art` and
 acknowledges on `frame-art/ack`; see `docs/design.md` for the automation.

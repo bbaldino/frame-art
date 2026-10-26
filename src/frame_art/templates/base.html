@@ -12,7 +12,7 @@
 <header class="top">
   <a class="brand" href="/">Frame Art</a>
   <nav>
-    {% for key, label in [("overview", "Overview"), ("now", "Now showing"), ("pool", "On the TV"), ("catalogue", "Catalogue"), ("compare", "Compare crops"), ("settings", "Settings"), ("runs", "Runs")] %}
+    {% for key, label in [("overview", "Overview"), ("now", "Now showing"), ("history", "History"), ("pool", "On the TV"), ("collection", "Collection"), ("catalogue", "Catalogue"), ("compare", "Compare crops"), ("settings", "Settings"), ("runs", "Runs")] %}
     <a href="{{ '/' if key == 'overview' else '/' ~ key }}" {% if page == key %}aria-current="page"{% endif %}>{{ label }}</a>
     {% endfor %}
   </nav>

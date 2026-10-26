@@ -88,6 +88,7 @@ if (tagInput) {
 
   const fetchSuggestions = async () => {
     const params = new URLSearchParams({ q: tagInput.value.trim() });
+    if (location.pathname === "/collection") params.set("collection", "1");
     for (const name of ["source", "kind"]) {
       const value = form.elements[name]?.value;
       if (value) params.set(name, value);

@@ -54,6 +54,20 @@ create table if not exists overrides (
     state text not null check (state in ('banned', 'pinned')),
     set_at real not null
 );
+-- Works Brian picked for the TV (0.6.0). Nightly runs draw from these first, or only.
+create table if not exists collection (
+    key text primary key references works(key),
+    added_at real not null
+);
+-- What the TV showed, from HA's reports: one row per stretch on screen.
+-- key is null for art frame-art didn't put there.
+create table if not exists shown (
+    id integer primary key,
+    content_id text not null,
+    key text,
+    started_at real not null,
+    ended_at real
+);
 -- Content ids HA has confirmed deleting from the TV, and other small state.
 create table if not exists deleted (
     content_id text primary key,
@@ -166,6 +180,8 @@ class Catalogue:
 
     def set_override(self, key: str, state: str | None) -> None:
         with self.db:
+            if state == "banned":
+                self.db.execute("delete from collection where key = ?", (key,))
             if state is None:
                 self.db.execute("delete from overrides where key = ?", (key,))
             else:
@@ -176,6 +192,52 @@ class Catalogue:
 
     def overrides(self) -> dict[str, str]:
         return dict(self.db.execute("select key, state from overrides"))
+
+    def collect(self, key: str, on: bool = True) -> None:
+        """Add a work to the collection (clearing a ban), or take it out."""
+        with self.db:
+            if not on:
+                self.db.execute("delete from collection where key = ?", (key,))
+                return
+            self.db.execute(
+                "delete from overrides where key = ? and state = 'banned'", (key,)
+            )
+            self.db.execute(
+                "insert or ignore into collection values (?, ?)", (key, time.time())
+            )
+
+    def collection(self) -> dict[str, float]:
+        """key -> when it was added."""
+        return dict(self.db.execute("select key, added_at from collection"))
+
+    def note_shown(self, content_id: str, key: str | None, showing: bool) -> None:
+        """Record what the TV shows now, closing the previous stretch if it ended."""
+        now = time.time()
+        with self.db:
+            row = self.db.execute(
+                "select id, content_id from shown where ended_at is null "
+                "order by id desc limit 1"
+            ).fetchone()
+            if row and showing and row[1] == content_id:
+                return
+            if row:
+                self.db.execute(
+                    "update shown set ended_at = ? where id = ?", (now, row[0])
+                )
+            if showing:
+                self.db.execute(
+                    "insert into shown (content_id, key, started_at) values (?, ?, ?)",
+                    (content_id, key, now),
+                )
+
+    def shown(self, limit: int = 300) -> list[dict]:
+        cols = ("id", "content_id", "key", "started_at", "ended_at")
+        rows = self.db.execute(
+            f"select {', '.join(cols)} from shown order by started_at desc, id desc "
+            "limit ?",
+            (limit,),
+        )
+        return [dict(zip(cols, r, strict=True)) for r in rows]
 
     def rejected(self) -> dict[str, str]:
         return dict(self.db.execute("select key, reason from rejected"))

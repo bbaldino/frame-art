@@ -38,8 +38,9 @@ SIDECAR = ".samsungtv_upload.json"
 FOLDERS = ("full", "matted")
 # Keep listing retired ids this long, so a night HA misses doesn't leak art onto the TV.
 RETIRE_WINDOW = 14 * 24 * 3600
-# A retired work may come back after this long.
+# A retired work may come back after this long (collection works: repeat_days).
 COOLDOWN = 365 * 24 * 3600
+DAY = 24 * 3600
 
 
 @dataclass
@@ -97,6 +98,8 @@ class Publisher:
         prefs: pipeline.Prefs = pipeline.DEFAULT_PREFS,
         photo_share: int = 0,
         photo_prefs: pipeline.Prefs = pipeline.DEFAULT_PREFS,
+        choose_from: str = "auto",
+        repeat_days: int = 60,
     ):
         if pad_style not in imaging.PAD_STYLES:
             raise ValueError(f"pad style must be one of {imaging.PAD_STYLES}")
@@ -109,6 +112,9 @@ class Publisher:
         # Percent of each run's new works that are photographs.
         self.photo_share = photo_share
         self.photo_prefs = photo_prefs
+        # "collection_first", "collection" (only) or "auto"; see settings.
+        self.choose_from = choose_from
+        self.repeat = repeat_days * DAY
 
     def run(
         self, count: int, pool: int, season: str | None, seed: int
@@ -129,11 +135,13 @@ class Publisher:
     ) -> tuple[list[str], list[str]]:
         now = time.time()
         history = self.cat.published()
-        blocked = {
-            p.key
-            for p in history
-            if p.retired_at is None or now - p.retired_at < COOLDOWN
-        }
+        collection = self.cat.collection()
+
+        def cooling(p: Published) -> bool:
+            wait = self.repeat if p.key in collection else COOLDOWN
+            return p.retired_at is None or now - p.retired_at < wait
+
+        blocked = {p.key for p in history if cooling(p)}
         blocked |= self.cat.rejected_keys()
         overrides = self.cat.overrides()
         blocked |= {k for k, s in overrides.items() if s == "banned"}
@@ -142,26 +150,35 @@ class Publisher:
         blocked -= {k for k, s in overrides.items() if s == "pinned"} - live_keys
         self._live_hashes = [p.phash for p in history if p.retired_at is None]
         works = self.cat.works()
+        if self.choose_from == "collection":
+            works = [w for w in works if w.key in collection]
+
+        def first(c: pipeline.Candidate) -> tuple[bool, bool]:
+            """Pinned works, then (unless automatic) the collection."""
+            key = c.work.key
+            return (
+                overrides.get(key) != "pinned",
+                self.choose_from == "auto" or key not in collection,
+            )
 
         def candidates(kinds, prefs) -> list[pipeline.Candidate]:
             pool = [w for w in works if w.kind in kinds]
             cands, _ = pipeline.filter_works(pool, season, prefs)
             cands = diversify([c for c in cands if c.work.key not in blocked], seed)
-            # Pinned works go first, keeping their diversified order.
-            cands.sort(key=lambda c: overrides.get(c.work.key) != "pinned")
+            cands.sort(key=first)  # stable: keeps the diversified order within
             return cands
 
         added: list[str] = []
         failed: list[str] = []
-        photos = round(count * self.photo_share / 100)
-        if photos:
-            self._take(
-                candidates(("photograph",), self.photo_prefs), photos, added, failed
-            )
-        # Art fills the rest, including any photos the catalogue couldn't supply.
+        photos = candidates(("photograph",), self.photo_prefs)
+        self._take(photos, round(count * self.photo_share / 100), added, failed)
+        # Art fills the rest, including any photos the catalogue couldn't supply...
         art_kinds = tuple(k for k in self.kinds if k != "photograph")
         if len(added) < count and art_kinds:
             self._take(candidates(art_kinds, self.prefs), count, added, failed)
+        # ...and photos fill in for art that ran out (a small collection, say).
+        if len(added) < count and self.photo_share:
+            self._take(photos, count, added, failed)
         return added, failed
 
     def _take(
@@ -171,10 +188,12 @@ class Publisher:
         added: list[str],
         failed: list[str],
     ) -> None:
-        """Render candidates in order until ``added`` holds ``upto`` works."""
-        for cand in cands:
-            if len(added) >= upto:
-                break
+        """Render candidates in order until ``added`` holds ``upto`` works.
+
+        Candidates are consumed from the list, so it can be resumed later.
+        """
+        while cands and len(added) < upto:
+            cand = cands.pop(0)
             try:
                 out = pipeline.render(self.http, cand, self.pad_style)
             except pipeline.Rejected as ex:

@@ -29,7 +29,8 @@ def client(tmp_path):
 
 @pytest.mark.parametrize(
     "path", ["/", "/pool", "/catalogue", "/catalogue?status=eligible", "/settings",
-             "/compare", "/runs", "/healthz"],
+             "/compare", "/runs", "/healthz", "/collection", "/history",
+             "/history?todo=1"],
 )  # fmt: skip
 def test_pages_render(client, path):
     c, _ = client
@@ -192,3 +193,57 @@ def test_tag_suggestions(client):
         t["tag"] for t in got
     }
     assert "snow" not in {t["tag"].lower() for t in got}
+
+
+def test_collect_from_the_catalogue(client):
+    c, svc = client
+    assert "0 in your collection" in c.get("/catalogue").text
+    assert "No works match" in c.get("/collection").text
+    c.post("/works/nga:1/override?next=/catalogue", data={"state": "collect"})
+    assert set(svc.catalogue().collection()) == {"nga:1"}
+    page = c.get("/collection").text
+    assert "1 matching" in page and "Haystacks" in page and "✓ Collected" in page
+    c.post("/works/nga:1/override?next=/catalogue", data={"state": "uncollect"})
+    assert svc.catalogue().collection() == {}
+
+
+def test_history_records_what_the_tv_showed(client):
+    import json
+
+    c, svc = client
+    cat = svc.catalogue()
+    cat.record_publish("haystacks.jpg", "full", "nga:1", 0)
+    (svc.dest / "full").mkdir(parents=True)
+    sidecar = {"haystacks.jpg": {"content_id": "MY_F0042", "modified": 1.0}}
+    (svc.dest / "full" / ".samsungtv_upload.json").write_text(json.dumps(sidecar))
+
+    svc._on_current({"content_id": "SAM-S1110748", "on": True})
+    svc._on_current({"content_id": "SAM-S1110748", "on": True})  # a repeat, not new
+    svc._on_current({"content_id": "MY_F0042", "on": True})
+    svc._on_current({"content_id": "MY_F0042", "on": False})  # screen off
+    svc._on_current({"content_id": "MY_F0042", "on": True})  # back on: a new stretch
+    rows = cat.shown()
+    assert [r["content_id"] for r in rows] == ["MY_F0042", "MY_F0042", "SAM-S1110748"]
+    assert rows[0]["ended_at"] is None and rows[1]["ended_at"] is not None
+    assert rows[0]["key"] == "nga:1" and rows[2]["key"] is None
+
+    page = c.get("/history").text
+    assert (
+        "Haystacks" in page and "Not from frame-art" in page and "showing now" in page
+    )
+    c.post("/works/nga:1/override?next=/history", data={"state": "collect"})
+    todo = c.get("/history?todo=1").text
+    assert "Haystacks" not in todo and "Nothing left to sort" in todo
+
+
+def test_pins_move_into_the_collection_once(client):
+    from frame_art.service import pins_to_collection
+
+    _, svc = client
+    cat = svc.catalogue()
+    cat.set_override("nga:1", "pinned")
+    pins_to_collection(cat)
+    assert set(cat.collection()) == {"nga:1"} and cat.overrides() == {}
+    cat.set_override("nga:1", "pinned")  # a pin made after the move stays a pin
+    pins_to_collection(cat)
+    assert cat.overrides() == {"nga:1": "pinned"}

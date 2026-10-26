@@ -26,6 +26,13 @@ SOURCE_NAMES = {
     "loc": "Library of Congress (Carol M. Highsmith archive)",
 }
 
+# Where the nightly run looks for new works.
+CHOOSE_FROM = {
+    "collection_first": "Your collection first, then automatic picks",
+    "collection": "Your collection only",
+    "auto": "Automatic picks only",
+}
+
 
 @dataclass
 class Settings:
@@ -41,6 +48,9 @@ class Settings:
     # Photos are mostly 3:2 (a 16% crop), so they get their own, looser level.
     photo_crop: str = "medium"
     # The pool on the TV.
+    choose_from: str = "collection_first"
+    # A collection work may go back on the TV this long after it was retired.
+    repeat_days: int = 60
     count: int = 7  # new works per nightly run
     pool: int = 150  # works kept live
     # Schedule.
@@ -91,6 +101,10 @@ class Settings:
             errors.append("photography share must be 0-100%")
         if not self.sources or set(self.sources) - set(SOURCES):
             errors.append(f"sources must be some of {list(SOURCES)}")
+        if self.choose_from not in CHOOSE_FROM:
+            errors.append(f"choose from must be one of {list(CHOOSE_FROM)}")
+        if not 1 <= self.repeat_days <= 3650:
+            errors.append("repeat interval must be 1-3650 days")
         if not 0 <= self.count <= 25:
             # The integration's batch upload fails beyond about 25 at once.
             errors.append("new works per night must be 0-25")

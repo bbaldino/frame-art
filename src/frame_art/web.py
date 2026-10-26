@@ -34,9 +34,9 @@ from starlette.templating import Jinja2Templates
 
 from . import imaging, keys, pipeline
 from .classify import current_season
-from .publish import read_sidecar
+from .publish import find_content, read_sidecar
 from .service import JOB_KINDS, Service
-from .settings import PHOTO_SOURCES, SOURCE_NAMES, SOURCES, Settings
+from .settings import CHOOSE_FROM, PHOTO_SOURCES, SOURCE_NAMES, SOURCES, Settings
 from .sources import ART_KINDS, KINDS
 
 log = logging.getLogger(__name__)
@@ -142,6 +142,17 @@ def _when(ts: float | None, tz) -> str:
     return datetime.datetime.fromtimestamp(ts, tz).strftime("%a %b %-d, %-I:%M %p")
 
 
+def _span(seconds: float) -> str:
+    """'2h 5m', '12m', 'under a minute'."""
+    m = int(seconds // 60)
+    if m < 1:
+        return "under a minute"
+    if m < 60:
+        return f"{m}m"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m" if h < 24 else f"{h // 24}d {h % 24}h"
+
+
 def create_app(svc: Service) -> Starlette:
     templates = Jinja2Templates(directory=HERE / "templates")
     env = templates.env
@@ -189,7 +200,7 @@ def create_app(svc: Service) -> Starlette:
     async def pool(request: Request):
         cat = svc.catalogue()
         works = {w.key: w for w in cat.works()}
-        overrides = cat.overrides()
+        overrides, collection = cat.overrides(), cat.collection()
         sidecars = {f: read_sidecar(svc.dest / f) for f in ("full", "matted")}
         items = [
             {
@@ -197,6 +208,7 @@ def create_app(svc: Service) -> Starlette:
                 "w": works.get(p.key),
                 "on_tv": p.filename in sidecars.get(p.folder, {}),
                 "state": overrides.get(p.key),
+                "collected": p.key in collection,
             }
             for p in reversed(cat.published(active=True))
         ]
@@ -215,11 +227,16 @@ def create_app(svc: Service) -> Starlette:
         text = (q.get("q") or "").strip().lower()
         source, kind, status = q.get("source"), q.get("kind"), q.get("status")
         tags = wanted_tags(q)
+        collection = cat.collection()
+        # /collection is the catalogue limited to Brian's picks, newest first.
+        only_collection = request.url.path == "/collection"
 
         rows = []
         counts = dict.fromkeys(STATUSES, 0)
         works = cat.works()
         for w in works:
+            if only_collection and w.key not in collection:
+                continue
             if source and w.source != source:
                 continue
             if kind and w.kind != kind:
@@ -261,9 +278,13 @@ def create_app(svc: Service) -> Starlette:
                     "score": sc,
                     "mode": mode,
                     "override": overrides.get(w.key),
+                    "collected": w.key in collection,
                 }
             )
-        rows.sort(key=lambda r: r["score"], reverse=True)
+        if only_collection:
+            rows.sort(key=lambda r: collection[r["w"].key], reverse=True)
+        else:
+            rows.sort(key=lambda r: r["score"], reverse=True)
         pages = max(1, math.ceil(len(rows) / PAGE))
         page = min(max(1, int(q.get("page") or 1)), pages)
         base = [
@@ -271,14 +292,17 @@ def create_app(svc: Service) -> Starlette:
         ]
 
         def url(tags: list[str], page: int = 1) -> str:
-            return "/catalogue?" + urlencode(
-                base + [("tag", t) for t in tags] + [("page", page)]
+            return (
+                request.url.path
+                + "?"
+                + urlencode(base + [("tag", t) for t in tags] + [("page", page)])
             )
 
         return render(
             request,
             "catalogue.html",
-            page="catalogue",
+            page="collection" if only_collection else "catalogue",
+            in_collection=len(collection),
             rows=rows[(page - 1) * PAGE : page * PAGE],
             total=len(rows),
             counts=counts,
@@ -297,13 +321,66 @@ def create_app(svc: Service) -> Starlette:
             + ("?" + request.url.query if request.url.query else ""),
         )
 
+    async def history_page(request: Request):
+        cat = svc.catalogue()
+        works = {w.key: w for w in cat.works()}
+        overrides, collection = cat.overrides(), cat.collection()
+        published = cat.published()
+        latest = {p.key: p for p in published}  # oldest first, so the last wins
+        live = {p.key for p in published if p.retired_at is None}
+        todo = request.query_params.get("todo") == "1"
+        resolved: dict[str, str | None] = {}
+        items, day = [], None
+        now = time.time()
+        for r in cat.shown():
+            key = r["key"]
+            if key is None:
+                # Uploaded after it was first seen: the sidecar knows it now.
+                if r["content_id"] not in resolved:
+                    p = find_content(cat, svc.dest, r["content_id"])
+                    resolved[r["content_id"]] = p.key if p else None
+                key = resolved[r["content_id"]]
+            w = works.get(key) if key else None
+            state = overrides.get(key) if key else None
+            collected = key in collection
+            if todo and (w is None or collected or state == "banned"):
+                continue
+            started = datetime.datetime.fromtimestamp(r["started_at"], svc.tz)
+            label = started.strftime("%A %B %-d")
+            if label != day:
+                items.append({"day": label})
+                day = label
+            p = latest.get(key)
+            items.append(
+                {
+                    "row": r,
+                    "w": w,
+                    "key": key,
+                    "state": state,
+                    "collected": collected,
+                    # None: never published (frame-art didn't put it there).
+                    "live": (key in live) if key in latest else None,
+                    "image": f"/thumb/{p.folder}/{p.filename}"
+                    if p and p.retired_at is None
+                    else (pipeline.thumb_url(w) if w else None),
+                    "started": started.strftime("%-I:%M %p"),
+                    "span": _span((r["ended_at"] or now) - r["started_at"]),
+                    "current": r["ended_at"] is None,
+                }
+            )
+        return render(request, "history.html", page="history", items=items, todo=todo)
+
     async def tags_json(request: Request):
         q = request.query_params
         source, kind = q.get("source"), q.get("kind")
+        cat = svc.catalogue()
+        collection = cat.collection() if q.get("collection") == "1" else None
         works = [
             w
-            for w in svc.catalogue().works()
-            if (not source or w.source == source) and (not kind or w.kind == kind)
+            for w in cat.works()
+            if (not source or w.source == source)
+            and (not kind or w.kind == kind)
+            and (collection is None or w.key in collection)
         ]
         text = (q.get("q") or "").strip().lower()
         return JSONResponse(suggest_tags(works, wanted_tags(q), text))
@@ -330,6 +407,8 @@ def create_app(svc: Service) -> Starlette:
                 new.crawl_limit = int(form.get("crawl_limit", s.crawl_limit))
                 new.photo_share = int(form.get("photo_share", s.photo_share))
                 new.photo_crop = form.get("photo_crop", s.photo_crop)
+                new.choose_from = form.get("choose_from", s.choose_from)
+                new.repeat_days = int(form.get("repeat_days", s.repeat_days))
             except ValueError as ex:
                 errors.append(f"not a number: {ex}")
             if new.pad_style not in UI_PAD_STYLES:
@@ -348,6 +427,7 @@ def create_app(svc: Service) -> Starlette:
             errors=errors,
             saved=saved,
             crop_labels=CROP_LABELS,
+            choose_from=CHOOSE_FROM,
             pad_styles=UI_PAD_STYLES,
             art_sources=[x for x in SOURCES if x not in PHOTO_SOURCES],
             photo_sources=PHOTO_SOURCES,
@@ -399,12 +479,15 @@ def create_app(svc: Service) -> Starlette:
         key = request.path_params["key"]
         form = await request.form()
         state = form.get("state")
-        if state not in ("banned", "pinned", "clear"):
+        if state not in ("banned", "pinned", "clear", "collect", "uncollect"):
             return PlainTextResponse("bad state", 400)
         cat = svc.catalogue()
         if not any(w.key == key for w in cat.works()):
             return PlainTextResponse("unknown work", 404)
-        cat.set_override(key, None if state == "clear" else state)
+        if state in ("collect", "uncollect"):
+            cat.collect(key, state == "collect")
+        else:
+            cat.set_override(key, None if state == "clear" else state)
         if state == "banned" and key in {p.key for p in cat.published(active=True)}:
             svc.submit("sync")  # take it off the TV now, not at the next run
         return back(request)
@@ -455,6 +538,8 @@ def create_app(svc: Service) -> Starlette:
             Route("/render/{folder}/{name}", rendered),
             Route("/pool", pool),
             Route("/catalogue", catalogue),
+            Route("/collection", catalogue),
+            Route("/history", history_page),
             Route("/tags.json", tags_json),
             Route("/settings", settings_page, methods=["GET", "POST"]),
             Route("/compare", compare_page),

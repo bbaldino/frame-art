@@ -67,6 +67,18 @@ class _JobLog(logging.Handler):
             self.buf.write(self.format(record) + "\n")
 
 
+def pins_to_collection(cat: Catalogue) -> None:
+    """Once, on upgrading to 0.6.0: pins meant "I want this"; that is the collection now."""
+    if cat.get("pins_to_collection"):
+        return
+    for key, state in cat.overrides().items():
+        if state == "pinned":
+            cat.collect(key)
+            cat.set_override(key, None)
+            log.info("moved pinned %s into the collection", key)
+    cat.put("pins_to_collection", True)
+
+
 class Service:
     def __init__(
         self,
@@ -117,6 +129,7 @@ class Service:
         threading.Thread(target=self._worker, name="jobs", daemon=True).start()
         threading.Thread(target=self._scheduler, name="schedule", daemon=True).start()
         cat = self.catalogue()
+        pins_to_collection(cat)
         self.publish_state(cat)
         self.publish_now(cat)
 
@@ -284,14 +297,11 @@ class Service:
         # "since" is when this artwork came up, not when HA last re-sent it.
         since = prev.get("at") if prev.get("content_id") == cid else time.time()
         on = payload.get("on")
-        cat.put(
-            "tv_current",
-            {
-                "content_id": cid,
-                "at": since,
-                "on": on if isinstance(on, bool) else None,
-            },
-        )
+        on = on if isinstance(on, bool) else None
+        cat.put("tv_current", {"content_id": cid, "at": since, "on": on})
+        p = find_content(cat, self.dest, cid)
+        # An unknown power state counts as on: HA only reports while it can see the TV.
+        cat.note_shown(cid, p.key if p else None, showing=on is not False)
         self.publish_now(cat)
 
     def now_showing(self, cat: Catalogue | None = None) -> dict:

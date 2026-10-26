@@ -185,6 +185,73 @@ def test_no_photos_without_a_share(setup):
     assert set(_kinds(cat)) == {"painting"}
 
 
+def _live(cat: Catalogue) -> set[str]:
+    return {p.key for p in cat.published(active=True)}
+
+
+def test_collection_goes_first_then_automatic(setup):
+    cat, dest = setup
+    cat.collect("s1:4")
+    cat.collect("s2:8")
+    pub = publish.Publisher(cat, None, dest, "blur", choose_from="collection_first")
+    pub.run(4, 50, None, seed=1)
+    live = _live(cat)
+    assert {"s1:4", "s2:8"} <= live and len(live) == 4
+
+
+def test_collection_only_adds_nothing_else(setup):
+    cat, dest = setup
+    cat.collect("s1:4")
+    pub = publish.Publisher(cat, None, dest, "blur", choose_from="collection")
+    pub.run(4, 50, None, seed=1)
+    assert _live(cat) == {"s1:4"}
+    pub.run(4, 50, None, seed=2)  # already live: nothing left to add
+    assert len(cat.published()) == 1
+
+
+def test_collection_only_lets_photos_fill_in_for_missing_art(setup):
+    cat, dest = setup
+    _photos(cat, 3)
+    for i in range(3):
+        cat.collect(f"commons:{100 + i}")
+    cat.collect("s1:4")
+    medium = pipeline.Prefs(imaging.CROP_LEVELS["medium"])
+    publish.Publisher(
+        cat, None, dest, "blur", photo_share=25, photo_prefs=medium,
+        choose_from="collection",
+    ).run(4, 50, None, seed=1)  # fmt: skip
+    assert sorted(_kinds(cat)) == ["painting"] + ["photograph"] * 3
+
+
+def test_collection_works_come_back_sooner(setup, monkeypatch):
+    cat, dest = setup
+    cat.collect("s1:4")
+    pub = publish.Publisher(
+        cat, None, dest, "blur", choose_from="collection", repeat_days=30
+    )
+    pub.run(1, 1, None, seed=1)
+    cat.set_override("s1:4", "banned")
+    pub.sync()  # retired now
+    cat.set_override("s1:4", None)
+    cat.collect("s1:4")
+    pub.run(1, 1, None, seed=2)
+    assert _live(cat) == set()  # still cooling down
+    later = publish.time.time() + 31 * publish.DAY
+    monkeypatch.setattr(publish.time, "time", lambda: later)
+    pub.run(1, 1, None, seed=3)
+    assert _live(cat) == {"s1:4"}
+
+
+def test_ban_and_collect_exclude_each_other(tmp_path):
+    cat = Catalogue(tmp_path / "db.sqlite")
+    cat.upsert([make_work(1)])
+    cat.collect("s1:1")
+    cat.set_override("s1:1", "banned")
+    assert cat.collection() == {}
+    cat.collect("s1:1")
+    assert "s1:1" in cat.collection() and cat.overrides() == {}
+
+
 def test_metadata_kept_out_of_the_works_row(tmp_path):
     """0.2.0 builds Work(**data) from works.data, so new fields must live elsewhere."""
     cat = Catalogue(tmp_path / "db.sqlite")

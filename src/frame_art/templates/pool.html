@@ -14,7 +14,7 @@
       · {% if it.on_tv %}on the TV{% else %}<span class="warn">not uploaded yet</span>{% endif %}
       {% if it.state == "pinned" %} · <strong>pinned</strong>{% endif %}
     </div>
-    {{ override_buttons(it.p.key, it.state, "/pool#" ~ card_id(it.p.key)) }}
+    {{ override_buttons(it.p.key, it.state, "/pool#" ~ card_id(it.p.key), it.collected) }}
   </article>
 {% else %}
   <p class="muted">Nothing published yet. Use "Run now" on the overview.</p>

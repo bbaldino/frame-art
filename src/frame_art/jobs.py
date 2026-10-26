@@ -74,6 +74,8 @@ def publisher(cat: Catalogue, http: Http, dest: Path, s: Settings) -> Publisher:
         s.prefs(),
         s.photo_share,
         s.photo_prefs(),
+        s.choose_from,
+        s.repeat_days,
     )
 
 

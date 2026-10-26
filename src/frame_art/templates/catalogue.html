@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 {% from "_macros.html" import override_buttons, caption %}
-{% block title %}Catalogue · Frame Art{% endblock %}
+{% block title %}{{ "Collection" if page == "collection" else "Catalogue" }} · Frame Art{% endblock %}
 {% block body %}
-<h1>Catalogue <span class="muted">{{ total }} matching</span></h1>
-<form class="filters" method="get" action="/catalogue">
+<h1>{{ "Collection" if page == "collection" else "Catalogue" }} <span class="muted">{{ total }} matching{% if page != "collection" %} · <a href="/collection">{{ in_collection }} in your collection</a>{% endif %}</span></h1>
+<form class="filters" method="get" action="/{{ page }}">
   <input type="search" name="q" value="{{ q.get('q', '') }}" placeholder="Search title, artist, style, place, subjects">
   <select name="status">
     <option value="">Any status</option>
@@ -25,11 +25,15 @@
   <button>Filter</button>
 </form>
 {% if tags %}<div class="chips active-tags">{% for t in tags %}<a class="chip active" href="{{ drop_tag(t) }}" title="Remove this tag">{{ t }} ✕</a>{% endfor %}{% if tags | length > 1 %}<a class="small" href="{{ clear_tags }}">Clear all</a>{% endif %}</div>{% endif %}
+{% if page == "collection" %}
+<p class="muted small">Newest additions first. Depending on Settings, nightly runs pick from these first or only. {% if not in_collection %}Nothing here yet: use "+ Collect" in the <a href="/catalogue">catalogue</a> or on the <a href="/history">history</a> page.{% endif %}</p>
+{% else %}
 <p class="muted small">Sorted by how likely each work is to be picked: museum highlights and well-known works (Wikipedia articles) first, a boost for the current season.</p>
+{% endif %}
 <div class="grid">
 {% for r in rows %}
   {% set w = r.w %}
-  <article class="card {{ r.status }}" id="{{ card_id(w.key) }}">
+  <article class="card {{ r.status }}{% if r.collected %} collected{% endif %}" id="{{ card_id(w.key) }}">
     {% set t = thumb_url(w) %}
     {% if t %}<img loading="lazy" referrerpolicy="no-referrer" src="{{ t }}" alt="">{% else %}<div class="noimg"></div>{% endif %}
     {{ caption(w) }}
@@ -42,7 +46,7 @@
     {% if facts %}<div class="meta facts">{% for f in facts %}<a href="{{ add_tag(f) }}">{{ f }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
     {% if w.subjects %}<div class="chips">{% for x in w.subjects[:6] %}<a class="chip" href="{{ add_tag(x) }}">{{ x }}</a>{% endfor %}{% if w.subjects | length > 6 %}<span class="muted small" title="{{ w.subjects[6:] | join(', ') }}">+{{ w.subjects | length - 6 }}</span>{% endif %}</div>{% endif %}
     <div class="status-line"><span class="badge {{ r.status }}">{{ statuses[r.status] }}</span>{% if r.reason %} <span class="muted">{{ r.reason }}</span>{% endif %}</div>
-    {{ override_buttons(w.key, r.override, here ~ "#" ~ card_id(w.key)) }}
+    {{ override_buttons(w.key, r.override, here ~ "#" ~ card_id(w.key), r.collected) }}
   </article>
 {% else %}
   <p class="muted">No works match.</p>
