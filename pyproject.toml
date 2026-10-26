@@ -1,6 +1,6 @@
 [project]
 name = "frame-art"
-version = "0.1.0"
+version = "0.2.0"
 description = "Public-domain art for a Samsung Frame TV, published for Home Assistant to upload"
 readme = "README.md"
 authors = [
