@@ -17,6 +17,10 @@ log = logging.getLogger(__name__)
 RAW = "https://github.com/NationalGalleryOfArt/opendata/raw/main/data/{}.csv"
 MAX_AGE = 7 * 24 * 3600
 KINDS = {"painting": "Painting", "drawing": "Drawing", "print": "Print"}
+TERM_KINDS = {
+    "Keyword": "subject", "Theme": "subject", "Style": "style",
+    "School": "school", "Place Executed": "place",
+}  # fmt: skip
 
 csv.field_size_limit(2**31 - 1)
 # One adapter per kind crawls in parallel; only one of them should download a CSV.
@@ -50,29 +54,36 @@ class Nga:
                 if row["viewtype"] == "primary" and row["openaccess"] == "1":
                     images[row["depictstmsobjectid"]] = row
 
-        # Keyword and theme terms ("Female nude", ...), only the ones we filter on.
-        nudes: set[str] = set()
-        with open(self._csv(http, "objects_terms"), newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                if row["termtype"] in ("Keyword", "Theme") and is_nude_subject(
-                    row["term"]
-                ):
-                    nudes.add(row["objectid"])
-
-        works = []
+        rows = []
         with open(self._csv(http, "objects"), newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
-                if row["classification"] != KINDS[self.kind]:
-                    continue
-                img = images.get(row["objectid"])
-                if img is None:
-                    continue
-                works.append(self._work(row, img, row["objectid"] in nudes))
+                if (
+                    row["classification"] == KINDS[self.kind]
+                    and row["objectid"] in images
+                ):
+                    rows.append(row)
+
+        # Terms for those objects: keywords and themes ("Female nude", "Landscape"),
+        # style ("Impressionist") or school ("French"), and where it was made.
+        wanted = {row["objectid"] for row in rows}
+        terms: dict[str, dict[str, list[str]]] = {}
+        with open(self._csv(http, "objects_terms"), newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                kind = TERM_KINDS.get(row["termtype"])
+                if kind and row["objectid"] in wanted and row["term"] != "Keywords":
+                    obj = terms.setdefault(row["objectid"], {})
+                    obj.setdefault(kind, []).append(row["term"])
+
+        works = [
+            self._work(row, images[row["objectid"]], terms.get(row["objectid"], {}))
+            for row in rows
+        ]
         # Works with a gallery location are on view: NGA's nearest thing to highlights.
         works.sort(key=lambda w: not w.highlight)
         yield from works[:limit]
 
-    def _work(self, row: dict, img: dict, nude: bool) -> Work:
+    def _work(self, row: dict, img: dict, terms: dict[str, list[str]]) -> Work:
+        subjects = terms.get("subject", [])
         width, height = int(img["width"]), int(img["height"])
         if img.get("maxpixels"):
             cap = int(img["maxpixels"])
@@ -93,5 +104,9 @@ class Nga:
             wikidata=row.get("wikidataid") or None,
             inventory=row.get("accessionnum"),
             highlight=bool(row.get("locationid")),
-            tags=seasons_for(row["title"]) + (["nude"] if nude else []),
+            tags=seasons_for(row["title"], *subjects)
+            + (["nude"] if is_nude_subject(*subjects) else []),
+            subjects=subjects,
+            style=(terms.get("style") or terms.get("school") or [None])[0],
+            place=(terms.get("place") or [None])[0],
         )

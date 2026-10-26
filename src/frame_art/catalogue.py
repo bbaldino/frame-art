@@ -9,12 +9,21 @@ from pathlib import Path
 
 from .model import Work
 
+# Work fields stored in work_meta rather than works.data (see the schema).
+META_FIELDS = ("subjects", "style", "genre", "place", "lat", "lon", "description")
+
 SCHEMA = """
 create table if not exists works (
     key text primary key,
     source text not null,
     data text not null,
     crawled_at real not null
+);
+-- Descriptive metadata added in 0.3.0, kept apart from works.data so that
+-- older versions (whose Work rejects unknown fields) can still read the catalogue.
+create table if not exists work_meta (
+    key text primary key references works(key),
+    data text not null
 );
 create table if not exists rendered (
     key text primary key references works(key),
@@ -49,6 +58,11 @@ create table if not exists overrides (
 create table if not exists deleted (
     content_id text primary key,
     deleted_at real not null
+);
+-- Dominant colours of each rendered work, as a JSON list of hex strings.
+create table if not exists palettes (
+    key text primary key references works(key),
+    colors text not null
 );
 create table if not exists kv (
     key text primary key,
@@ -88,20 +102,30 @@ class Catalogue:
 
     def upsert(self, works: Iterable[Work]) -> int:
         now = time.time()
-        rows = [(w.key, w.source, json.dumps(w.to_dict()), now) for w in works]
+        rows, meta = [], []
+        for w in works:
+            d = w.to_dict()
+            extra = {k: d.pop(k) for k in META_FIELDS}
+            rows.append((w.key, w.source, json.dumps(d), now))
+            meta.append((w.key, json.dumps(extra)))
         with self.db:
             self.db.executemany(
                 "insert into works values (?, ?, ?, ?) on conflict(key) do update set "
                 "data = excluded.data, crawled_at = excluded.crawled_at",
                 rows,
             )
+            self.db.executemany("insert or replace into work_meta values (?, ?)", meta)
         return len(rows)
 
     def works(self, source: str | None = None) -> list[Work]:
-        q, args = "select data from works", ()
+        q = "select w.data, m.data from works w left join work_meta m using (key)"
+        args: tuple = ()
         if source:
-            q, args = q + " where source = ?", (source,)
-        return [Work.from_dict(json.loads(d)) for (d,) in self.db.execute(q, args)]
+            q, args = q + " where w.source = ?", (source,)
+        return [
+            Work.from_dict({**json.loads(d), **json.loads(m or "{}")})
+            for d, m in self.db.execute(q, args)
+        ]
 
     def record_render(
         self, key: str, phash: int, mode: str, scale: float, path: Path
@@ -111,6 +135,19 @@ class Catalogue:
                 "insert or replace into rendered values (?, ?, ?, ?, ?, ?)",
                 (key, f"{phash:016x}", mode, scale, str(path), time.time()),
             )
+
+    def set_palette(self, key: str, colors: list[str]) -> None:
+        with self.db:
+            self.db.execute(
+                "insert or replace into palettes values (?, ?)",
+                (key, json.dumps(colors)),
+            )
+
+    def palettes(self) -> dict[str, list[str]]:
+        return {
+            k: json.loads(c)
+            for k, c in self.db.execute("select key, colors from palettes")
+        }
 
     def rendered_hashes(self) -> dict[str, int]:
         return {

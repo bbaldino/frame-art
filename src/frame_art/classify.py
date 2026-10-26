@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 
 # Words in a title or subject tag that place a work in a season. Matched on
@@ -135,3 +136,16 @@ def current_season(month: int) -> str:
         7: "summer",
         8: "summer",
     }.get(month, "autumn")
+
+
+_TAG = re.compile(r"<[^>]+>")
+
+
+def plain_text(text: str | None, limit: int = 1500) -> str | None:
+    """Collapse HTML or multi-line museum text to one plain paragraph, capped."""
+    if not text:
+        return None
+    text = " ".join(html.unescape(_TAG.sub(" ", text)).split())
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0] + "…"
+    return text or None

@@ -183,3 +183,19 @@ def test_no_photos_without_a_share(setup):
     _photos(cat, 10)
     publish.Publisher(cat, None, dest, "blur").run(5, 50, None, seed=1)
     assert set(_kinds(cat)) == {"painting"}
+
+
+def test_metadata_kept_out_of_the_works_row(tmp_path):
+    """0.2.0 builds Work(**data) from works.data, so new fields must live elsewhere."""
+    cat = Catalogue(tmp_path / "db.sqlite")
+    w = make_work(1)
+    w.subjects, w.style, w.lat = ["Haystacks"], "Impressionism", 48.1
+    cat.upsert([w])
+    (data,) = cat.db.execute("select data from works").fetchone()
+    assert not set(json.loads(data)) & {"subjects", "style", "lat"}
+    back = cat.works()[0]
+    assert (back.subjects, back.style, back.lat) == (
+        ["Haystacks"],
+        "Impressionism",
+        48.1,
+    )

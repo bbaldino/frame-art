@@ -267,3 +267,15 @@ def phash(im: Image.Image) -> int:
 
 def hamming(a: int, b: int) -> int:
     return (a ^ b).bit_count()
+
+
+def palette(im: Image.Image, n: int = 5) -> list[str]:
+    """The ``n`` dominant colours as hex, most common first."""
+    small = im.convert("RGB")
+    small.thumbnail((96, 96))
+    q = small.quantize(colors=n, method=Image.Quantize.MEDIANCUT)
+    pal = q.getpalette() or []
+    counts = sorted(q.getcolors() or [], reverse=True)
+    return [
+        "#{:02x}{:02x}{:02x}".format(*pal[i * 3 : i * 3 + 3]) for _, i in counts[:n]
+    ]

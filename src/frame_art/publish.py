@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import imaging, pipeline
-from .catalogue import Catalogue
+from .catalogue import Catalogue, Published
 from .net import Http
 
 log = logging.getLogger(__name__)
@@ -201,6 +201,8 @@ class Publisher:
             path.parent.mkdir(parents=True, exist_ok=True)
             pipeline.write_atomic(out.image, path, self.dest / ".staging")
             self.cat.record_publish(path.name, folder, cand.work.key, out.phash)
+            if out.colors:
+                self.cat.set_palette(cand.work.key, out.colors)
             self._live_hashes.append(out.phash)
             added.append(f"{folder}/{path.name}")
             log.info("published %s/%s", folder, path.name)
@@ -271,3 +273,14 @@ def pending(cat: Catalogue, dest: Path) -> dict:
         if content_id and content_id not in deleted:
             retire.append(content_id)
     return {"to_upload": to_upload, "retire": retire, "live": len(live)}
+
+
+def find_content(cat: Catalogue, dest: Path, content_id: str) -> Published | None:
+    """The published file the TV knows as ``content_id``, live or retired."""
+    sidecars = {f: read_sidecar(dest / f) for f in FOLDERS}
+    for p in cat.published():
+        if p.content_id == content_id:
+            return p
+        if sidecars.get(p.folder, {}).get(p.filename) == content_id:
+            return p
+    return None

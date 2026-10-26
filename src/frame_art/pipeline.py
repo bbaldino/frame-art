@@ -240,6 +240,7 @@ class Output:
     plan: imaging.Plan
     phash: int
     image: Image.Image  # final pixels, ready to save
+    colors: list[str] = field(default_factory=list)  # dominant colours, hex
 
 
 def load_work(http: Http, cand: Candidate) -> Image.Image:
@@ -269,7 +270,11 @@ def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
     if plan.scale > MAX_UPSCALE:
         raise TooSmall(f"{im.size[0]}x{im.size[1]} needs {plan.scale:.2f}x upscaling")
     return Output(
-        cand.work, plan, imaging.phash(im), imaging.render(im, plan, pad_style)
+        cand.work,
+        plan,
+        imaging.phash(im),
+        imaging.render(im, plan, pad_style),
+        imaging.palette(im),
     )
 
 

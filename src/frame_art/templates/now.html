@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Now showing · Frame Art{% endblock %}
+{% block body %}
+<h1>Now showing</h1>
+{% if not now.content_id %}
+<p class="muted">Home Assistant hasn't reported what the TV is showing yet. It does whenever the picture changes.</p>
+{% elif not now.ours %}
+<p>The TV is showing something frame-art didn't put there <span class="muted">(TV id {{ now.content_id }})</span>, such as your own photo or an Art Store piece.</p>
+{% else %}
+<div class="now">
+  <a href="/render/{{ now.file }}" target="_blank" rel="noopener"><img src="/render/{{ now.file }}" alt="{{ now.title }}"></a>
+  <div class="about">
+    <h2>{% if now.url %}<a href="{{ now.url }}" target="_blank" rel="noopener">{{ now.title }}</a>{% else %}{{ now.title }}{% endif %}</h2>
+    <p class="who">{{ now.artist or "Unknown artist" }}{% if now.date %}, {{ now.date }}{% endif %}</p>
+    {% if now.description %}<p>{{ now.description }}</p>{% endif %}
+    <dl>
+      <dt>From</dt><dd>{% if now.url %}<a href="{{ now.url }}" target="_blank" rel="noopener">{{ now.source }}</a>{% else %}{{ now.source }}{% endif %}</dd>
+      {% if now.style %}<dt>Style</dt><dd>{{ now.style }}</dd>{% endif %}
+      {% if now.genre %}<dt>Genre</dt><dd>{{ now.genre }}</dd>{% endif %}
+      {% if now.place %}<dt>Place</dt><dd>{{ now.place }}</dd>{% endif %}
+      {% if now.lat is not none and now.lon is not none %}<dt>Taken at</dt><dd><a href="https://www.openstreetmap.org/?mlat={{ now.lat }}&mlon={{ now.lon }}#map=12/{{ now.lat }}/{{ now.lon }}" target="_blank" rel="noopener">{{ "%.4f, %.4f" | format(now.lat, now.lon) }}</a></dd>{% endif %}
+      {% if now.subjects %}<dt>Subjects</dt><dd>{{ now.subjects | join(", ") }}</dd>{% endif %}
+      {% if now.colors %}<dt>Colours</dt><dd class="swatches">{% for c in now.colors %}<span style="background: {{ c }}" title="{{ c }}"></span>{% endfor %}</dd>{% endif %}
+      <dt>Licence</dt><dd>{{ now.license }}</dd>
+    </dl>
+    <p class="muted small">Showing since {{ ago(now.since) }} · TV id {{ now.content_id }}</p>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

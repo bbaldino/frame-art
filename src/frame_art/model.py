@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 
 
 @dataclass
@@ -26,6 +26,14 @@ class Work:
     sitelinks: int = 0  # Wikipedia articles about the work (notability)
     highlight: bool = False
     tags: list[str] = field(default_factory=list)
+    # Descriptive metadata, for "what's on the TV" and future filtering.
+    subjects: list[str] = field(default_factory=list)  # keywords, depicted things
+    style: str | None = None  # movement, style or school
+    genre: str | None = None
+    place: str | None = None  # where it was made, or where the photo was taken
+    lat: float | None = None
+    lon: float | None = None
+    description: str | None = None
 
     @property
     def key(self) -> str:
@@ -36,4 +44,6 @@ class Work:
 
     @classmethod
     def from_dict(cls, d: dict) -> Work:
-        return cls(**d)
+        # Ignore fields from a newer version, so a rollback can still read the catalogue.
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in d.items() if k in known})

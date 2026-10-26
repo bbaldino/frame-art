@@ -21,7 +21,12 @@ import uvicorn
 from PIL import Image
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, PlainTextResponse, RedirectResponse
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
@@ -335,12 +340,31 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
                 tmp.replace(out)
         return FileResponse(out, headers={"Cache-Control": "max-age=86400"})
 
+    async def now_page(request: Request):
+        return render(request, "now.html", page="now", now=svc.now_showing())
+
+    async def now_json(request: Request):
+        return JSONResponse(svc.now_showing())
+
+    async def rendered(request: Request):
+        """A published render at full size, for the Now showing page."""
+        folder, name = request.path_params["folder"], request.path_params["name"]
+        if folder not in ("full", "matted") or not re.fullmatch(r"[\w.-]+\.jpg", name):
+            return PlainTextResponse("not found", 404)
+        src = svc.dest / folder / name
+        if not src.exists():
+            return PlainTextResponse("not found", 404)
+        return FileResponse(src, headers={"Cache-Control": "max-age=86400"})
+
     async def healthz(request: Request):
         return PlainTextResponse("ok")
 
     return Starlette(
         routes=[
             Route("/", overview),
+            Route("/now", now_page),
+            Route("/now.json", now_json),
+            Route("/render/{folder}/{name}", rendered),
             Route("/pool", pool),
             Route("/catalogue", catalogue),
             Route("/settings", settings_page, methods=["GET", "POST"]),

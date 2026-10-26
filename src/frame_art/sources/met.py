@@ -86,4 +86,8 @@ class Met:
             highlight=bool(d.get("isHighlight")),
             tags=seasons_for(d.get("title"), *terms)
             + (["nude"] if is_nude_subject(*terms) else []),
+            subjects=terms,
+            place=", ".join(x for x in (d.get("city"), d.get("country")) if x)
+            or d.get("culture")
+            or None,
         )

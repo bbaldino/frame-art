@@ -81,6 +81,7 @@ class Smk:
                             _title(i.get("titles") or []),
                             *(i.get("content_subject") or []),
                         ),
+                        subjects=list(i.get("content_subject") or []),
                     )
                     if len(seen) >= limit:
                         return

@@ -11,6 +11,7 @@ import io
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import traceback
@@ -22,8 +23,8 @@ from . import jobs
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
-from .publish import pending
-from .settings import Settings
+from .publish import find_content, pending
+from .settings import SOURCE_NAMES, Settings
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,8 @@ JOB_KINDS = {
     "compare": "Make crop comparison sheets",
     "sync": "Apply bans",
 }
+# TV content ids look like MY_F0123 (uploads) or SAM-S1110748 (Art Store).
+CONTENT_ID = re.compile(r"[A-Za-z0-9_-]{1,40}")
 # A missed nightly run (container down at run time) is caught up within this window.
 CATCH_UP = 6 * 3600
 
@@ -87,7 +90,9 @@ class Service:
         self._joblog = _JobLog()
         logging.getLogger("frame_art").addHandler(self._joblog)
         self.link = (
-            HaLink(mqtt_host, mqtt_port, self._on_ack, version) if mqtt_host else None
+            HaLink(mqtt_host, mqtt_port, self._on_ack, version, self._on_current)
+            if mqtt_host
+            else None
         )
         if self.link is None:
             log.warning("no MQTT host configured; HA will not be told about new work")
@@ -108,7 +113,9 @@ class Service:
     def start(self) -> None:
         threading.Thread(target=self._worker, name="jobs", daemon=True).start()
         threading.Thread(target=self._scheduler, name="schedule", daemon=True).start()
-        self.publish_state()
+        cat = self.catalogue()
+        self.publish_state(cat)
+        self.publish_now(cat)
 
     def stop(self) -> None:
         self._stop.set()
@@ -249,3 +256,52 @@ class Service:
             log.info("ha: upload result %s", result)
             cat.put("last_upload", {"at": time.time(), "result": result})
         self.publish_state(cat)
+        # A fresh upload may be what the TV is already showing.
+        self.publish_now(cat)
+
+    def _on_current(self, payload: dict) -> None:
+        cid = payload.get("content_id")
+        if not isinstance(cid, str) or not CONTENT_ID.fullmatch(cid):
+            log.warning("ha: ignoring current artwork %r", payload)
+            return
+        cat = self.catalogue()
+        cat.put("tv_current", {"content_id": cid, "at": time.time()})
+        self.publish_now(cat)
+
+    def now_showing(self, cat: Catalogue | None = None) -> dict:
+        """What the TV shows, as far as frame-art knows it."""
+        cat = cat or self.catalogue()
+        current = cat.get("tv_current") or {}
+        cid = current.get("content_id")
+        info: dict = {"content_id": cid, "since": current.get("at"), "ours": False}
+        p = find_content(cat, self.dest, cid) if cid else None
+        w = next((w for w in cat.works() if p and w.key == p.key), None)
+        if p is None or w is None:
+            return info
+        info.update(
+            ours=True,
+            key=w.key,
+            file=f"{p.folder}/{p.filename}",
+            title=w.title,
+            artist=w.artist,
+            date=w.date,
+            kind=w.kind,
+            source=SOURCE_NAMES.get(w.source, w.source),
+            license=w.license,
+            url=w.page_url,
+            style=w.style,
+            genre=w.genre,
+            place=w.place,
+            lat=w.lat,
+            lon=w.lon,
+            description=w.description,
+            subjects=w.subjects[:15],
+            colors=cat.palettes().get(w.key, []),
+        )
+        return info
+
+    def publish_now(self, cat: Catalogue | None = None) -> dict:
+        info = self.now_showing(cat)
+        if self.link:
+            self.link.publish_now(info)
+        return info

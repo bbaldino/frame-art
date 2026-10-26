@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from ..classify import is_nude_subject, seasons_for
+from ..classify import is_nude_subject, plain_text, seasons_for
 from ..model import Work
 from ..net import Http
 
@@ -16,6 +16,8 @@ KINDS = {"painting": 1, "drawing": 14, "print": 18}
 FIELDS = [
     "id", "title", "artist_title", "date_display", "image_id", "thumbnail",
     "artwork_type_id", "is_boosted", "subject_titles", "main_reference_number",
+    "style_title", "place_of_origin", "short_description", "description",
+    "term_titles",
 ]  # fmt: skip
 
 
@@ -70,6 +72,12 @@ class Aic:
                     highlight=bool(r.get("is_boosted")),
                     tags=seasons_for(r.get("title"), *subjects)
                     + (["nude"] if is_nude_subject(*subjects) else []),
+                    subjects=subjects,
+                    style=r.get("style_title"),
+                    place=r.get("place_of_origin"),
+                    description=plain_text(
+                        r.get("short_description") or r.get("description")
+                    ),
                 )
                 if seen >= limit:
                     return

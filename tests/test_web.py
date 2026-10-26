@@ -106,3 +106,31 @@ def test_settings_style_mix_validates(client):
     assert (s.photo_share, s.photo_crop) == (40, "medium")
     assert s.crawl_kinds() == ("painting", "photograph")
     assert "Not saved" in c.post("/settings", data={**form, "photo_share": "150"}).text
+
+
+def test_now_showing_maps_tv_id_to_work(client):
+    import json
+
+    c, svc = client
+    assert "hasn't reported" in c.get("/now").text
+    cat = svc.catalogue()
+    cat.record_publish("haystacks.jpg", "full", "nga:1", 0)
+    cat.set_palette("nga:1", ["#112233"])
+    (svc.dest / "full").mkdir(parents=True)
+    (svc.dest / "full" / "haystacks.jpg").write_bytes(b"jpeg")
+    sidecar = {"haystacks.jpg": {"content_id": "MY_F0042", "modified": 1.0}}
+    (svc.dest / "full" / ".samsungtv_upload.json").write_text(json.dumps(sidecar))
+
+    svc._on_current({"content_id": "SAM-S1110748"})
+    assert "didn't put there" in c.get("/now").text
+
+    svc._on_current({"content_id": "MY_F0042"})
+    now = c.get("/now.json").json()
+    assert now["ours"] and now["title"] == "Haystacks" and now["colors"] == ["#112233"]
+    page = c.get("/now").text
+    assert "Haystacks" in page and "/render/full/haystacks.jpg" in page
+    assert c.get("/render/full/haystacks.jpg").content == b"jpeg"
+    assert c.get("/render/full/..%2Fsecret.jpg").status_code == 404
+
+    svc._on_current({"content_id": "../../etc"})  # ignored
+    assert c.get("/now.json").json()["content_id"] == "MY_F0042"

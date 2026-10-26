@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from ..classify import seasons_for
+from ..classify import plain_text, seasons_for
 from ..model import Work
 from ..net import Http
 
@@ -77,4 +77,6 @@ class Cleveland:
             wikidata=r.get("wikidata"),
             highlight=bool(r.get("is_highlight")),
             tags=seasons_for(r.get("title"), r.get("description")),
+            place=", ".join(r.get("culture") or []) or None,
+            description=plain_text(r.get("description")),
         )

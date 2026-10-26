@@ -116,7 +116,18 @@ class Loc:
             height=size[1],
             page_url=r.get("id"),
             tags=seasons_for(title, *subjects),
+            subjects=[x for x in subjects if x not in GENERIC_SUBJECTS],
+            place=_place(r),
         )
+
+
+# LoC subject headings every Highsmith photo carries.
+GENERIC_SUBJECTS = {"color", "digital photographs", "united states", "america"}
+
+
+def _place(r: dict) -> str | None:
+    parts = [(r.get(k) or [None])[0] for k in ("location_city", "location_state")]
+    return ", ".join(p.title() for p in parts if p) or None
 
 
 def rid_from(url: str) -> str | None:

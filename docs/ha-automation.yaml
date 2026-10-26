@@ -129,3 +129,34 @@ actions:
                 topic: frame-art/ack
                 payload: "{{ {'deleted': repeat.item} | to_json }}"
     note: "Only ids HA uploaded itself (on the to-do allow-list) are deleted."
+---
+# Second automation: tell frame-art what the TV is showing, for the
+# "Now showing" page and sensor.frame_art_now_showing. It only reads a sensor
+# attribute and publishes over MQTT; it never talks to the TV.
+alias: "Frame Art: report what the bedroom TV is showing"
+description: >-
+  Forwards the Frame TV's current artwork id to frame-art over MQTT, so
+  frame-art can look up the title, artist and museum for sensor.frame_art_now_showing.
+mode: queued
+max: 5
+triggers:
+  - trigger: state
+    entity_id: sensor.master_bedroom_frame_tv_frame_art
+    attribute: current_content_id
+  - trigger: homeassistant
+    event: start
+    note: "Re-send after a restart; the TV may have moved on meanwhile."
+  - trigger: state
+    entity_id: sensor.frame_art
+    from: unavailable
+    note: "frame-art restarted: re-send, since its retained copy may be stale."
+conditions:
+  - "{{ state_attr('sensor.master_bedroom_frame_tv_frame_art', 'current_content_id') not in (none, '') }}"
+actions:
+  - action: mqtt.publish
+    data:
+      topic: frame-art/current
+      retain: true
+      payload: >-
+        {{ {'content_id': state_attr('sensor.master_bedroom_frame_tv_frame_art',
+        'current_content_id')} | to_json }}

@@ -14,7 +14,7 @@ import logging
 import re
 from collections.abc import Iterator
 
-from ..classify import seasons_for
+from ..classify import plain_text, seasons_for
 from ..model import Work
 from ..net import Http
 
@@ -28,7 +28,10 @@ CATEGORIES = {
     "Category:Quality images of landscapes": False,
 }
 DEPTH = 3
-META = "LicenseShortName|Artist|ObjectName|DateTimeOriginal|ImageDescription"
+META = (
+    "LicenseShortName|Artist|ObjectName|DateTimeOriginal|ImageDescription"
+    "|GPSLatitude|GPSLongitude"
+)
 _TAGS = re.compile(r"<[^>]+>")
 
 
@@ -50,6 +53,21 @@ def _date(meta: dict) -> str | None:
     if m := re.search(r"\b(1[89]|20)\d\d\b", text):
         return m.group(0)
     return None
+
+
+def _subject(cat: str) -> str | None:
+    """'Category:Featured pictures of waterfalls' -> 'waterfalls'."""
+    name = re.sub(
+        r"^Category:(?:Featured pictures of|Quality images of|Featured)\s+", "", cat
+    )
+    return None if name.startswith("Category:") else name
+
+
+def _float(meta: dict, key: str) -> float | None:
+    try:
+        return round(float(_text(meta, key) or ""), 5)
+    except ValueError:
+        return None
 
 
 def _text(meta: dict, key: str) -> str | None:
@@ -113,7 +131,7 @@ class Commons:
                     if page["pageid"] in seen:
                         continue
                     seen.add(page["pageid"])
-                    work = self._work(page, featured)
+                    work = self._work(page, featured, cat)
                     if work is None:
                         continue
                     yield work
@@ -121,7 +139,7 @@ class Commons:
                     if yielded >= limit:
                         return
 
-    def _work(self, page: dict, featured: bool) -> Work | None:
+    def _work(self, page: dict, featured: bool, cat: str) -> Work | None:
         info = (page.get("imageinfo") or [{}])[0]
         w, h = info.get("width"), info.get("height")
         if info.get("mime") != "image/jpeg" or not w or not h or w < 3840:
@@ -133,6 +151,7 @@ class Commons:
         # where the crop needs the full 2160px height.
         url = info["thumburl"] if w / h <= 16 / 9 else info["url"]
         description = _text(meta, "ImageDescription")
+        subject = _subject(cat)
         return Work(
             source=self.name,
             source_id=str(page["pageid"]),
@@ -147,4 +166,8 @@ class Commons:
             page_url=info.get("descriptionurl"),
             highlight=featured,
             tags=seasons_for(title, description),
+            subjects=[subject] if subject else [],
+            lat=_float(meta, "GPSLatitude"),
+            lon=_float(meta, "GPSLongitude"),
+            description=plain_text(description, 600),
         )

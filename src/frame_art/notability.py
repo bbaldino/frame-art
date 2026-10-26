@@ -119,9 +119,38 @@ def nude_qids(http: Http, qids: list[str]) -> set[str]:
     return out
 
 
+# Wikidata property -> the facet it fills: movement, genre, depicts.
+FACETS = {"P135": "movement", "P136": "genre", "P180": "depicts"}
+
+
+def facets(http: Http, qids: list[str]) -> dict[str, dict[str, list[str]]]:
+    """English labels for each work's movement, genre and depicted things."""
+    out: dict[str, dict[str, list[str]]] = {}
+    props = " ".join(f"wdt:{p}" for p in FACETS)
+    for i in range(0, len(qids), 200):
+        values = " ".join(f"wd:{q}" for q in qids[i : i + 200])
+        sparql = (
+            f"SELECT ?item ?p ?label WHERE {{ VALUES ?item {{ {values} }} "
+            f"VALUES ?p {{ {props} }} ?item ?p ?v. "
+            '?v rdfs:label ?label. FILTER(LANG(?label) = "en") }'
+        )
+        try:
+            rows = _query(http, sparql)
+        except Exception as ex:  # noqa: BLE001 - descriptive extras, never a blocker
+            log.warning("wikidata: facet lookup failed: %s", ex)
+            continue
+        for r in rows:
+            qid = r["item"]["value"].rsplit("/", 1)[-1]
+            facet = FACETS[r["p"]["value"].rsplit("/", 1)[-1]]
+            labels = out.setdefault(qid, {}).setdefault(facet, [])
+            if r["label"]["value"] not in labels:
+                labels.append(r["label"]["value"])
+    return out
+
+
 def annotate(http: Http, works: list[Work], cache_dir: Path) -> None:
-    """Fill in ``wikidata`` and ``sitelinks`` on works in place, and tag nudes
-    that Wikidata knows about."""
+    """Fill in ``wikidata`` and ``sitelinks`` on works in place, add movement,
+    genre and depicted things, and tag nudes that Wikidata knows about."""
     by_source: dict[str, list[Work]] = {}
     for w in works:
         by_source.setdefault(w.source, []).append(w)
@@ -138,7 +167,18 @@ def annotate(http: Http, works: list[Work], cache_dir: Path) -> None:
         for w in works:
             if w.wikidata in links:
                 w.sitelinks = links[w.wikidata]
-    nudes = nude_qids(http, sorted({w.wikidata for w in works if w.wikidata}))
+    qids = sorted({w.wikidata for w in works if w.wikidata})
+    found = facets(http, qids)
+    for w in works:
+        f = found.get(w.wikidata or "")
+        if not f:
+            continue
+        w.style = w.style or next(iter(f.get("movement", [])), None)
+        w.genre = w.genre or next(iter(f.get("genre", [])), None)
+        known = {x.lower() for x in w.subjects}
+        w.subjects += [x for x in f.get("depicts", [])[:15] if x.lower() not in known]
+    log.info("wikidata: movement, genre or depicts for %d works", len(found))
+    nudes = nude_qids(http, qids)
     for w in works:
         if w.wikidata in nudes and "nude" not in w.tags:
             w.tags.append("nude")
