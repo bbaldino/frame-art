@@ -22,7 +22,7 @@
       {% if tv_command.status == "done" %}done
       {% elif tv_command.status == "failed" %}<span class="warn">{{ tv_command.error }}</span>
       {% elif tv_command.status == "unsent" %}<span class="warn">not sent: MQTT is disconnected</span>
-      {% elif tv_unanswered %}<span class="warn">no answer from Home Assistant; is its "carry out TV requests" automation set up and on?</span>
+      {% elif tv_unanswered %}<span class="warn">sent, but Home Assistant never answered</span>
       {% else %}waiting for Home Assistant{% endif %}{% endif %}</p>
   </div>
   <div class="status">
