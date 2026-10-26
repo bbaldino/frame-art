@@ -165,6 +165,9 @@ actions:
       retain: true
       payload: >-
         {% set s = 'sensor.master_bedroom_frame_tv_frame_art' %}
+        {% set p = state_attr(s, 'tv_power_state') %}
+        {% set a = state_attr(s, 'art_mode_status') %}
+        {# null when HA doesn't know, so frame-art can tell that from "off" #}
         {{ {'content_id': state_attr(s, 'current_content_id'),
-            'on': state_attr(s, 'tv_power_state') == 'on'
-                  or state_attr(s, 'art_mode_status') == 'on'} | to_json }}
+            'on': none if p is none and a is none else (p == 'on' or a == 'on')}
+           | to_json }}
