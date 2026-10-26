@@ -163,7 +163,24 @@ def thumb_url(w: Work) -> str | None:
         return w.image_url.replace("/original/", "/web-large/")
     if w.source == "cleveland":
         return re.sub(r"_(print|full)\.(jpg|tif)$", "_web.jpg", w.image_url)
+    if w.source == "commons":
+        return commons_thumb(w.image_url, 500)
     return w.image_url
+
+
+def commons_thumb(url: str, width: int) -> str:
+    """A Wikimedia thumbnail URL for an original or another thumbnail."""
+    url = url.split("?", 1)[0]
+    if m := re.search(r"/thumb/(.+?)/\d+px-[^/]+$", url):
+        path = m.group(1)
+    elif m := re.search(r"/wikipedia/commons/(.+)$", url):
+        path = m.group(1)
+    else:
+        return url
+    name = path.rsplit("/", 1)[-1]
+    return (
+        f"https://upload.wikimedia.org/wikipedia/commons/thumb/{path}/{width}px-{name}"
+    )
 
 
 class Rejected(Exception):

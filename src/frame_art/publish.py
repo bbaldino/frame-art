@@ -66,11 +66,16 @@ def read_sidecar(folder: Path) -> dict[str, str]:
 
 
 def diversify(cands: list[pipeline.Candidate], seed: int) -> list[pipeline.Candidate]:
-    """Order by score with some jitter, then interleave sources round-robin."""
+    """Order by score with some jitter, then interleave sources round-robin.
+
+    Photos all come from a few sites where a handful of photographers supply
+    most of the pictures, so they interleave by photographer instead.
+    """
     rng = random.Random(seed)
     by_source: dict[str, list[tuple[float, pipeline.Candidate]]] = defaultdict(list)
     for c in cands:
-        by_source[c.work.source].append((c.score + rng.uniform(0, 2), c))
+        group = c.work.artist if c.work.kind == "photograph" else c.work.source
+        by_source[group or ""].append((c.score + rng.uniform(0, 2), c))
     queues = [sorted(v, key=lambda t: t[0], reverse=True) for v in by_source.values()]
     rng.shuffle(queues)
     out: list[pipeline.Candidate] = []
@@ -90,6 +95,8 @@ class Publisher:
         pad_style: str,
         kinds: tuple[str, ...] = ("painting",),
         prefs: pipeline.Prefs = pipeline.DEFAULT_PREFS,
+        photo_share: int = 0,
+        photo_prefs: pipeline.Prefs = pipeline.DEFAULT_PREFS,
     ):
         if pad_style not in imaging.PAD_STYLES:
             raise ValueError(f"pad style must be one of {imaging.PAD_STYLES}")
@@ -99,6 +106,9 @@ class Publisher:
         self.pad_style = pad_style
         self.kinds = kinds
         self.prefs = prefs
+        # Percent of each run's new works that are photographs.
+        self.photo_share = photo_share
+        self.photo_prefs = photo_prefs
 
     def run(
         self, count: int, pool: int, season: str | None, seed: int
@@ -130,17 +140,40 @@ class Publisher:
         # A pin overrides the cooldown, but not a work already live.
         live_keys = {p.key for p in history if p.retired_at is None}
         blocked -= {k for k, s in overrides.items() if s == "pinned"} - live_keys
-        live_hashes = [p.phash for p in history if p.retired_at is None]
-        works = [w for w in self.cat.works() if w.kind in self.kinds]
-        cands, _ = pipeline.filter_works(works, season, self.prefs)
-        cands = diversify([c for c in cands if c.work.key not in blocked], seed)
-        # Pinned works go first, keeping their diversified order.
-        cands.sort(key=lambda c: overrides.get(c.work.key) != "pinned")
+        self._live_hashes = [p.phash for p in history if p.retired_at is None]
+        works = self.cat.works()
+
+        def candidates(kinds, prefs) -> list[pipeline.Candidate]:
+            pool = [w for w in works if w.kind in kinds]
+            cands, _ = pipeline.filter_works(pool, season, prefs)
+            cands = diversify([c for c in cands if c.work.key not in blocked], seed)
+            # Pinned works go first, keeping their diversified order.
+            cands.sort(key=lambda c: overrides.get(c.work.key) != "pinned")
+            return cands
 
         added: list[str] = []
         failed: list[str] = []
+        photos = round(count * self.photo_share / 100)
+        if photos:
+            self._take(
+                candidates(("photograph",), self.photo_prefs), photos, added, failed
+            )
+        # Art fills the rest, including any photos the catalogue couldn't supply.
+        art_kinds = tuple(k for k in self.kinds if k != "photograph")
+        if len(added) < count and art_kinds:
+            self._take(candidates(art_kinds, self.prefs), count, added, failed)
+        return added, failed
+
+    def _take(
+        self,
+        cands: list[pipeline.Candidate],
+        upto: int,
+        added: list[str],
+        failed: list[str],
+    ) -> None:
+        """Render candidates in order until ``added`` holds ``upto`` works."""
         for cand in cands:
-            if len(added) >= count:
+            if len(added) >= upto:
                 break
             try:
                 out = pipeline.render(self.http, cand, self.pad_style)
@@ -157,7 +190,7 @@ class Publisher:
                 continue
             if any(
                 imaging.hamming(out.phash, h) <= pipeline.PHASH_DISTANCE
-                for h in live_hashes
+                for h in self._live_hashes
             ):
                 log.info(
                     "%s: looks like a work already in the pool; skipping", cand.work.key
@@ -168,10 +201,9 @@ class Publisher:
             path.parent.mkdir(parents=True, exist_ok=True)
             pipeline.write_atomic(out.image, path, self.dest / ".staging")
             self.cat.record_publish(path.name, folder, cand.work.key, out.phash)
-            live_hashes.append(out.phash)
+            self._live_hashes.append(out.phash)
             added.append(f"{folder}/{path.name}")
             log.info("published %s/%s", folder, path.name)
-        return added, failed
 
     def _retire(self, pool: int | None) -> list[str]:
         """Retire banned works, then the oldest unpinned ones beyond ``pool``."""

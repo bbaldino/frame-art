@@ -76,3 +76,27 @@ def test_settings_load_falls_back_on_garbage(tmp_path):
     assert Settings.load(p) == Settings()
     p.write_text('{"count": 3, "unknown_key": 1}')
     assert Settings.load(p).count == 3
+
+
+def test_settings_shows_key_presence_but_never_the_key(client, tmp_path, monkeypatch):
+    c, _ = client
+    monkeypatch.setenv("FRAME_ART_KEYS", str(tmp_path / "keys"))
+    (tmp_path / "keys" / "pexels").mkdir(parents=True)
+    (tmp_path / "keys" / "pexels" / "key").write_text("sekrit-value-123\n")
+    page = c.get("/settings").text
+    assert "sekrit-value-123" not in page
+    assert page.count("present") == 1
+    assert str(tmp_path / "keys" / "pexels" / "key") in page
+
+
+def test_settings_style_mix_validates(client):
+    c, svc = client
+    form = {"crop": "strict", "pad_style": "blur", "kinds": "painting",
+            "sources": ["nga", "commons"], "count": "5", "pool": "100",
+            "run_at": "02:00", "recrawl_days": "7", "crawl_limit": "300",
+            "photo_share": "40", "photo_crop": "medium"}  # fmt: skip
+    assert "Saved" in c.post("/settings", data=form).text
+    s = svc.settings()
+    assert (s.photo_share, s.photo_crop) == (40, "medium")
+    assert s.crawl_kinds() == ("painting", "photograph")
+    assert "Not saved" in c.post("/settings", data={**form, "photo_share": "150"}).text

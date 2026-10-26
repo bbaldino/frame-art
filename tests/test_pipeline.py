@@ -102,3 +102,30 @@ def test_nude_title_needs_whole_words():
     assert not classify.nude_title("Venusberg Road")  # not the goddess
     assert not classify.nude_title("Nuns at prayer")
     assert classify.nude_title("Akt im Atelier")
+
+
+def test_commons_thumb_from_original_and_thumb():
+    from frame_art.pipeline import commons_thumb
+
+    orig = "https://upload.wikimedia.org/wikipedia/commons/9/96/A_b.jpg?utm_source=x"
+    want = "https://upload.wikimedia.org/wikipedia/commons/thumb/9/96/A_b.jpg/500px-A_b.jpg"
+    assert commons_thumb(orig, 500) == want
+    thumb = "https://thumb.wikimedia.org/wikipedia/commons/thumb/9/96/A_b.jpg/3840px-A_b.jpg"
+    assert commons_thumb(thumb, 500) == want
+
+
+def test_commons_artist_and_date_cleanup():
+    from frame_art.sources.commons import _artist, _date
+
+    def meta(**kv):
+        return {k: {"value": v} for k, v in kv.items()}
+
+    long = ("This Photo was taken by Wolfgang Moroder. Feel free to use my photos, "
+            "but please mention me as the author.")  # fmt: skip
+    assert _artist(meta(Artist=long)) == "Wolfgang Moroder"
+    assert _artist(meta(Artist='<a href="x">Steffen Schmitz</a> (more photos)')) == (
+        "Steffen Schmitz"
+    )
+    assert _date(meta(DateTimeOriginal="Taken on 16 August 2014")) == "2014"
+    assert _date(meta(DateTimeOriginal="2015-12-20 11:25:28")) == "2015-12-20"
+    assert _date(meta(DateTimeOriginal="Taken on 1")) is None

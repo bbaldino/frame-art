@@ -9,11 +9,12 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from . import imaging, pipeline
-from .sources import KINDS
+from .sources import ART_KINDS
 
 log = logging.getLogger(__name__)
 
-SOURCES = ("aic", "cleveland", "met", "nga", "rijks", "smk")
+SOURCES = ("aic", "cleveland", "met", "nga", "rijks", "smk", "commons")
+PHOTO_SOURCES = ("commons",)
 SOURCE_NAMES = {
     "aic": "Art Institute of Chicago",
     "cleveland": "Cleveland Museum of Art",
@@ -21,6 +22,7 @@ SOURCE_NAMES = {
     "nga": "National Gallery of Art",
     "rijks": "Rijksmuseum",
     "smk": "SMK (National Gallery of Denmark)",
+    "commons": "Wikimedia Commons (Featured and Quality photos)",
 }
 
 
@@ -33,6 +35,10 @@ class Settings:
     pad_style: str = "blur"
     kinds: list[str] = field(default_factory=lambda: ["painting"])
     sources: list[str] = field(default_factory=lambda: list(SOURCES))
+    # Style mix: the share of each night's new works that are photographs.
+    photo_share: int = 0  # percent
+    # Photos are mostly 3:2 (a 16% crop), so they get their own, looser level.
+    photo_crop: str = "medium"
     # The pool on the TV.
     count: int = 7  # new works per nightly run
     pool: int = 150  # works kept live
@@ -49,14 +55,29 @@ class Settings:
             imaging.CROP_LEVELS[self.crop], self.full_screen_only, self.allow_nudes
         )
 
+    def photo_prefs(self) -> pipeline.Prefs:
+        return pipeline.Prefs(
+            imaging.CROP_LEVELS[self.photo_crop],
+            self.full_screen_only,
+            self.allow_nudes,
+        )
+
+    def crawl_kinds(self) -> tuple[str, ...]:
+        """Art kinds, plus photographs when the style mix asks for any."""
+        return (*self.kinds, "photograph") if self.photo_share else tuple(self.kinds)
+
     def validate(self) -> list[str]:
         errors = []
         if self.crop not in imaging.CROP_LEVELS:
             errors.append(f"crop must be one of {list(imaging.CROP_LEVELS)}")
         if self.pad_style not in imaging.PAD_STYLES:
             errors.append(f"pad style must be one of {list(imaging.PAD_STYLES)}")
-        if not self.kinds or set(self.kinds) - set(KINDS):
-            errors.append(f"kinds must be some of {list(KINDS)}")
+        if not self.kinds or set(self.kinds) - set(ART_KINDS):
+            errors.append(f"kinds must be some of {list(ART_KINDS)}")
+        if self.photo_crop not in imaging.CROP_LEVELS:
+            errors.append(f"photo crop must be one of {list(imaging.CROP_LEVELS)}")
+        if not 0 <= self.photo_share <= 100:
+            errors.append("photography share must be 0-100%")
         if not self.sources or set(self.sources) - set(SOURCES):
             errors.append(f"sources must be some of {list(SOURCES)}")
         if not 0 <= self.count <= 25:

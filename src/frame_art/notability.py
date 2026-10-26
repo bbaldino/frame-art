@@ -19,11 +19,8 @@ from .net import Http
 log = logging.getLogger(__name__)
 
 SPARQL = "https://query.wikidata.org/sparql"
-# Wikimedia blocks generic library User-Agents (python-httpx etc.) with a 403.
-HEADERS = {
-    "Accept": "application/sparql-results+json",
-    "User-Agent": "frame-art/0.1 (personal Frame TV art fetcher; non-commercial)",
-}
+# Http adds the User-Agent Wikimedia requires (see net.WIKIMEDIA_UA).
+HEADERS = {"Accept": "application/sparql-results+json"}
 MAX_AGE = 7 * 24 * 3600
 
 # Our source name -> the museum's Wikidata item (the P195 "collection" value).

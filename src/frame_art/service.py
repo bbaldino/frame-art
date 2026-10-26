@@ -22,7 +22,7 @@ from . import jobs
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
-from .publish import Publisher, pending
+from .publish import pending
 from .settings import Settings
 
 log = logging.getLogger(__name__)
@@ -169,7 +169,12 @@ class Service:
             return jobs.nightly(cat, http, self.data, self.dest, s)
         if kind == "crawl":
             return jobs.crawl(
-                cat, http, self.data / "cache", tuple(s.kinds), s.crawl_limit, s.sources
+                cat,
+                http,
+                self.data / "cache",
+                s.crawl_kinds(),
+                s.crawl_limit,
+                s.sources,
             )
         if kind == "publish":
             res = jobs.publish(cat, http, self.dest, s)
@@ -178,10 +183,7 @@ class Service:
             sheets = jobs.compare(cat, http, self.compare_dir, s)
             return {"sheets": [p.name for p in sheets]}
         if kind == "sync":
-            pub = Publisher(
-                cat, http, self.dest, s.pad_style, tuple(s.kinds), s.prefs()
-            )
-            return {"retired": pub.sync()}
+            return {"retired": jobs.publisher(cat, http, self.dest, s).sync()}
         raise ValueError(kind)
 
     # -- schedule --------------------------------------------------------------

@@ -14,17 +14,32 @@ CONTACT = "frame-art (personal Frame TV art fetcher)"
 # Some hosts sit behind Cloudflare rules that reject unusual User-Agent strings
 # (AIC does), so keep the UA browser-neutral and identify via headers instead.
 DEFAULT_HEADERS = {"User-Agent": f"python-httpx/{httpx.__version__} {CONTACT}"}
+# Wikimedia is the opposite: it blocks generic library User-Agents and asks for
+# a tool name plus a way to reach the operator.
+WIKIMEDIA_UA = (
+    "frame-art/0.1 (https://github.com/bbaldino/frame-art; personal Frame TV art)"
+)
 
 # Minimum seconds between requests to a host. Unlisted hosts get DEFAULT_INTERVAL.
 HOST_INTERVALS = {
     "collectionapi.metmuseum.org": 0.15,
     "images.metmuseum.org": 0.15,
     "api.artic.edu": 0.25,
+    "commons.wikimedia.org": 0.5,
+    "upload.wikimedia.org": 0.5,
+    "thumb.wikimedia.org": 0.5,
 }
 DEFAULT_INTERVAL = 0.1
 
 # The Met's Cloudflare front answers bursts with 403 rather than 429.
 RETRY_STATUS = {403, 429, 500, 502, 503, 504}
+
+
+def _headers_for(url: str, headers: dict | None) -> dict | None:
+    host = urlparse(url).hostname or ""
+    if host == "wikimedia.org" or host.endswith((".wikimedia.org", ".wikidata.org")):
+        return {"User-Agent": WIKIMEDIA_UA, **(headers or {})}
+    return headers
 
 
 class Http:
@@ -50,6 +65,7 @@ class Http:
     def request(
         self, method: str, url: str, *, retries: int = 4, **kw
     ) -> httpx.Response:
+        kw["headers"] = _headers_for(url, kw.get("headers"))
         for attempt in range(retries + 1):
             self._wait_turn(url)
             try:
@@ -87,7 +103,9 @@ class Http:
         parser = ImageFile.Parser()
         self._wait_turn(url)
         try:
-            with self._client.stream("GET", url) as resp:
+            with self._client.stream(
+                "GET", url, headers=_headers_for(url, None)
+            ) as resp:
                 if resp.status_code != 200:
                     return None
                 read = 0
@@ -103,6 +121,7 @@ class Http:
         return None
 
     def download(self, url: str, dest, **kw) -> None:
+        kw["headers"] = _headers_for(url, kw.get("headers"))
         self._wait_turn(url)
         with self._client.stream("GET", url, **kw) as resp:
             resp.raise_for_status()

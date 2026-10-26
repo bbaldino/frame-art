@@ -12,7 +12,7 @@ class Work:
     title: str
     artist: str | None
     date: str | None
-    kind: str  # painting | drawing | print
+    kind: str  # painting | drawing | print | photograph
     license: str
     # Either a IIIF image service base (preferred: we can ask for an exact size)
     # or a direct URL to the largest image the source offers.

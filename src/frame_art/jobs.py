@@ -64,6 +64,19 @@ def last_crawl(cat: Catalogue) -> float:
     )
 
 
+def publisher(cat: Catalogue, http: Http, dest: Path, s: Settings) -> Publisher:
+    return Publisher(
+        cat,
+        http,
+        dest,
+        s.pad_style,
+        tuple(s.kinds),
+        s.prefs(),
+        s.photo_share,
+        s.photo_prefs(),
+    )
+
+
 def publish(
     cat: Catalogue,
     http: Http,
@@ -74,9 +87,9 @@ def publish(
 ) -> PublishResult:
     season = season or current_season(datetime.date.today().month)
     seed = seed if seed is not None else datetime.date.today().toordinal()
-    result = Publisher(
-        cat, http, dest, settings.pad_style, tuple(settings.kinds), settings.prefs()
-    ).run(settings.count, settings.pool, season, seed)
+    result = publisher(cat, http, dest, settings).run(
+        settings.count, settings.pool, season, seed
+    )
     live = len(cat.published(active=True))
     log.info(
         "publish: %d added, %d retired, %d failed; %d live in %s",
@@ -95,7 +108,7 @@ def nightly(
                 cat,
                 http,
                 data / "cache",
-                tuple(settings.kinds),
+                settings.crawl_kinds(),
                 settings.crawl_limit,
                 settings.sources,
             )

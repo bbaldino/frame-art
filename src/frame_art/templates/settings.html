@@ -20,14 +20,43 @@
   <fieldset>
     <legend>What to show</legend>
     <div class="row">
-      <div><div class="label">Kinds</div>
+      <div><div class="label">Kinds of art</div>
         {% for k in kinds %}<label class="check"><input type="checkbox" name="kinds" value="{{ k }}" {% if k in s.kinds %}checked{% endif %}> {{ k }}s</label>{% endfor %}
       </div>
       <div><div class="label">Museums</div>
-        {% for src in sources %}<label class="check"><input type="checkbox" name="sources" value="{{ src }}" {% if src in s.sources %}checked{% endif %}> {{ source_names[src] }}</label>{% endfor %}
+        {% for src in art_sources %}<label class="check"><input type="checkbox" name="sources" value="{{ src }}" {% if src in s.sources %}checked{% endif %}> {{ source_names[src] }}</label>{% endfor %}
       </div>
     </div>
     <label class="check"><input type="checkbox" name="allow_nudes" {% if s.allow_nudes %}checked{% endif %}> Include nudes <span class="muted">(left out by default)</span></label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Style mix</legend>
+    <p class="muted">The share of each night's new works that are landscape photographs rather than art. If the photo catalogue runs short, art fills the gap.</p>
+    <div class="row">
+      <label>Photography <input type="number" name="photo_share" min="0" max="100" step="5" value="{{ s.photo_share }}"> %</label>
+      <label>Crop level for photos
+        <select name="photo_crop">{% for k, label in crop_labels.items() %}<option value="{{ k }}" {% if s.photo_crop == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      </label>
+    </div>
+    <div class="label">Photo sources</div>
+    {% for src in photo_sources %}<label class="check"><input type="checkbox" name="sources" value="{{ src }}" {% if src in s.sources %}checked{% endif %}> {{ source_names[src] }}</label>{% endfor %}
+    <p class="muted small">Most photos are 3:2, which needs a 16% crop to fill the screen, so photos default to the medium level.</p>
+  </fieldset>
+
+  <fieldset>
+    <legend>API keys</legend>
+    <p class="muted">Sources that need a key stay off until one is saved on the server as a one-line file (chmod 600). This page only says whether each file is there. See docs/api-keys.md for signup steps.</p>
+    <table class="runs keys">
+      <tr><th>Source</th><th>Key</th><th>File</th></tr>
+      {% for k, present, path in keyed %}
+      <tr>
+        <td><a href="{{ k.signup }}" rel="noreferrer">{{ k.name }}</a><div class="muted small">{{ k.adds }} · {{ k.limits }}</div></td>
+        <td>{% if present %}<span class="badge ok">present</span>{% else %}<span class="badge">missing</span>{% endif %}</td>
+        <td><code class="small">{{ path }}</code></td>
+      </tr>
+      {% endfor %}
+    </table>
   </fieldset>
 
   <fieldset>

@@ -27,11 +27,14 @@ def _settings(args) -> Settings:
         "pad_style",
         "count",
         "pool",
+        "photo_share",
+        "photo_crop",
     ):
         if hasattr(args, name):
             setattr(s, name, getattr(args, name))
     if getattr(args, "kinds", None):
-        s.kinds = list(args.kinds)
+        # Photographs come from the style mix (--photo-share), not the kinds list.
+        s.kinds = [k for k in args.kinds if k != "photograph"] or ["painting"]
     if getattr(args, "source", None):
         s.sources = args.source
     if hasattr(args, "limit"):
@@ -164,7 +167,7 @@ def main() -> None:
             "--source", action="append", help="only these sources (repeatable)"
         )
         sp.add_argument("--kinds", type=kinds, default=("painting",),
-                        help="comma-separated: painting,drawing,print (default painting)")  # fmt: skip
+                        help="comma-separated: painting,drawing,print,photograph (default painting)")  # fmt: skip
 
     def add_render_args(sp, with_kinds: bool = True):
         sp.add_argument("--pad-style", choices=imaging.PAD_STYLES, default="blur",
@@ -177,6 +180,10 @@ def main() -> None:
         sp.add_argument("--allow-nudes", action="store_true",
                         help="include nudes (left out by default)")  # fmt: skip
         sp.add_argument("--season", choices=["winter", "spring", "summer", "autumn"])
+        sp.add_argument("--photo-share", type=int, default=0,
+                        help="percent of new works that are photographs (default 0)")  # fmt: skip
+        sp.add_argument("--photo-crop", choices=list(imaging.CROP_LEVELS), default="medium",
+                        help="crop level for photographs (default medium)")  # fmt: skip
         if with_kinds:
             sp.add_argument("--kinds", type=kinds, default=("painting",),
                             help="comma-separated kinds to show (default painting)")  # fmt: skip

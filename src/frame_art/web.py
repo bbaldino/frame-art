@@ -26,12 +26,12 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from . import imaging, pipeline
+from . import imaging, keys, pipeline
 from .classify import current_season
 from .publish import read_sidecar
 from .service import JOB_KINDS, Service
-from .settings import SOURCE_NAMES, SOURCES, Settings
-from .sources import KINDS
+from .settings import PHOTO_SOURCES, SOURCE_NAMES, SOURCES, Settings
+from .sources import ART_KINDS, KINDS
 
 log = logging.getLogger(__name__)
 
@@ -142,7 +142,8 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
         cat = svc.catalogue()
         q = request.query_params
         s = svc.settings()
-        prefs = s.prefs()
+        prefs, photo_prefs = s.prefs(), s.photo_prefs()
+        shown_kinds = s.crawl_kinds()
         season = current_season(datetime.date.today().month)
         overrides = cat.overrides()
         rejected = cat.rejected()
@@ -159,7 +160,9 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
                 continue
             if text and text not in f"{w.title} {w.artist or ''}".lower():
                 continue
-            plan = pipeline.exclusion(w, prefs)
+            plan = pipeline.exclusion(
+                w, photo_prefs if w.kind == "photograph" else prefs
+            )
             reason = None
             if overrides.get(w.key) == "banned":
                 st = "banned"
@@ -171,7 +174,7 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
                 st, reason = "excluded", plan
             elif w.key in rejected:
                 st, reason = "rejected", rejected[w.key]
-            elif w.kind not in s.kinds or w.source not in s.sources:
+            elif w.kind not in shown_kinds or w.source not in s.sources:
                 st, reason = "excluded", "kind or source turned off"
             else:
                 st = "eligible"
@@ -232,6 +235,8 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
                 new.paused = form.get("paused") == "on"
                 new.recrawl_days = float(form.get("recrawl_days", s.recrawl_days))
                 new.crawl_limit = int(form.get("crawl_limit", s.crawl_limit))
+                new.photo_share = int(form.get("photo_share", s.photo_share))
+                new.photo_crop = form.get("photo_crop", s.photo_crop)
             except ValueError as ex:
                 errors.append(f"not a number: {ex}")
             if new.pad_style not in UI_PAD_STYLES:
@@ -251,8 +256,12 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
             saved=saved,
             crop_labels=CROP_LABELS,
             pad_styles=UI_PAD_STYLES,
-            sources=SOURCES,
-            kinds=KINDS,
+            art_sources=[x for x in SOURCES if x not in PHOTO_SOURCES],
+            photo_sources=PHOTO_SOURCES,
+            kinds=ART_KINDS,
+            keyed=[
+                (k, keys.has_key(k.slug), keys.key_path(k.slug)) for k in keys.SERVICES
+            ],
             fields=[f.name for f in fields(Settings)],
         )
 

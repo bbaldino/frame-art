@@ -138,3 +138,48 @@ def test_pinned_work_publishes_first_and_is_never_retired(setup):
     publish.Publisher(cat, None, dest, "blur").run(5, pool=2, season=None, seed=2)
     live = {p.key for p in cat.published(active=True)}
     assert "s1:13" in live and len(live) == 2
+
+
+def _photos(cat: Catalogue, n: int) -> None:
+    cat.upsert(
+        [
+            Work(
+                source="commons", source_id=str(100 + i), title=f"Photo {i}",
+                artist="P", date="2020", kind="photograph", license="CC BY-SA 4.0",
+                image_url=f"http://x/p{i}.jpg", width=6000, height=4000,
+            )
+            for i in range(n)
+        ]
+    )  # fmt: skip
+
+
+def _kinds(cat: Catalogue) -> list[str]:
+    works = {w.key: w for w in cat.works()}
+    return [works[p.key].kind for p in cat.published(active=True)]
+
+
+def test_style_mix_splits_new_works(setup):
+    cat, dest = setup
+    _photos(cat, 10)
+    medium = pipeline.Prefs(imaging.CROP_LEVELS["medium"])
+    publish.Publisher(cat, None, dest, "blur", photo_share=40, photo_prefs=medium).run(
+        5, 50, None, seed=1
+    )
+    assert sorted(_kinds(cat)) == ["painting"] * 3 + ["photograph"] * 2
+
+
+def test_style_mix_fills_photo_shortfall_with_art(setup):
+    cat, dest = setup
+    _photos(cat, 1)
+    medium = pipeline.Prefs(imaging.CROP_LEVELS["medium"])
+    publish.Publisher(cat, None, dest, "blur", photo_share=100, photo_prefs=medium).run(
+        4, 50, None, seed=1
+    )
+    assert sorted(_kinds(cat)) == ["painting"] * 3 + ["photograph"]
+
+
+def test_no_photos_without_a_share(setup):
+    cat, dest = setup
+    _photos(cat, 10)
+    publish.Publisher(cat, None, dest, "blur").run(5, 50, None, seed=1)
+    assert set(_kinds(cat)) == {"painting"}
