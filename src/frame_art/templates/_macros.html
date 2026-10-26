@@ -1,19 +1,19 @@
 {% macro override_buttons(key, state, next, collected=false) %}
 <div class="actions">
   {% if collected %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button class="on" name="state" value="uncollect" title="Take this out of your collection">✓ Collected</button></form>
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button class="on" name="state" value="uncollect" data-key="c" title="Take this out of your collection">✓ Collected</button></form>
   {% else %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="collect" title="Add to the works the nightly run picks from">+ Collect</button></form>
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="collect" data-key="c" title="Add to the works the nightly run picks from">+ Collect</button></form>
   {% endif %}
   {% if state == "pinned" %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear" title="Remove the pin">Unpin</button></form>
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear" data-key="p" title="Remove the pin">Unpin</button></form>
   {% elif state != "banned" %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="pinned" title="Keep on the TV: publish soon and never retire">Pin</button></form>
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="pinned" data-key="p" title="Keep on the TV: publish soon and never retire">Pin</button></form>
   {% endif %}
   {% if state == "banned" %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear">Unban</button></form>
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear" data-key="b">Unban</button></form>
   {% else %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button class="danger" name="state" value="banned" title="Never show this; take it off the TV">Ban</button></form>
+  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button class="danger" name="state" value="banned" data-key="b" title="Never show this; take it off the TV">Ban</button></form>
   {% endif %}
 </div>
 {% endmacro %}

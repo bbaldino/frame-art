@@ -207,3 +207,10 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 .viewer-caption .who { color: #a39d93; font-size: 0.9rem; }
 .viewer-nav { display: flex; gap: 0.4rem; flex-shrink: 0; }
 .viewer-nav button { background: rgb(255 255 255 / 10%); color: #ece8e1; border-color: rgb(255 255 255 / 20%); }
+.viewer-caption { flex: 1; min-width: 0; }
+.viewer-actions .actions { margin: 0; }
+.viewer-actions .actions button { background: rgb(255 255 255 / 10%); color: #ece8e1; border-color: rgb(255 255 255 / 20%); }
+.viewer-actions .actions button.on { color: #d39a5c; border-color: #d39a5c; }
+.viewer-actions .actions button.danger { color: #f08a80; }
+.viewer-actions.updating { opacity: 0.5; }
+@media (max-width: 640px) { .viewer-bar { flex-wrap: wrap; } }
