@@ -28,6 +28,9 @@ HOST_INTERVALS = {
     "commons.wikimedia.org": 0.5,
     "upload.wikimedia.org": 0.5,
     "thumb.wikimedia.org": 0.5,
+    # loc.gov limits its JSON API to about 20 requests per 10 seconds.
+    "www.loc.gov": 1.0,
+    "tile.loc.gov": 0.3,
 }
 DEFAULT_INTERVAL = 0.1
 

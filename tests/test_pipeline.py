@@ -129,3 +129,17 @@ def test_commons_artist_and_date_cleanup():
     assert _date(meta(DateTimeOriginal="Taken on 16 August 2014")) == "2014"
     assert _date(meta(DateTimeOriginal="2015-12-20 11:25:28")) == "2015-12-20"
     assert _date(meta(DateTimeOriginal="Taken on 1")) is None
+
+
+def test_loc_image_urls():
+    from frame_art.sources.loc import iiif_base, master_tiff, rid_from
+
+    svc = "https://tile.loc.gov/storage-services/service/pnp/highsm/55000/55058v.jpg#h=683&w=1024"
+    assert master_tiff(["x", svc]) == (
+        "https://tile.loc.gov/storage-services/master/pnp/highsm/55000/55058u.tif"
+    )
+    iiif = "https://tile.loc.gov/image-services/iiif/service:pnp:highsm:16300:16378/full/pct:25/0/default.jpg"
+    assert iiif_base([iiif]) == (
+        "https://tile.loc.gov/image-services/iiif/service:pnp:highsm:16300:16378"
+    )
+    assert rid_from("https://www.loc.gov/item/2018703046/") == "2018703046"

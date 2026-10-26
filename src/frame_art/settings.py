@@ -13,8 +13,8 @@ from .sources import ART_KINDS
 
 log = logging.getLogger(__name__)
 
-SOURCES = ("aic", "cleveland", "met", "nga", "rijks", "smk", "commons")
-PHOTO_SOURCES = ("commons",)
+SOURCES = ("aic", "cleveland", "met", "nga", "rijks", "smk", "commons", "loc")
+PHOTO_SOURCES = ("commons", "loc")
 SOURCE_NAMES = {
     "aic": "Art Institute of Chicago",
     "cleveland": "Cleveland Museum of Art",
@@ -23,6 +23,7 @@ SOURCE_NAMES = {
     "rijks": "Rijksmuseum",
     "smk": "SMK (National Gallery of Denmark)",
     "commons": "Wikimedia Commons (Featured and Quality photos)",
+    "loc": "Library of Congress (Carol M. Highsmith archive)",
 }
 
 

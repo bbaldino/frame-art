@@ -165,6 +165,13 @@ def thumb_url(w: Work) -> str | None:
         return re.sub(r"_(print|full)\.(jpg|tif)$", "_web.jpg", w.image_url)
     if w.source == "commons":
         return commons_thumb(w.image_url, 500)
+    if w.source == "loc":
+        # The TIFF master's 1024px service JPEG.
+        return re.sub(
+            r"/storage-services/master/(.+?)u\.tif$",
+            r"/storage-services/service/\1v.jpg",
+            w.image_url,
+        )
     return w.image_url
 
 
@@ -242,6 +249,9 @@ def load_work(http: Http, cand: Candidate) -> Image.Image:
     needed = cand.plan.needed_width(w.width)
     im = imaging.load(data, max_side=max(needed, round(needed * w.height / w.width)))
     del data
+    if w.kind == "photograph":
+        # No scan card or margins, and trimming would eat a clear blue sky.
+        return im
     if imaging.artwork_mask(im) is not None:
         # Round or irregular work on a white scan card (tondi, fans): it can't
         # fill the screen, and padding them leaves the white card showing.

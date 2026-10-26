@@ -25,11 +25,11 @@ def all_sources(
     cache_dir: Path, kinds: tuple[str, ...] = ("painting",)
 ) -> list[Source]:
     """One adapter instance per (source, kind)."""
-    from . import aic, cleveland, commons, met, nga, rijks, smk
+    from . import aic, cleveland, commons, loc, met, nga, rijks, smk
 
     out: list[Source] = []
     if "photograph" in kinds:
-        out.append(commons.Commons())
+        out += [commons.Commons(), loc.Loc()]
     for kind in kinds:
         if kind not in ART_KINDS:
             continue
