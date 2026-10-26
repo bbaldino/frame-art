@@ -163,6 +163,7 @@ def create_app(svc: Service) -> Starlette:
         version=svc.version,
         source_names=SOURCE_NAMES,
         thumb_url=pipeline.thumb_url,
+        preview_url=pipeline.preview_url,
     )
     thumbs = svc.data / "thumbs"
 
@@ -363,6 +364,9 @@ def create_app(svc: Service) -> Starlette:
                     "image": f"/thumb/{p.folder}/{p.filename}"
                     if p and p.retired_at is None
                     else (pipeline.thumb_url(w) if w else None),
+                    "full": f"/render/{p.folder}/{p.filename}"
+                    if p and p.retired_at is None
+                    else (pipeline.preview_url(w) if w else None),
                     "started": started.strftime("%-I:%M %p"),
                     "span": _span((r["ended_at"] or now) - r["started_at"]),
                     "current": r["ended_at"] is None,

@@ -129,3 +129,51 @@ if (tagInput) {
     }
   });
 }
+
+// A closer look: click a card's picture to see it large; arrows step through
+// the cards on the page, Esc or a click outside the picture closes it.
+const viewer = document.getElementById("viewer");
+if (viewer) {
+  const big = viewer.querySelector("img");
+  const caption = viewer.querySelector(".viewer-caption");
+  let pictures = [];
+  let index = -1;
+
+  const show = (i) => {
+    index = (i + pictures.length) % pictures.length;
+    const small = pictures[index];
+    // The thumbnail is cached, so show it at once and swap in the large one.
+    big.src = small.currentSrc || small.src;
+    big.alt = small.alt;
+    const full = new Image();
+    full.referrerPolicy = "no-referrer";
+    full.onload = () => {
+      if (pictures[index] === small) big.src = full.src;
+    };
+    full.src = small.dataset.full;
+    const card = small.closest(".card");
+    caption.replaceChildren(
+      ...[".title", ".who"]
+        .map((sel) => card?.querySelector(sel)?.cloneNode(true))
+        .filter(Boolean),
+    );
+  };
+
+  document.addEventListener("click", (e) => {
+    const img = e.target.closest(".card img[data-full]");
+    if (!img) return;
+    pictures = [...document.querySelectorAll(".card img[data-full]")];
+    show(pictures.indexOf(img));
+    if (!viewer.open) viewer.showModal();
+  });
+  viewer.addEventListener("click", (e) => {
+    const step = e.target.closest("[data-step]");
+    if (step) show(index + Number(step.dataset.step));
+    else if (e.target === viewer || e.target.closest("[data-close]")) viewer.close();
+  });
+  viewer.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowRight") show(index + 1);
+    if (e.key === "ArrowLeft") show(index - 1);
+  });
+  viewer.addEventListener("close", () => big.removeAttribute("src"));
+}

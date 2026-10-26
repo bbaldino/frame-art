@@ -175,6 +175,19 @@ def thumb_url(w: Work) -> str | None:
     return w.image_url
 
 
+def preview_url(w: Work) -> str | None:
+    """A screen-sized image the museum serves, for a closer look."""
+    if w.iiif:
+        return f"{w.iiif}/full/!1920,1920/0/default.jpg"
+    if w.source == "commons" and w.image_url:
+        return commons_thumb(w.image_url, 1920)
+    if w.source == "cleveland" and w.image_url:
+        return re.sub(r"_full\.(jpg|tif)$", "_print.jpg", w.image_url)
+    # The Met's web-large and LoC's service JPEG are the largest short of the
+    # originals (often tens of megabytes, or TIFF).
+    return thumb_url(w)
+
+
 def commons_thumb(url: str, width: int) -> str:
     """A Wikimedia thumbnail URL for an original or another thumbnail."""
     url = url.split("?", 1)[0]

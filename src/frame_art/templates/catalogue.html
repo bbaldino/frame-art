@@ -35,7 +35,7 @@
   {% set w = r.w %}
   <article class="card {{ r.status }}{% if r.collected %} collected{% endif %}" id="{{ card_id(w.key) }}">
     {% set t = thumb_url(w) %}
-    {% if t %}<img loading="lazy" referrerpolicy="no-referrer" src="{{ t }}" alt="">{% else %}<div class="noimg"></div>{% endif %}
+    {% if t %}<img loading="lazy" referrerpolicy="no-referrer" src="{{ t }}" data-full="{{ preview_url(w) or t }}" alt="{{ w.title }}">{% else %}<div class="noimg"></div>{% endif %}
     {{ caption(w) }}
     <div class="meta">
       {{ source_names[w.source] }} · {{ w.kind }} · {{ w.width }}×{{ w.height }}

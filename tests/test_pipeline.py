@@ -163,3 +163,23 @@ def test_loc_image_urls():
         "https://tile.loc.gov/image-services/iiif/service:pnp:highsm:16300:16378"
     )
     assert rid_from("https://www.loc.gov/item/2018703046/") == "2018703046"
+
+
+def test_preview_urls_are_screen_sized():
+    from frame_art.model import Work
+    from frame_art.pipeline import preview_url
+
+    def work(**kv):
+        base = dict(source="nga", source_id="1", title="t", artist=None, date=None,
+                    kind="painting", license="CC0", width=4000, height=3000)  # fmt: skip
+        return Work(**{**base, **kv})
+
+    assert preview_url(work(iiif="https://x/iiif/1")) == (
+        "https://x/iiif/1/full/!1920,1920/0/default.jpg"
+    )
+    commons = "https://upload.wikimedia.org/wikipedia/commons/9/96/A_b.jpg"
+    assert preview_url(work(source="commons", image_url=commons)).endswith(
+        "/thumb/9/96/A_b.jpg/1920px-A_b.jpg"
+    )
+    cma = "https://openaccess-cdn.clevelandart.org/1916.1/1916.1_full.tif"
+    assert preview_url(work(source="cleveland", image_url=cma)).endswith("_print.jpg")

@@ -20,6 +20,17 @@
 <main>
 {% block body %}{% endblock %}
 </main>
+<dialog class="viewer" id="viewer" aria-label="Larger image">
+  <img alt="">
+  <div class="viewer-bar">
+    <div class="viewer-caption"></div>
+    <div class="viewer-nav">
+      <button type="button" data-step="-1" aria-label="Previous">←</button>
+      <button type="button" data-step="1" aria-label="Next">→</button>
+      <button type="button" data-close aria-label="Close" autofocus>✕</button>
+    </div>
+  </div>
+</dialog>
 <footer>frame-art {{ version }} · public-domain art from museum open-access collections</footer>
 </body>
 </html>
