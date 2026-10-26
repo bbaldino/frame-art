@@ -280,7 +280,18 @@ class Service:
             log.warning("ha: ignoring current artwork %r", payload)
             return
         cat = self.catalogue()
-        cat.put("tv_current", {"content_id": cid, "at": time.time()})
+        prev = cat.get("tv_current") or {}
+        # "since" is when this artwork came up, not when HA last re-sent it.
+        since = prev.get("at") if prev.get("content_id") == cid else time.time()
+        on = payload.get("on")
+        cat.put(
+            "tv_current",
+            {
+                "content_id": cid,
+                "at": since,
+                "on": on if isinstance(on, bool) else None,
+            },
+        )
         self.publish_now(cat)
 
     def now_showing(self, cat: Catalogue | None = None) -> dict:
@@ -288,7 +299,13 @@ class Service:
         cat = cat or self.catalogue()
         current = cat.get("tv_current") or {}
         cid = current.get("content_id")
-        info: dict = {"content_id": cid, "since": current.get("at"), "ours": False}
+        info: dict = {
+            "content_id": cid,
+            "since": current.get("at"),
+            # Whether the screen is on (TV or Art Mode); None if HA hasn't said.
+            "tv_on": current.get("on"),
+            "ours": False,
+        }
         p = find_content(cat, self.dest, cid) if cid else None
         w = next((w for w in cat.works() if p and w.key == p.key), None)
         if p is None or w is None:

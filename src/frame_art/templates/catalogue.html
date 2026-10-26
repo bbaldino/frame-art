@@ -23,7 +23,7 @@
 <div class="grid">
 {% for r in rows %}
   {% set w = r.w %}
-  <article class="card {{ r.status }}">
+  <article class="card {{ r.status }}" id="{{ card_id(w.key) }}">
     {% set t = thumb_url(w) %}
     {% if t %}<img loading="lazy" referrerpolicy="no-referrer" src="{{ t }}" alt="">{% else %}<div class="noimg"></div>{% endif %}
     {{ caption(w) }}
@@ -33,7 +33,7 @@
       {% if w.highlight %} · highlight{% endif %}{% if w.sitelinks %} · {{ w.sitelinks }} wiki{% endif %}
     </div>
     <div class="status-line"><span class="badge {{ r.status }}">{{ statuses[r.status] }}</span>{% if r.reason %} <span class="muted">{{ r.reason }}</span>{% endif %}</div>
-    {{ override_buttons(w.key, r.override, here) }}
+    {{ override_buttons(w.key, r.override, here ~ "#" ~ card_id(w.key)) }}
   </article>
 {% else %}
   <p class="muted">No works match.</p>

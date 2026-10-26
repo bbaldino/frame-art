@@ -2,6 +2,7 @@
 {% block title %}Now showing · Frame Art{% endblock %}
 {% block body %}
 <h1>Now showing</h1>
+{% if now.tv_on is sameas false %}<p class="notice">The TV is off. Below is what it showed last.</p>{% endif %}
 {% if not now.content_id %}
 <p class="muted">Home Assistant hasn't reported what the TV is showing yet. It does whenever the picture changes.</p>
 {% elif not now.ours %}

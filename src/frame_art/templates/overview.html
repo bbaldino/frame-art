@@ -2,12 +2,18 @@
 {% block body %}
 <section class="hero">
   <div class="tv">
-    {% if tv_image_url %}
-    <img src="{{ tv_image_url }}" alt="What the TV is showing now" onerror="this.replaceWith(Object.assign(document.createElement('div'), {className: 'tv-missing', textContent: 'The TV thumbnail is not available right now.'}))">
-    <p class="muted">On the TV now (from Home Assistant)</p>
+    {% if now.ours %}
+    <a href="/now"><img src="/render/{{ now.file }}" alt="{{ now.title }}"></a>
+    <p><a href="/now">{{ now.title }}</a> <span class="muted">· {{ now.artist or "Unknown artist" }}{% if now.date %}, {{ now.date }}{% endif %}</span></p>
+    {% if now.tv_on is sameas false %}<p class="muted">The TV is off; this is what it showed last.</p>{% endif %}
+    {% elif not now.content_id %}
+    <div class="tv-missing">Home Assistant hasn't reported what the TV is showing yet.</div>
+    {% elif now.tv_on is sameas false %}
+    <div class="tv-missing">The TV is off.</div>
     {% else %}
-    <div class="tv-missing">Set FRAME_ART_TV_IMAGE_URL to show what the TV is displaying.</div>
+    <div class="tv-missing">The TV is showing something frame-art didn't put there, such as your own photo or an Art Store piece.</div>
     {% endif %}
+    <p class="muted small"><a href="/now">Now showing</a> · as reported by Home Assistant</p>
   </div>
   <div class="status">
     <h1>Overview</h1>

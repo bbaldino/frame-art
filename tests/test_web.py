@@ -22,7 +22,7 @@ def client(tmp_path):
     )  # fmt: skip
     svc = Service(data, dest, "/config/frame_art_pool", None, 1883, "test")
     # No start(): the worker and scheduler threads aren't needed to render pages.
-    return TestClient(create_app(svc, None)), svc
+    return TestClient(create_app(svc)), svc
 
 
 @pytest.mark.parametrize(
@@ -140,3 +140,17 @@ def test_now_showing_maps_tv_id_to_work(client):
 
     svc._on_current({"content_id": "../../etc"})  # ignored
     assert c.get("/now.json").json()["content_id"] == "MY_F0042"
+
+
+def test_overview_never_embeds_ha_thumbnail_and_reports_tv_off(client):
+    c, svc = client
+    svc._on_current({"content_id": "SAM-S1110748", "on": False})
+    page = c.get("/").text
+    assert "/local/" not in page and "The TV is off" in page
+    assert svc.now_showing()["tv_on"] is False
+    first = svc.catalogue().get("tv_current")["at"]
+    svc._on_current({"content_id": "SAM-S1110748", "on": True})
+    assert (
+        svc.catalogue().get("tv_current")["at"] == first
+    )  # same artwork, same "since"
+    assert "didn't put there" in c.get("/").text

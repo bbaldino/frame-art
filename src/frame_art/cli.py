@@ -136,7 +136,6 @@ def cmd_serve(args, cat: Catalogue, http: Http) -> None:
         args.dest,
         args.host,
         args.port,
-        args.tv_image_url,
         args.ha_folder,
         args.mqtt_host,
         args.mqtt_port,
@@ -253,9 +252,6 @@ def main() -> None:
     sv.add_argument(
         "--mqtt-port", type=int, default=int(env("FRAME_ART_MQTT_PORT", 1883))
     )
-    sv.add_argument("--tv-image-url", default=env("FRAME_ART_TV_IMAGE_URL"),
-                    help="HA's public current-art thumbnail, shown in the UI "
-                         "(env FRAME_ART_TV_IMAGE_URL)")  # fmt: skip
 
     args = p.parse_args()
     logging.basicConfig(

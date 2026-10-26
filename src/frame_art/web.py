@@ -84,11 +84,12 @@ def _when(ts: float | None, tz) -> str:
     return datetime.datetime.fromtimestamp(ts, tz).strftime("%a %b %-d, %-I:%M %p")
 
 
-def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
+def create_app(svc: Service) -> Starlette:
     templates = Jinja2Templates(directory=HERE / "templates")
     env = templates.env
     env.globals.update(
         ago=_ago,
+        card_id=lambda key: "w-" + re.sub(r"[^A-Za-z0-9_-]", "-", key),
         when=lambda ts: _when(ts, svc.tz),
         version=svc.version,
         source_names=SOURCE_NAMES,
@@ -123,7 +124,7 @@ def create_app(svc: Service, tv_image_url: str | None) -> Starlette:
             job_kinds=JOB_KINDS,
             mqtt=svc.link.connected if svc.link else None,
             last_upload=cat.get("last_upload"),
-            tv_image_url=tv_image_url,
+            now=svc.now_showing(cat),
             catalogue_size=len(cat.works()),
         )
 
@@ -387,7 +388,6 @@ def serve(
     dest: Path,
     host: str,
     port: int,
-    tv_image_url: str | None,
     ha_folder: str,
     mqtt_host: str | None,
     mqtt_port: int,
@@ -395,8 +395,6 @@ def serve(
     svc = Service(data, dest, ha_folder, mqtt_host, mqtt_port, _version())
     svc.start()
     try:
-        uvicorn.run(
-            create_app(svc, tv_image_url), host=host, port=port, log_level="warning"
-        )
+        uvicorn.run(create_app(svc), host=host, port=port, log_level="warning")
     finally:
         svc.stop()

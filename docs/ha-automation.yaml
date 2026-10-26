@@ -143,6 +143,12 @@ triggers:
   - trigger: state
     entity_id: sensor.master_bedroom_frame_tv_frame_art
     attribute: current_content_id
+  - trigger: state
+    entity_id: sensor.master_bedroom_frame_tv_frame_art
+    attribute: tv_power_state
+  - trigger: state
+    entity_id: sensor.master_bedroom_frame_tv_frame_art
+    attribute: art_mode_status
   - trigger: homeassistant
     event: start
     note: "Re-send after a restart; the TV may have moved on meanwhile."
@@ -158,5 +164,7 @@ actions:
       topic: frame-art/current
       retain: true
       payload: >-
-        {{ {'content_id': state_attr('sensor.master_bedroom_frame_tv_frame_art',
-        'current_content_id')} | to_json }}
+        {% set s = 'sensor.master_bedroom_frame_tv_frame_art' %}
+        {{ {'content_id': state_attr(s, 'current_content_id'),
+            'on': state_attr(s, 'tv_power_state') == 'on'
+                  or state_attr(s, 'art_mode_status') == 'on'} | to_json }}

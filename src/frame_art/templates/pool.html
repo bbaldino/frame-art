@@ -6,7 +6,7 @@
 <p class="muted">Newest first. Ban takes a work off the TV the next time Home Assistant syncs. A pinned work is never retired.</p>
 <div class="grid">
 {% for it in items %}
-  <article class="card{% if it.state == 'pinned' %} pinned{% endif %}">
+  <article class="card{% if it.state == 'pinned' %} pinned{% endif %}" id="{{ card_id(it.p.key) }}">
     <img loading="lazy" src="/thumb/{{ it.p.folder }}/{{ it.p.filename }}" alt="">
     {% if it.w %}{{ caption(it.w) }}{% else %}<div class="title">{{ it.p.filename }}</div>{% endif %}
     <div class="meta">
@@ -14,7 +14,7 @@
       · {% if it.on_tv %}on the TV{% else %}<span class="warn">not uploaded yet</span>{% endif %}
       {% if it.state == "pinned" %} · <strong>pinned</strong>{% endif %}
     </div>
-    {{ override_buttons(it.p.key, it.state, "/pool") }}
+    {{ override_buttons(it.p.key, it.state, "/pool#" ~ card_id(it.p.key)) }}
   </article>
 {% else %}
   <p class="muted">Nothing published yet. Use "Run now" on the overview.</p>

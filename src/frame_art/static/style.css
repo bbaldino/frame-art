@@ -163,3 +163,6 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 .swatches { display: flex; gap: 0.3rem; }
 .swatches span { width: 1.6rem; height: 1.6rem; border-radius: 4px; border: 1px solid var(--line); }
 @media (max-width: 800px) { .now { grid-template-columns: 1fr; } }
+.card.updating { opacity: 0.6; }
+.card.gone { opacity: 0.4; }
+.card { scroll-margin-top: 1rem; }

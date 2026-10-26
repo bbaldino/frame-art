@@ -25,7 +25,6 @@ docker run -p 8740:8740 \
 | `FRAME_ART_DEST` | Where rendered works are written (default `/out`) |
 | `FRAME_ART_HA_FOLDER` | The same folder as Home Assistant sees it |
 | `FRAME_ART_MQTT_HOST`, `FRAME_ART_MQTT_PORT` | Broker Home Assistant listens on |
-| `FRAME_ART_TV_IMAGE_URL` | Optional: HA's current-art thumbnail, shown in the UI |
 | `FRAME_ART_PORT` | Web UI port (default 8740) |
 
 The web UI (no authentication; keep it on the LAN) shows the pool and the
