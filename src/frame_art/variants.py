@@ -285,8 +285,13 @@ def progress(cat: Catalogue, settings: Settings) -> list[dict]:
     todo = needed(slots, states, live)
     all_variants = cat.variants()
     type_of = {v.id: v.type for v in all_variants}
-    showing = Counter(type_of.get(vid) for vid in cat.published_variants().values())
-    live_files = len(cat.published(active=True))
+    live_files = {p.filename for p in cat.published(active=True)}
+    # published_variants keeps rows for retired files too.
+    showing = Counter(
+        type_of.get(vid)
+        for name, vid in cat.published_variants().items()
+        if name in live_files
+    )
     out = []
     for vt in cat.variant_types():
         slotted = [k for k, s in slots.items() if s.type == vt.slug]
@@ -303,7 +308,7 @@ def progress(cat: Catalogue, settings: Settings) -> list[dict]:
                 "name": vt.name,
                 "prompt": vt.prompt,
                 "share": settings.mix.get(vt.slug, 0),
-                "live_share": round(100 * showing[vt.slug] / live_files)
+                "live_share": round(100 * showing[vt.slug] / len(live_files))
                 if live_files
                 else 0,
                 "slotted": len(slotted),

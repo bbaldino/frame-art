@@ -122,15 +122,21 @@ def nightly(
         failed=res.failed,
         live=len(cat.published(active=True)),
     )
-    # Edits take a minute or more each, so their client waits longer.
-    v = variants.nightly(
-        cat,
-        Http(timeout=300),
-        data,
-        publisher(cat, http, dest, settings),
-        settings,
-        keys.read_key("openrouter"),
-    )
+    try:
+        # Edits take a minute or more each, so their client waits longer.
+        v = variants.nightly(
+            cat,
+            Http(timeout=300),
+            data,
+            publisher(cat, http, dest, settings),
+            settings,
+            keys.read_key("openrouter"),
+        )
+    except Exception as ex:  # noqa: BLE001 - keep what publishing did
+        log.exception("variants: the seasonal step failed")
+        summary["variants"] = {"error": type(ex).__name__}
+        summary["failed"] = [*summary["failed"], "variants"]
+        return summary
     summary["variants"] = v
     # A failed edit makes the run partial, like a failed publish.
     summary["failed"] = [*summary["failed"], *v["gen_failed"]]

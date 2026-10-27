@@ -374,11 +374,14 @@ class Catalogue:
         key: str,
         phash: int,
         variant: int | None = None,
+        published_at: float | None = None,
     ) -> None:
+        """``published_at`` defaults to now; a swap passes on the replaced file's."""
+        at = time.time() if published_at is None else published_at
         with self.db:
             self.db.execute(
                 "insert or replace into published values (?, ?, ?, ?, ?, null, null)",
-                (filename, folder, key, f"{phash:016x}", time.time()),
+                (filename, folder, key, f"{phash:016x}", at),
             )
             if variant is not None:
                 self.db.execute(

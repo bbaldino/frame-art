@@ -282,8 +282,15 @@ class Publisher:
         # A variant keeps the original's hash, so the duplicate check still
         # recognises the painting while its Halloween take is live.
         phash = out.phash if variant is None else p.phash
+        # It keeps the original's publish time too, so the work keeps its age
+        # (retirement order, newest-first ordering).
         self.cat.record_publish(
-            path.name, folder, p.key, phash, variant=variant.id if variant else None
+            path.name,
+            folder,
+            p.key,
+            phash,
+            variant=variant.id if variant else None,
+            published_at=p.published_at,
         )
         self._retire_files([p])
         log.info("swapped %s/%s for %s/%s", p.folder, p.filename, folder, path.name)

@@ -468,3 +468,31 @@ def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
     assert run["status"] == "partial"
     assert run["summary"]["added"] == ["x"] and run["summary"]["failed"] == ["nga:1"]
     assert run["summary"]["variants"]["gen_failed"] == ["nga:1"]
+
+
+def test_nightly_keeps_the_publish_summary_when_variants_break(
+    client, tmp_path, monkeypatch
+):
+    from frame_art import jobs, variants
+    from frame_art.publish import PublishResult
+    from frame_art.service import Job
+
+    _, svc = client
+    monkeypatch.setenv("FRAME_ART_KEYS", str(tmp_path / "no-keys"))
+    monkeypatch.setattr(jobs, "crawl", lambda *a, **k: {})
+    monkeypatch.setattr(
+        jobs, "publish", lambda *a, **k: PublishResult(["x"], ["y"], ["z"])
+    )
+
+    def broken(*a, **k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(variants, "nightly", broken)
+    svc._run(Job("nightly"))
+    [run] = svc.catalogue().runs(1)
+    assert run["status"] == "partial"
+    s = run["summary"]
+    assert (s["added"], s["retired"]) == (["x"], ["y"])
+    assert s["failed"] == ["z", "variants"]
+    assert s["variants"] == {"error": "RuntimeError"}
+    assert "database is locked" in run["log"]

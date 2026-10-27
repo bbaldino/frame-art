@@ -296,3 +296,25 @@ def test_seed_types_once_and_only_when_empty(tmp_path):
     other.add_variant_type("winter", "Winter", "make it snowy")
     variants.seed_types(other)
     assert [t.slug for t in other.variant_types()] == ["winter"]
+
+
+def test_live_share_counts_only_files_on_the_tv(vsetup4):
+    cat, data, pub, settings = vsetup4
+    variants.nightly(cat, None, data, pub, settings, "k")
+    assert variants.progress(cat, settings)[0]["live_share"] == 50
+    off = dataclasses.replace(settings, mix={}, variant_limit=0)
+    variants.nightly(cat, None, data, pub, off, None)  # back to originals
+    assert variants.progress(cat, off)[0]["live_share"] == 0
+
+
+def test_swap_keeps_the_age_so_retirement_takes_the_oldest(vsetup4):
+    cat, data, pub, settings = vsetup4
+    variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    cat.set_slots({"s1:1": Slot("halloween", False)})
+    [before] = [p for p in cat.published(active=True) if p.key == "s1:1"]
+    assert variants.apply_versions(cat, None, data, pub)["swapped"]
+    [after] = [p for p in cat.published(active=True) if p.key == "s1:1"]
+    assert after.filename != before.filename
+    assert after.published_at == before.published_at == 1
+    retired = pub._retire(pool=3)
+    assert retired == [f"full/{after.filename}"]  # the oldest work, though just swapped
