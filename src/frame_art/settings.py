@@ -71,6 +71,10 @@ class Settings:
     # Works per source and kind. 2000 takes ~40 min and gives ~660 full-screen
     # paintings at the strict crop level (AIC caps its search at 1000).
     crawl_limit: int = 2000
+    # Seasonal variants: the share (percent) of the pool for each variant type.
+    # Originals get whatever is left over.
+    mix: dict[str, int] = field(default_factory=dict)
+    variant_limit: int = 10  # AI edits made per nightly run
 
     def prefs(self) -> pipeline.Prefs:
         return pipeline.Prefs(
@@ -97,6 +101,9 @@ class Settings:
     def shown_kinds(self) -> tuple[str, ...]:
         """Kinds the nightly run may publish."""
         return (*self.kinds, "photograph") if self.photo_share else tuple(self.kinds)
+
+    def originals_share(self) -> int:
+        return 100 - sum(self.mix.values())
 
     def validate(self) -> list[str]:
         errors = []
@@ -129,6 +136,15 @@ class Settings:
             errors.append("recrawl interval must be 1-365 days")
         if not 10 <= self.crawl_limit <= 10000:
             errors.append("crawl depth must be 10-10000")
+        if not isinstance(self.mix, dict) or not all(
+            isinstance(k, str) and type(v) is int and 0 <= v <= 100
+            for k, v in self.mix.items()
+        ):
+            errors.append("seasonal shares must be whole numbers 0-100%")
+        elif sum(self.mix.values()) > 100:
+            errors.append("seasonal shares must add up to 100% or less")
+        if not 0 <= self.variant_limit <= 50:
+            errors.append("variants per night must be 0-50")
         return errors
 
     @classmethod

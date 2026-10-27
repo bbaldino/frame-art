@@ -467,6 +467,8 @@ def create_app(svc: Service) -> Starlette:
         if request.method == "POST":
             form = await request.form()
             new = Settings()
+            # Not on this form; edited elsewhere, so carry them over.
+            new.mix, new.variant_limit = s.mix, s.variant_limit
             try:
                 new.crop = form.get("crop", s.crop)
                 new.pad_style = form.get("pad_style", s.pad_style)

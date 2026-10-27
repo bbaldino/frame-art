@@ -355,3 +355,24 @@ def test_upload_button_says_when_nothing_will_happen(client):
     assert "Uploads are turned off" not in c.get("/").text
     svc._on_uploads({"enabled": "yes"})  # ignored
     assert svc.catalogue().get("uploads_enabled")["enabled"] is True
+
+
+def test_mix_validates(tmp_path):
+    assert Settings(mix={"halloween": 50}).validate() == []
+    assert Settings(mix={"halloween": 60, "autumn": 50}).validate()
+    assert Settings(mix={"halloween": -1}).validate()
+    assert Settings(variant_limit=51).validate()
+    assert Settings(mix={"halloween": 30}).originals_share() == 70
+
+
+def test_saving_settings_keeps_the_mix(client):
+    c, svc = client
+    svc.save_settings(
+        dataclasses.replace(svc.settings(), mix={"halloween": 50}, variant_limit=4)
+    )
+    form = {"crop": "medium", "pad_style": "blur", "kinds": "painting",
+            "sources": "nga", "count": "5", "pool": "100", "run_at": "03:30",
+            "recrawl_days": "7", "crawl_limit": "300"}  # fmt: skip
+    assert "Saved" in c.post("/settings", data=form).text
+    assert svc.settings().mix == {"halloween": 50}
+    assert svc.settings().variant_limit == 4
