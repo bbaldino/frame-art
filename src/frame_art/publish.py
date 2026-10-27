@@ -20,6 +20,7 @@ would upload a duplicate.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import random
@@ -266,7 +267,8 @@ class Publisher:
 
         The new file gets a name never published before, so HA uploads it as new
         art, and the old one is retired like any other. Unlike adding a work,
-        there is no duplicate-picture check: it is the same work.
+        there is no duplicate-picture check, and no full-screen-only gate: it is
+        the same work, already live.
         """
         w = find_work(self.cat, p.key)
         if w is None:
@@ -274,7 +276,8 @@ class Publisher:
         name = pipeline.filename(w)
         if variant is not None:
             name = f"{Path(name).stem}--{variant.type}-{variant.n}.jpg"
-        out = pipeline.render_image(w, im, self.prefs_for(w), self.pad_style)
+        prefs = dataclasses.replace(self.prefs_for(w), full_screen_only=False)
+        out = pipeline.render_image(w, im, prefs, self.pad_style)
         folder = pipeline.folder_for(out.plan, self.pad_style)
         path = self.dest / folder / self.cat.unused_filename(name)
         path.parent.mkdir(parents=True, exist_ok=True)

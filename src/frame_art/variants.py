@@ -166,8 +166,14 @@ def generate(
             if vt is None:
                 raise LookupError(f"no variant type {type!r}")
             prompt = vt.prompt
-        src = load_source(http, data, w, pub.prefs_for(w))
-        edit = openrouter.edit_image(http, api_key, src, prompt)
+        prefs = pub.prefs_for(w)
+        src = load_source(http, data, w, prefs)
+        # A work that fills the screen gets a screen-shaped variant: the
+        # nearest edit shape may need more crop than the crop level allows.
+        fills = imaging.plan_for(*src.size, prefs.max_crop).mode == "crop"
+        edit = openrouter.edit_image(
+            http, api_key, src, prompt, aspect="16:9" if fills else None
+        )
         n = cat.next_variant_n(key, type)
         path = variant_path(data, w, type, n)
         _save(edit.image, path)

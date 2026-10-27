@@ -413,7 +413,9 @@ def test_generate_job_makes_a_variant_and_puts_it_on_the_tv(
     monkeypatch.setenv("FRAME_ART_KEYS", str(keys))
     seen = []
 
-    def fake_edit(http, api_key, im, prompt, model=openrouter.MODEL, size="4K"):
+    def fake_edit(
+        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
+    ):
         seen.append((api_key, prompt))
         return openrouter.Edit(Image.new("RGB", (3840, 2160), "orange"), 0.12, "g")
 

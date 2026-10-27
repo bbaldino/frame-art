@@ -84,7 +84,9 @@ def vsetup(tmp_path, monkeypatch):
     (dest / "full" / publish.SIDECAR).write_text(json.dumps(sidecar))
     cat.add_variant_type("halloween", "Halloween", HALLOWEEN_PROMPT)
 
-    def fake_edit(http, api_key, im, prompt, model=openrouter.MODEL, size="4K"):
+    def fake_edit(
+        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
+    ):
         return openrouter.Edit(solid("orange"), 0.12, "gen-x")
 
     monkeypatch.setattr(openrouter, "edit_image", fake_edit)
@@ -197,7 +199,9 @@ def vsetup4(tmp_path, monkeypatch):
     (dest / "full" / publish.SIDECAR).write_text(json.dumps(sidecar))
     cat.add_variant_type("halloween", "Halloween", HALLOWEEN_PROMPT)
 
-    def fake_edit(http, api_key, im, prompt, model=openrouter.MODEL, size="4K"):
+    def fake_edit(
+        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
+    ):
         return openrouter.Edit(solid("orange"), 0.12, "gen-x")
 
     monkeypatch.setattr(openrouter, "edit_image", fake_edit)
@@ -249,7 +253,9 @@ def test_nightly_carries_on_after_a_failed_edit(vsetup4, monkeypatch):
     cat, data, pub, settings = vsetup4
     calls = []
 
-    def flaky(http, api_key, im, prompt, model=openrouter.MODEL, size="4K"):
+    def flaky(
+        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
+    ):
         calls.append(prompt)
         if len(calls) == 1:
             raise openrouter.EditFailed("HTTP 502: upstream error")
@@ -318,3 +324,50 @@ def test_swap_keeps_the_age_so_retirement_takes_the_oldest(vsetup4):
     assert after.published_at == before.published_at == 1
     retired = pub._retire(pool=3)
     assert retired == [f"full/{after.filename}"]  # the oldest work, though just swapped
+
+
+def test_full_screen_source_gets_a_full_screen_variant(vsetup, monkeypatch):
+    """A 1.6:1 work crops to fill the screen; its variant must too.
+
+    The nearest edit aspect (3:2) would need more crop than strict allows.
+    """
+    cat, dest, data, _ = vsetup
+    monkeypatch.setattr(
+        pipeline, "load_work", lambda http, cand: Image.new("RGB", (4000, 2500))
+    )
+    asked = []
+
+    def fake_edit(
+        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
+    ):
+        aspect = aspect or openrouter.nearest_aspect(*im.size)
+        asked.append(aspect)
+        size = {"3:2": (3840, 2560), "16:9": (3840, 2160)}[aspect]
+        return openrouter.Edit(Image.new("RGB", size, "orange"), 0.12, "gen-x")
+
+    monkeypatch.setattr(openrouter, "edit_image", fake_edit)
+    # Matte: a padded render would land in matted/.
+    pub = publish.Publisher(cat, None, dest, "matte")
+    variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    assert asked == ["16:9"]
+    cat.set_slots({"s1:1": Slot("halloween", False)})
+    [swapped] = variants.apply_versions(cat, None, data, pub)["swapped"]
+    assert swapped.startswith("full/")
+
+
+def test_swap_keeps_a_live_work_that_no_longer_fills_the_screen(vsetup, monkeypatch):
+    """New-pick gates (full screen only) don't apply to a work already live."""
+    cat, dest, data, _ = vsetup
+
+    def square_edit(
+        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
+    ):
+        return openrouter.Edit(Image.new("RGB", (2400, 2400), "orange"), 0.1, "g")
+
+    monkeypatch.setattr(openrouter, "edit_image", square_edit)
+    prefs = pipeline.Prefs(full_screen_only=True)
+    pub = publish.Publisher(cat, None, dest, "matte", prefs=prefs)
+    variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    cat.set_slots({"s1:1": Slot("halloween", False)})
+    res = variants.apply_versions(cat, None, data, pub)
+    assert res["failed"] == [] and res["swapped"][0].startswith("matted/")

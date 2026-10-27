@@ -98,3 +98,16 @@ def test_failure_includes_status_and_message():
 def test_nearest_aspect():
     assert openrouter.nearest_aspect(3840, 2160) == "16:9"
     assert openrouter.nearest_aspect(2000, 2600) == "3:4"
+
+
+def test_edit_asks_for_the_given_aspect():
+    http = FakeHttp(
+        200,
+        {
+            "choices": [
+                {"message": {"images": [{"image_url": {"url": png_data_url(16, 9)}}]}}
+            ]
+        },
+    )
+    openrouter.edit_image(http, "k", Image.new("RGB", (1600, 1000)), "p", aspect="16:9")
+    assert http.calls[0]["json"]["image_config"]["aspect_ratio"] == "16:9"

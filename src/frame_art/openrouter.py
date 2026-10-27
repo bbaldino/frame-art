@@ -59,12 +59,18 @@ def edit_image(
     prompt: str,
     model: str = MODEL,
     size: str = "4K",
+    aspect: str | None = None,
 ) -> Edit:
-    """Ask OpenRouter to edit `im` per `prompt`. Raises EditFailed on any failure."""
+    """Ask OpenRouter to edit `im` per `prompt`. Raises EditFailed on any failure.
+
+    The result has shape ``aspect`` (one of ASPECTS), by default the nearest to
+    ``im``'s.
+    """
+    aspect = aspect or nearest_aspect(*im.size)
     body = {
         "model": model,
         "modalities": ["image", "text"],
-        "image_config": {"aspect_ratio": nearest_aspect(*im.size), "image_size": size},
+        "image_config": {"aspect_ratio": aspect, "image_size": size},
         "usage": {"include": True},
         "messages": [
             {
