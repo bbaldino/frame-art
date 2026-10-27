@@ -279,8 +279,11 @@ class Publisher:
         path = self.dest / folder / self.cat.unused_filename(name)
         path.parent.mkdir(parents=True, exist_ok=True)
         pipeline.write_atomic(out.image, path, self.dest / ".staging")
+        # A variant keeps the original's hash, so the duplicate check still
+        # recognises the painting while its Halloween take is live.
+        phash = out.phash if variant is None else p.phash
         self.cat.record_publish(
-            path.name, folder, p.key, out.phash, variant=variant.id if variant else None
+            path.name, folder, p.key, phash, variant=variant.id if variant else None
         )
         self._retire_files([p])
         log.info("swapped %s/%s for %s/%s", p.folder, p.filename, folder, path.name)

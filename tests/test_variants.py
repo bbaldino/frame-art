@@ -64,6 +64,9 @@ def solid(color) -> Image.Image:
     return Image.new("RGB", (3840, 2160), color)
 
 
+ORIGINAL_PHASH = 0x1234ABCD
+
+
 @pytest.fixture
 def vsetup(tmp_path, monkeypatch):
     cat = Catalogue(tmp_path / "db.sqlite")
@@ -73,7 +76,7 @@ def vsetup(tmp_path, monkeypatch):
     name = pipeline.filename(w)
     (dest / "full").mkdir(parents=True)
     pipeline.write_atomic(solid("navy"), dest / "full" / name, dest / ".staging")
-    cat.record_publish(name, "full", w.key, 0)
+    cat.record_publish(name, "full", w.key, ORIGINAL_PHASH)
     # Pretend HA uploaded it.
     sidecar = {name: {"content_id": "MY_F0001", "modified": 1.0}}
     (dest / "full" / publish.SIDECAR).write_text(json.dumps(sidecar))
@@ -101,6 +104,8 @@ def test_generate_then_swap_and_revert(vsetup):
     assert live.filename.endswith("--halloween-1.jpg") and res["swapped"]
     assert res["swapped"] == [f"full/{live.filename}"] and not res["failed"]
     assert cat.published_variants()[live.filename] == v.id
+    # The variant carries the original's hash, for the duplicate check.
+    assert live.phash == ORIGINAL_PHASH
     assert publish.pending(cat, dest)["retire"] == ["MY_F0001"]
     assert not (dest / "full" / "s1-1-artist-1-work-1.jpg").exists()
     index = json.loads((dest / "_meta" / "index.json").read_text())
@@ -155,3 +160,15 @@ def test_failed_swap_leaves_the_work_alone(vsetup):
     [live] = cat.published(active=True)
     assert live.filename == "s1-1-artist-1-work-1.jpg"
     assert publish.pending(cat, dest)["retire"] == []
+
+
+def test_add_variant_failure_is_counted(vsetup, monkeypatch):
+    cat, dest, data, pub = vsetup
+
+    def broken(*a, **k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(cat, "add_variant", broken)
+    with pytest.raises(RuntimeError):
+        variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    assert cat.variant_states()[("s1:1", "halloween")].failures == 1

@@ -155,11 +155,14 @@ def generate(
         n = cat.next_variant_n(key, type)
         path = variant_path(data, w, type, n)
         _save(edit.image, path)
+        v = cat.add_variant(
+            key, type, n, prompt, openrouter.MODEL, edit.cost, str(path)
+        )
     except Exception:
         cat.note_variant_failure(key, type)
         raise
     log.info("%s: made %s variant %d (cost %s)", key, type, n, edit.cost)
-    return cat.add_variant(key, type, n, prompt, openrouter.MODEL, edit.cost, str(path))
+    return v
 
 
 def apply_versions(
