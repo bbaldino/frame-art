@@ -718,3 +718,21 @@ def test_history_names_the_variant(client):
     c, svc = client
     _show_variant(svc)
     assert "Halloween version" in c.get("/history").text
+
+
+def test_history_shows_the_live_version_not_the_one_it_replaced(client):
+    c, svc = client
+    cat = svc.catalogue()
+    cat.record_publish("haystacks.jpg", "full", "nga:1", 0)
+    [orig] = cat.published()
+    _show_variant(svc)
+    # A swap keeps the original's publish time, so the two rows tie.
+    cat.db.execute(
+        "update published set published_at = ? where filename like 'haystacks--%'",
+        (orig.published_at,),
+    )
+    cat.db.commit()
+    cat.record_retire("haystacks.jpg", None)
+    page = c.get("/history").text
+    assert "/thumb/full/haystacks--halloween-1.jpg" in page
+    assert "/thumb/full/haystacks.jpg" not in page

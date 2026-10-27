@@ -412,7 +412,11 @@ def create_app(svc: Service) -> Starlette:
         works = {w.key: w for w in cat.works()}
         overrides, collection = cat.overrides(), cat.collection()
         published = cat.published()
-        latest = {p.key: p for p in published}  # oldest first, so the last wins
+        # Oldest first, so the last wins; live rows go last, as a swapped-out
+        # version shares its replacement's publish time.
+        latest = {
+            p.key: p for p in sorted(published, key=lambda p: p.retired_at is None)
+        }
         live = {p.key for p in published if p.retired_at is None}
         todo = request.query_params.get("todo") == "1"
         resolved: dict[str, object] = {}  # content id -> published file, or None
