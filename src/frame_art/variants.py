@@ -221,7 +221,9 @@ def apply_versions(
                 im = load_source(http, data, w, pub.prefs_for(w))
             swapped.append(pub.swap(p, im, want))
         except Exception as ex:  # noqa: BLE001 - one bad work must not stop the rest
-            log.warning("%s: could not swap versions: %s", p.key, ex)
+            log.warning(
+                "%s: could not swap versions: %s: %s", p.key, type(ex).__name__, ex
+            )
             failed.append(p.key)
     if swapped:
         pub._write_meta()
@@ -270,14 +272,15 @@ def nightly(
 
     res = apply_versions(cat, http, data, pub)
     log.info(
-        "variants: %d made, %d failed, %d swapped",
-        len(generated), len(gen_failed), len(res["swapped"]),
+        "variants: %d made, %d failed, %d swapped, %d swaps failed",
+        len(generated), len(gen_failed), len(res["swapped"]), len(res["failed"]),
     )  # fmt: skip
     return {
         "slots": dict(Counter(s.type for s in slots.values())),
         "generated": generated,
         "gen_failed": gen_failed,
         "swapped": res["swapped"],
+        "swap_failed": res["failed"],
         "cost": round(cost, 4),
     }
 

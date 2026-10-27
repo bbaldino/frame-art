@@ -371,3 +371,15 @@ def test_swap_keeps_a_live_work_that_no_longer_fills_the_screen(vsetup, monkeypa
     cat.set_slots({"s1:1": Slot("halloween", False)})
     res = variants.apply_versions(cat, None, data, pub)
     assert res["failed"] == [] and res["swapped"][0].startswith("matted/")
+
+
+def test_nightly_reports_failed_swaps(vsetup4, monkeypatch, caplog):
+    cat, data, pub, settings = vsetup4
+
+    def broken(p, im, variant):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pub, "swap", broken)
+    out = variants.nightly(cat, None, data, pub, settings, "k")
+    assert out["swap_failed"] == ["s0:3", "s1:4"] and out["swapped"] == []
+    assert "s1:4: could not swap versions: OSError: disk full" in caplog.text

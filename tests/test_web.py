@@ -461,6 +461,7 @@ def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
             "generated": [],
             "gen_failed": ["nga:1"],
             "swapped": [],
+            "swap_failed": ["nga:2"],
             "cost": 0.0,
         }
 
@@ -469,7 +470,8 @@ def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
     [run] = svc.catalogue().runs(1)
     assert calls == [None]  # no key on disk
     assert run["status"] == "partial"
-    assert run["summary"]["added"] == ["x"] and run["summary"]["failed"] == ["nga:1"]
+    assert run["summary"]["added"] == ["x"]
+    assert run["summary"]["failed"] == ["nga:1", "nga:2"]
     assert run["summary"]["variants"]["gen_failed"] == ["nga:1"]
 
 

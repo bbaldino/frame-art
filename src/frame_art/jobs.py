@@ -138,8 +138,8 @@ def nightly(
         summary["failed"] = [*summary["failed"], "variants"]
         return summary
     summary["variants"] = v
-    # A failed edit makes the run partial, like a failed publish.
-    summary["failed"] = [*summary["failed"], *v["gen_failed"]]
+    # A failed edit or swap makes the run partial, like a failed publish.
+    summary["failed"] = [*summary["failed"], *v["gen_failed"], *v["swap_failed"]]
     return summary
 
 
