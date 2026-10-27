@@ -303,12 +303,16 @@ class Service:
             result = payload["upload"] if isinstance(payload["upload"], dict) else {}
             log.info("ha: upload result %s", result)
             cat.put("last_upload", {"at": time.time(), "result": result})
-            self._sync_progress(
-                cat,
-                uploaded=len(result.get("uploaded") or []),
-                failed=len(result.get("failed") or []),
-                error=result.get("error") and str(result["error"]),
-            )
+            uploaded = len(result.get("uploaded") or [])
+            failed = len(result.get("failed") or [])
+            progress = {"uploaded": uploaded, "failed": failed}
+            if "error" in result:
+                progress["error"] = str(result["error"])
+            else:
+                # The real count: HA's guess at the start can differ from what
+                # art_upload_batch found new in the folder.
+                progress["total"] = uploaded + failed
+            self._sync_progress(cat, **progress)
         self.publish_state(cat)
         # A fresh upload may be what the TV is already showing.
         self.publish_now(cat)
@@ -370,7 +374,10 @@ class Service:
     def _on_uploads(self, payload: dict) -> None:
         enabled = payload.get("enabled")
         if isinstance(enabled, bool):
-            self.catalogue().put("uploads_enabled", enabled)
+            # Retained: it can outlive the automation, so it's "last known".
+            self.catalogue().put(
+                "uploads_enabled", {"enabled": enabled, "at": time.time()}
+            )
 
     def _on_current(self, payload: dict) -> None:
         cid = payload.get("content_id")

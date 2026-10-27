@@ -223,7 +223,7 @@ def create_app(svc: Service) -> Starlette:
             "tv_command": cmd,
             "tv_unanswered": unanswered,
             "tv_sync": sync,
-            "uploads_enabled": cat.get("uploads_enabled"),
+            "uploads": cat.get("uploads_enabled"),
             "tv_live": bool(
                 (cmd and cmd["status"] == "sent" and not unanswered)
                 or (sync and sync["running"])

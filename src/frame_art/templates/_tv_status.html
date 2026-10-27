@@ -8,7 +8,6 @@
     {% for k, label in tv_actions.items() %}
     {% if tv_off %}{% set why = "The TV is off" %}
     {% elif k == "upload" and uploading %}{% set why = "Already uploading" %}
-    {% elif k == "upload" and uploads_enabled is sameas false %}{% set why = "Uploads are turned off in Home Assistant" %}
     {% elif k == "upload" and not state.pending %}{% set why = "Nothing waiting to upload" %}
     {% else %}{% set why = "" %}{% endif %}
     <form method="post" action="/tv/{{ k }}"><button{% if why %} disabled title="{{ why }}"{% endif %}>{{ label }}</button></form>
@@ -16,8 +15,8 @@
   </div>
   {% if tv_off %}
   <p class="notice warn">The TV is off. Home Assistant never wakes it, so these buttons do nothing until it's on or in Art Mode.</p>
-  {% elif uploads_enabled is sameas false %}
-  <p class="notice warn">Uploads are turned off in Home Assistant (the "sync new art" automation), so nothing will be uploaded until it's turned back on.</p>
+  {% elif uploads and uploads.enabled is sameas false %}
+  <p class="notice warn">Uploads are turned off in Home Assistant (the "sync new art" automation), as of its last report {{ ago(uploads.at) }}. Nothing will be uploaded until it's turned back on.</p>
   {% endif %}
 
   {% if sync and sync.running %}

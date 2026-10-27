@@ -322,15 +322,16 @@ def test_tv_panel_follows_an_upload(client):
     cat = svc.catalogue()
     cat.put("tv_sync", {**cat.get("tv_sync"), "started": time.time() - 20})
     assert "About 3 of 9" in c.get("/tv/status").text
-    svc._on_ack({"upload": {"uploaded": ["MY_F0001"] * 8, "failed": ["x.jpg"]}})
-    assert "8 of 9 uploaded" in c.get("/tv/status").text
+    svc._on_ack({"upload": {"uploaded": ["MY_F0001"] * 7, "failed": ["x.jpg"]}})
+    # The real count replaces HA's guess at the start.
+    assert "7 of 8 uploaded" in c.get("/tv/status").text
     svc._on_ack({"sync": {"phase": "deleting", "total": 2}})
     svc._on_ack({"deleted": "MY_F0001"})
     assert "1 of 2 deleted" in c.get("/tv/status").text
     svc._on_ack({"sync": {"phase": "done"}})
     panel = c.get("/tv/status").text
     assert "data-live" not in panel and "Last upload: finished" in panel
-    assert '8 uploaded, <span class="warn">1 failed' in panel
+    assert '7 uploaded, <span class="warn">1 failed' in panel
 
 
 def test_tv_panel_notices_a_silent_upload(client):
@@ -345,8 +346,12 @@ def test_tv_panel_notices_a_silent_upload(client):
 def test_upload_button_says_when_nothing_will_happen(client):
     c, svc = client
     svc._on_uploads({"enabled": False})
-    assert "Uploads are turned off in Home Assistant" in c.get("/").text
+    page = c.get("/").text
+    assert "Uploads are turned off in Home Assistant" in page
+    # Last known only (the retained value can outlive the automation), so the
+    # button still asks HA rather than refusing.
+    assert 'title="Uploads are turned off' not in page
     svc._on_uploads({"enabled": True})
     assert "Uploads are turned off" not in c.get("/").text
     svc._on_uploads({"enabled": "yes"})  # ignored
-    assert svc.catalogue().get("uploads_enabled") is True
+    assert svc.catalogue().get("uploads_enabled")["enabled"] is True

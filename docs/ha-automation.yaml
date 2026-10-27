@@ -22,6 +22,12 @@
 #   {"sync": {"phase": ...}}: before the batch, before any deletes, and at the
 #   end. The batch is one call, so there is no per-file progress inside it. If
 #   a run dies part way, "done" never arrives and frame-art says it went quiet.
+#   Needs frame-art 0.8.0 or later; older versions ignore these messages, so
+#   after a rollback the panel simply shows no progress.
+# - The upload step has continue_on_error, so a service-call failure (HA raises
+#   rather than returning {"error": ...}) still reaches the error report, the
+#   upload ack and "done". The response is pre-set to {} so the defaulting below
+#   turns a failed call into {"error": "no response"}.
 alias: "Frame Art: sync new art to the bedroom TV"
 description: >-
   Uploads new frame-art works to the Master Bedroom Frame TV and deletes retired
@@ -66,6 +72,8 @@ actions:
       payload: >-
         {{ {'sync': {'phase': 'uploading',
                      'total': state_attr('sensor.frame_art', 'to_upload') | int(0)}} | to_json }}
+  - variables:
+      batch: {}
   - action: samsungtv_smart.art_upload_batch
     target:
       entity_id: media_player.master_bedroom_frame_tv
@@ -74,6 +82,7 @@ actions:
       matte_id: none
       throttle: 3
     response_variable: batch
+    continue_on_error: true
   - variables:
       up: "{{ batch['media_player.master_bedroom_frame_tv'] | default({'error': 'no response'}) }}"
   - action: mqtt.publish
@@ -318,7 +327,10 @@ actions:
 # Fourth automation: tell frame-art whether uploads are turned on, so the
 # "Upload new works now" button can say up front that nothing will happen.
 # Retained, so frame-art learns it on every (re)connect. Read-only: it reports
-# the sync automation's on/off state and changes nothing.
+# the sync automation's on/off state and changes nothing. Trigger it once by
+# hand after creating it. Nothing clears the retained value if this or the sync
+# automation is deleted or renamed, so frame-art treats it as "last known": it
+# warns, but the button still asks HA, whose answer is authoritative.
 alias: "Frame Art: report whether uploads are on"
 id: frame_art_uploads_enabled
 mode: queued
