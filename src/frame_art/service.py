@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image
 
-from . import imaging, jobs
+from . import imaging, jobs, keys, variants
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
@@ -38,6 +38,11 @@ JOB_KINDS = {
     "compare": "Make crop comparison sheets",
     "sync": "Apply bans",
 }
+# Jobs that take arguments, so the web UI queues them from forms, not /jobs/{kind}.
+ARG_JOBS = {
+    "generate": "Generate seasonal variants",
+    "versions": "Update seasonal versions on the TV",
+}
 # Requests the web UI can send HA for the TV (see halink).
 TV_ACTIONS = {
     "upload": "Upload new works now",
@@ -53,6 +58,7 @@ CATCH_UP = 6 * 3600
 @dataclass
 class Job:
     kind: str
+    args: dict | None = None
     queued_at: float = field(default_factory=time.time)
     started_at: float | None = None
 
@@ -83,6 +89,13 @@ def pins_to_collection(cat: Catalogue) -> None:
             cat.set_override(key, None)
             log.info("moved pinned %s into the collection", key)
     cat.put("pins_to_collection", True)
+
+
+def _openrouter_key() -> str:
+    api_key = keys.read_key("openrouter")
+    if api_key is None:
+        raise RuntimeError(f"no OpenRouter key in {keys.key_path('openrouter')}")
+    return api_key
 
 
 class Service:
@@ -143,6 +156,7 @@ class Service:
         threading.Thread(target=self._scheduler, name="schedule", daemon=True).start()
         cat = self.catalogue()
         pins_to_collection(cat)
+        variants.seed_types(cat)
         self.publish_state(cat)
         self.publish_now(cat)
 
@@ -154,13 +168,13 @@ class Service:
 
     # -- jobs ------------------------------------------------------------------
 
-    def submit(self, kind: str) -> bool:
-        """Queue a job unless the same kind is already waiting."""
-        if kind not in JOB_KINDS:
+    def submit(self, kind: str, args: dict | None = None) -> bool:
+        """Queue a job unless the same one is already waiting."""
+        if kind not in JOB_KINDS and kind not in ARG_JOBS:
             raise ValueError(kind)
-        if any(j.kind == kind for j in self._queued):
+        if any(j.kind == kind and j.args == args for j in self._queued):
             return False
-        job = Job(kind)
+        job = Job(kind, args)
         self._queued.append(job)
         self._queue.put(job)
         return True
@@ -186,7 +200,7 @@ class Service:
         self._joblog.buf, self._joblog.thread = buf, threading.get_ident()
         status, summary = "ok", {}
         try:
-            summary = self._do(job.kind, cat) or {}
+            summary = self._do(job, cat) or {}
             if summary.get("failed"):
                 status = "partial"
         except Exception:
@@ -198,8 +212,8 @@ class Service:
             cat.finish_run(run_id, status, summary, buf.getvalue())
             self.publish_state(cat)
 
-    def _do(self, kind: str, cat: Catalogue) -> dict | None:
-        s = self.settings()
+    def _do(self, job: Job, cat: Catalogue) -> dict | None:
+        kind, s = job.kind, self.settings()
         http = Http()
         if kind == "nightly":
             return jobs.nightly(cat, http, self.data, self.dest, s)
@@ -232,7 +246,51 @@ class Service:
             return {"sheets": [p.name for p in sheets]}
         if kind == "sync":
             return {"retired": jobs.publisher(cat, http, self.dest, s).sync()}
+        if kind == "generate":
+            return self._generate(cat, s, **job.args)
+        if kind == "versions":
+            pub = jobs.publisher(cat, http, self.dest, s)
+            return variants.apply_versions(
+                cat, http, self.data, pub, keys=set(job.args["keys"])
+            )
         raise ValueError(kind)
+
+    def _generate(
+        self,
+        cat: Catalogue,
+        s: Settings,
+        type: str,
+        keys: list[str],
+        prompt: str | None,
+    ) -> dict:
+        """Make a ``type`` variant of each work, by hand (outside the nightly limit)."""
+        api_key = _openrouter_key()
+        http = Http(timeout=300)  # edits take a minute or more each
+        pub = jobs.publisher(cat, http, self.dest, s)
+        live = {p.key for p in cat.published(active=True)}
+        generated: list[str] = []
+        failed: list[str] = []
+        cost = 0.0
+        for key in keys:
+            try:
+                v = variants.generate(
+                    cat, http, self.data, api_key, pub, key, type, prompt
+                )
+            except Exception as ex:  # noqa: BLE001 - one bad work must not stop the rest
+                log.warning(
+                    "%s: could not make a %s variant: %s: %s",
+                    key, type, ex.__class__.__name__, ex,
+                )  # fmt: skip
+                failed.append(key)
+                continue
+            generated.append(key)
+            cost += v.cost or 0.0
+            # Made by hand, so show it, even past the type's share.
+            if key in live and s.mix.get(type, 0) > 0:
+                cat.set_slot(key, type, manual=True)
+        res = variants.apply_versions(cat, http, self.data, pub, keys=set(generated))
+        failed += [k for k in res["failed"] if k not in failed]
+        return {"generated": generated, "failed": failed, "cost": round(cost, 4)}
 
     # -- schedule --------------------------------------------------------------
 

@@ -376,3 +376,95 @@ def test_saving_settings_keeps_the_mix(client):
     assert "Saved" in c.post("/settings", data=form).text
     assert svc.settings().mix == {"halloween": 50}
     assert svc.settings().variant_limit == 4
+
+
+def test_generate_job_pins_slot_and_dedupes(client):
+    c, svc = client
+    assert svc.submit(
+        "generate", {"type": "halloween", "keys": ["nga:1"], "prompt": None}
+    )
+    assert not svc.submit(
+        "generate", {"type": "halloween", "keys": ["nga:1"], "prompt": None}
+    )
+    assert svc.submit(
+        "generate", {"type": "halloween", "keys": ["nga:2"], "prompt": None}
+    )
+    assert svc.submit("versions", {"keys": ["nga:1"]})
+    assert c.post("/jobs/generate").status_code == 404
+    assert c.post("/jobs/versions").status_code == 404
+    with pytest.raises(ValueError):
+        svc.submit("bogus")
+    assert c.get("/").status_code == 200  # the queue shows the new kinds
+
+
+def test_generate_job_makes_a_variant_and_puts_it_on_the_tv(
+    client, tmp_path, monkeypatch
+):
+    from PIL import Image
+
+    from frame_art import openrouter, pipeline, variants
+    from frame_art.service import Job
+
+    _, svc = client
+    keys = tmp_path / "keys"
+    (keys / "openrouter").mkdir(parents=True)
+    (keys / "openrouter" / "key").write_text("sk-test\n")
+    monkeypatch.setenv("FRAME_ART_KEYS", str(keys))
+    seen = []
+
+    def fake_edit(http, api_key, im, prompt, model=openrouter.MODEL, size="4K"):
+        seen.append((api_key, prompt))
+        return openrouter.Edit(Image.new("RGB", (3840, 2160), "orange"), 0.12, "g")
+
+    monkeypatch.setattr(openrouter, "edit_image", fake_edit)
+    monkeypatch.setattr(
+        pipeline, "load_work", lambda http, cand: Image.new("RGB", (3840, 2160))
+    )
+    cat = svc.catalogue()
+    variants.seed_types(cat)
+    cat.record_publish("nga-1-monet-haystacks.jpg", "full", "nga:1", 0)
+    svc.save_settings(Settings(mix={"halloween": 10}))
+    svc._run(
+        Job("generate", {"type": "halloween", "keys": ["nga:1"], "prompt": "spooky"})
+    )
+    [run] = cat.runs(1)
+    assert run["kind"] == "generate" and run["status"] == "ok", run["log"]
+    assert run["summary"] == {"generated": ["nga:1"], "failed": [], "cost": 0.12}
+    assert seen == [("sk-test", "spooky")]
+    assert cat.slots()["nga:1"].manual
+    [live] = cat.published(active=True)
+    assert live.filename.endswith("--halloween-1.jpg")
+    assert "sk-test" not in run["log"]
+    # The runs page shows it.
+    c, _ = client
+    assert c.get(f"/runs?id={run['id']}").status_code == 200
+
+
+def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
+    from frame_art import jobs, variants
+    from frame_art.publish import PublishResult
+    from frame_art.service import Job
+
+    _, svc = client
+    monkeypatch.setenv("FRAME_ART_KEYS", str(tmp_path / "no-keys"))
+    monkeypatch.setattr(jobs, "crawl", lambda *a, **k: {})
+    monkeypatch.setattr(jobs, "publish", lambda *a, **k: PublishResult(["x"], [], []))
+    calls = []
+
+    def fake_nightly(cat, http, data, pub, settings, api_key):
+        calls.append(api_key)
+        return {
+            "slots": {},
+            "generated": [],
+            "gen_failed": ["nga:1"],
+            "swapped": [],
+            "cost": 0.0,
+        }
+
+    monkeypatch.setattr(variants, "nightly", fake_nightly)
+    svc._run(Job("nightly"))
+    [run] = svc.catalogue().runs(1)
+    assert calls == [None]  # no key on disk
+    assert run["status"] == "partial"
+    assert run["summary"]["added"] == ["x"] and run["summary"]["failed"] == ["nga:1"]
+    assert run["summary"]["variants"]["gen_failed"] == ["nga:1"]

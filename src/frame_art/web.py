@@ -35,7 +35,7 @@ from starlette.templating import Jinja2Templates
 from . import imaging, keys, pipeline
 from .classify import current_season
 from .publish import find_content, read_sidecar
-from .service import JOB_KINDS, TV_ACTIONS, Service
+from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
 from .settings import (
     CHOOSE_FROM,
     PHOTO_SOURCES,
@@ -245,7 +245,7 @@ def create_app(svc: Service) -> Starlette:
             current=svc.current,
             queued=svc.queued(),
             runs=cat.runs(8),
-            job_kinds=JOB_KINDS,
+            job_kinds=JOB_KINDS | ARG_JOBS,
             mqtt=svc.link.connected if svc.link else None,
             last_upload=cat.get("last_upload"),
             tv_actions=TV_ACTIONS,

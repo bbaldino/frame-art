@@ -1,3 +1,4 @@
+import dataclasses
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from PIL import Image
 from frame_art import openrouter, pipeline, publish, variants
 from frame_art.catalogue import Catalogue, Slot, VariantState
 from frame_art.model import Work
+from frame_art.settings import Settings
 from frame_art.variants import HALLOWEEN_PROMPT, assign_slots, needed
 
 LIVE = ["a", "b", "c", "d"]  # oldest first
@@ -172,3 +174,125 @@ def test_add_variant_failure_is_counted(vsetup, monkeypatch):
     with pytest.raises(RuntimeError):
         variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
     assert cat.variant_states()[("s1:1", "halloween")].failures == 1
+
+
+@pytest.fixture
+def vsetup4(tmp_path, monkeypatch):
+    """Four live works (s1:1 oldest ... s1:4 newest), all Halloween, two edits a night."""
+    cat = Catalogue(tmp_path / "db.sqlite")
+    works = [make_work(i) for i in range(1, 5)]
+    cat.upsert(works)
+    dest = tmp_path / "frame_upload"
+    (dest / "full").mkdir(parents=True)
+    sidecar = {}
+    for i, w in enumerate(works, 1):
+        name = pipeline.filename(w)
+        pipeline.write_atomic(solid("navy"), dest / "full" / name, dest / ".staging")
+        cat.record_publish(name, "full", w.key, ORIGINAL_PHASH + i)
+        # Distinct times, so the publish order is the one above.
+        cat.db.execute(
+            "update published set published_at = ? where filename = ?", (i, name)
+        )
+        sidecar[name] = {"content_id": f"MY_F000{i}", "modified": 1.0}
+    (dest / "full" / publish.SIDECAR).write_text(json.dumps(sidecar))
+    cat.add_variant_type("halloween", "Halloween", HALLOWEEN_PROMPT)
+
+    def fake_edit(http, api_key, im, prompt, model=openrouter.MODEL, size="4K"):
+        return openrouter.Edit(solid("orange"), 0.12, "gen-x")
+
+    monkeypatch.setattr(openrouter, "edit_image", fake_edit)
+    monkeypatch.setattr(pipeline, "load_work", lambda http, cand: solid("navy"))
+    pub = publish.Publisher(cat, None, dest, "blur")
+    settings = Settings(mix={"halloween": 100}, variant_limit=2)
+    return cat, tmp_path / "data", pub, settings
+
+
+def test_nightly_generates_up_to_the_limit_and_swaps(vsetup4):
+    cat, data, pub, settings = vsetup4
+    out = variants.nightly(cat, None, data, pub, settings, "k")
+    assert out["slots"] == {"halloween": 4}
+    assert len(out["generated"]) == 2 and len(out["swapped"]) == 2
+    assert out["generated"] == ["s1:4", "s0:3"]  # newest first
+    assert out["gen_failed"] == [] and out["cost"] == 0.24
+    assert set(cat.slots()) == {"s1:1", "s2:2", "s0:3", "s1:4"}
+
+
+def test_nightly_without_key_or_limit_still_reverts(vsetup4):
+    cat, data, pub, settings = vsetup4
+    variants.nightly(cat, None, data, pub, settings, "k")
+    assert len(cat.published_variants()) == 2
+    off = dataclasses.replace(settings, mix={}, variant_limit=0)
+    out = variants.nightly(cat, None, data, pub, off, None)
+    assert len(out["swapped"]) == 2 and out["generated"] == []
+    assert out["slots"] == {}
+    live = {p.filename for p in cat.published(active=True)}
+    assert not live & set(cat.published_variants())
+
+
+def test_nightly_without_key_generates_nothing(vsetup4):
+    cat, data, pub, settings = vsetup4
+    out = variants.nightly(cat, None, data, pub, settings, None)
+    assert out["generated"] == out["gen_failed"] == out["swapped"] == []
+    assert cat.variant_states() == {}  # no attempt, so no failure counted
+
+
+def test_nightly_ignores_types_that_do_not_exist(vsetup4):
+    cat, data, pub, settings = vsetup4
+    mix = {"halloween": 50, "winter": 50}
+    out = variants.nightly(
+        cat, None, data, pub, dataclasses.replace(settings, mix=mix), "k"
+    )
+    assert out["slots"] == {"halloween": 2}
+
+
+def test_nightly_carries_on_after_a_failed_edit(vsetup4, monkeypatch):
+    cat, data, pub, settings = vsetup4
+    calls = []
+
+    def flaky(http, api_key, im, prompt, model=openrouter.MODEL, size="4K"):
+        calls.append(prompt)
+        if len(calls) == 1:
+            raise openrouter.EditFailed("HTTP 502: upstream error")
+        return openrouter.Edit(solid("orange"), 0.12, "gen-x")
+
+    monkeypatch.setattr(openrouter, "edit_image", flaky)
+    out = variants.nightly(cat, None, data, pub, settings, "k")
+    assert len(out["gen_failed"]) == 1 and len(out["generated"]) == 1
+    assert out["gen_failed"] == ["s1:4"] and out["generated"] == ["s0:3"]
+    assert out["cost"] == 0.12 and len(out["swapped"]) == 1
+    assert cat.variant_states()[("s1:4", "halloween")].failures == 1
+
+
+def test_progress_lists_stuck_works(vsetup4):
+    cat, data, pub, settings = vsetup4
+    variants.nightly(cat, None, data, pub, settings, "k")
+    for _ in range(variants.NIGHTLY_FAILURES):
+        cat.note_variant_failure("s2:2", "halloween")
+    [p] = variants.progress(cat, settings)
+    assert p["slug"] == "halloween" and p["name"] == "Halloween"
+    assert p["prompt"] == HALLOWEEN_PROMPT
+    assert p["share"] == 100 and p["live_share"] == 50
+    assert p["slotted"] == 4 and p["ready"] == 2
+    assert p["needed"] == 1 and p["stuck"] == ["s2:2"]
+    assert p["cost"] == 0.24
+
+
+def test_progress_counts(vsetup4):
+    cat, data, pub, settings = vsetup4
+    variants.nightly(cat, None, data, pub, settings, "k")
+    [p] = variants.progress(cat, settings)
+    assert (p["ready"], p["needed"], p["stuck"], p["cost"]) == (2, 2, [], 0.24)
+
+
+def test_seed_types_once_and_only_when_empty(tmp_path):
+    cat = Catalogue(tmp_path / "db.sqlite")
+    variants.seed_types(cat)
+    assert [t.slug for t in cat.variant_types()] == ["halloween"]
+    cat.db.execute("delete from variant_types")
+    cat.db.commit()
+    variants.seed_types(cat)  # Brian deleted it: it stays gone
+    assert cat.variant_types() == []
+    other = Catalogue(tmp_path / "other.sqlite")
+    other.add_variant_type("winter", "Winter", "make it snowy")
+    variants.seed_types(other)
+    assert [t.slug for t in other.variant_types()] == ["winter"]

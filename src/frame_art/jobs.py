@@ -9,7 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import imaging, notability, pipeline, report
+from . import imaging, keys, notability, pipeline, report, variants
 from .catalogue import Catalogue
 from .classify import current_season
 from .net import Http
@@ -122,6 +122,18 @@ def nightly(
         failed=res.failed,
         live=len(cat.published(active=True)),
     )
+    # Edits take a minute or more each, so their client waits longer.
+    v = variants.nightly(
+        cat,
+        Http(timeout=300),
+        data,
+        publisher(cat, http, dest, settings),
+        settings,
+        keys.read_key("openrouter"),
+    )
+    summary["variants"] = v
+    # A failed edit makes the run partial, like a failed publish.
+    summary["failed"] = [*summary["failed"], *v["gen_failed"]]
     return summary
 
 

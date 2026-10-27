@@ -8,6 +8,7 @@ says what share of the live works hold each type.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
 
 from PIL import Image
@@ -17,6 +18,7 @@ from frame_art.catalogue import Catalogue, Slot, Variant, VariantState
 from frame_art.model import Work
 from frame_art.net import Http
 from frame_art.publish import Publisher, find_work
+from frame_art.settings import Settings
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +31,20 @@ HALLOWEEN_PROMPT = (
     "original style and medium recognisable, as if the same artist had made a "
     "Halloween edition."
 )
+
+# Types a new install starts with.
+DEFAULT_TYPES = (("halloween", "Halloween", HALLOWEEN_PROMPT),)
+
+
+def seed_types(cat: Catalogue) -> None:
+    """Once: add the default types, unless there are types already."""
+    if cat.get("variant_types_seeded"):
+        return
+    if not cat.variant_types():
+        for slug, name, prompt in DEFAULT_TYPES:
+            cat.add_variant_type(slug, name, prompt)
+            log.info("added the %s variant type", name)
+    cat.put("variant_types_seeded", True)
 
 
 def assign_slots(
@@ -204,3 +220,99 @@ def apply_versions(
     if swapped:
         pub._write_meta()
     return {"swapped": swapped, "failed": failed}
+
+
+def _live(cat: Catalogue) -> list[str]:
+    """Live work keys, oldest-published first."""
+    return list(dict.fromkeys(p.key for p in cat.published(active=True)))
+
+
+def nightly(
+    cat: Catalogue,
+    http: Http,
+    data: Path,
+    pub: Publisher,
+    settings: Settings,
+    api_key: str | None,
+) -> dict:
+    """The nightly variant step: reassign slots, make what's missing, swap."""
+    known = {t.slug for t in cat.variant_types()}
+    mix = {t: share for t, share in settings.mix.items() if t in known}
+    live = _live(cat)
+    slots = assign_slots(live, mix, cat.slots(), set(cat.usable_variants()))
+    cat.set_slots(slots)
+
+    todo = needed(slots, cat.variant_states(), live)[: settings.variant_limit]
+    generated: list[str] = []
+    gen_failed: list[str] = []
+    cost = 0.0
+    if todo and api_key is None:
+        log.info("variants: no OpenRouter key, so no new variants tonight")
+        todo = []
+    for key, vtype in todo:
+        try:
+            v = generate(cat, http, data, api_key, pub, key, vtype)
+        except Exception as ex:  # noqa: BLE001 - one bad work must not stop the rest
+            log.warning(
+                "%s: could not make a %s variant: %s: %s",
+                key, vtype, type(ex).__name__, ex,
+            )  # fmt: skip
+            gen_failed.append(key)
+            continue
+        generated.append(key)
+        cost += v.cost or 0.0
+
+    res = apply_versions(cat, http, data, pub)
+    log.info(
+        "variants: %d made, %d failed, %d swapped",
+        len(generated), len(gen_failed), len(res["swapped"]),
+    )  # fmt: skip
+    return {
+        "slots": dict(Counter(s.type for s in slots.values())),
+        "generated": generated,
+        "gen_failed": gen_failed,
+        "swapped": res["swapped"],
+        "cost": round(cost, 4),
+    }
+
+
+def progress(cat: Catalogue, settings: Settings) -> list[dict]:
+    """How far each variant type is from its share of the TV."""
+    live = _live(cat)
+    slots = cat.slots()
+    states = cat.variant_states()
+    usable = cat.usable_variants()
+    todo = needed(slots, states, live)
+    all_variants = cat.variants()
+    type_of = {v.id: v.type for v in all_variants}
+    showing = Counter(type_of.get(vid) for vid in cat.published_variants().values())
+    live_files = len(cat.published(active=True))
+    out = []
+    for vt in cat.variant_types():
+        slotted = [k for k, s in slots.items() if s.type == vt.slug]
+        stuck = [
+            k
+            for k in slotted
+            if (k, vt.slug) not in usable
+            and (st := states.get((k, vt.slug))) is not None
+            and st.failures >= NIGHTLY_FAILURES
+        ]
+        out.append(
+            {
+                "slug": vt.slug,
+                "name": vt.name,
+                "prompt": vt.prompt,
+                "share": settings.mix.get(vt.slug, 0),
+                "live_share": round(100 * showing[vt.slug] / live_files)
+                if live_files
+                else 0,
+                "slotted": len(slotted),
+                "ready": sum(1 for k in slotted if (k, vt.slug) in usable),
+                "needed": sum(1 for _, t in todo if t == vt.slug),
+                "stuck": stuck,
+                "cost": round(
+                    sum(v.cost or 0.0 for v in all_variants if v.type == vt.slug), 4
+                ),
+            }
+        )
+    return out
