@@ -74,6 +74,22 @@ def test_render_rejects_round_work_on_card(monkeypatch):
         pipeline.render(None, cand)
 
 
+def test_render_image_fills_the_panel():
+    from PIL import Image
+
+    im = Image.new("RGB", (3000, 2250), (120, 90, 60))
+    out = pipeline.render_image(
+        work(width=3000, height=2250), im, pipeline.DEFAULT_PREFS
+    )
+    assert out.image.size == pipeline.imaging.PANEL
+    assert out.plan.mode == "pad"
+    small = Image.new("RGB", (600, 400), (120, 90, 60))
+    with pytest.raises(pipeline.TooSmall):
+        pipeline.render_image(
+            work(width=600, height=400), small, pipeline.DEFAULT_PREFS
+        )
+
+
 def test_full_screen_only_drops_padded_works():
     works = [work(source_id="1", width=4000, height=2300), work(source_id="2", title="P",
              width=3000, height=4000)]  # fmt: skip

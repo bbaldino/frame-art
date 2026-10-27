@@ -275,15 +275,21 @@ def load_work(http: Http, cand: Candidate) -> Image.Image:
 
 def render(http: Http, cand: Candidate, pad_style: str = "blur") -> Output:
     im = load_work(http, cand)
+    return render_image(cand.work, im, cand.prefs, pad_style)
+
+
+def render_image(
+    work: Work, im: Image.Image, prefs: Prefs, pad_style: str = "blur"
+) -> Output:
     # The fetched image may be smaller than the catalogued master, and trimming
     # changes the shape, so plan again from what we actually have.
-    plan = imaging.plan_for(*im.size, cand.prefs.max_crop)
-    if cand.prefs.full_screen_only and plan.mode == "pad":
+    plan = imaging.plan_for(*im.size, prefs.max_crop)
+    if prefs.full_screen_only and plan.mode == "pad":
         raise NotFullScreen(f"{im.size[0]}x{im.size[1]} after trimming")
     if plan.scale > MAX_UPSCALE:
         raise TooSmall(f"{im.size[0]}x{im.size[1]} needs {plan.scale:.2f}x upscaling")
     return Output(
-        cand.work,
+        work,
         plan,
         imaging.phash(im),
         imaging.render(im, plan, pad_style),
