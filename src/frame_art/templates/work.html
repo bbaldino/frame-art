@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% from "_macros.html" import override_buttons %}
+{% block title %}{{ w.title }} · Frame Art{% endblock %}
+{% block body %}
+<h1>{% if w.page_url %}<a href="{{ w.page_url }}" target="_blank" rel="noopener">{{ w.title }}</a>{% else %}{{ w.title }}{% endif %}</h1>
+<p class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %}</p>
+{% set img = preview_url(w) or thumb_url(w) %}
+{% if img %}<img class="work-original" referrerpolicy="no-referrer" src="{{ img }}" alt="{{ w.title }}" style="max-width: 100%; max-height: 70vh">{% endif %}
+<p class="muted small">The original · {{ source_names[w.source] }} · {{ w.kind }} · {{ w.width }}×{{ w.height }}{% if not live %} · not on the TV now{% endif %}</p>
+{{ override_buttons(w.key, override, "/works/" ~ w.key, collected) }}
+
+<h2>Seasonal versions</h2>
+{% for sec in sections %}
+{% set t = sec.type %}
+<section class="variant-type">
+  <h3>{{ t.name }}{% if sec.dont_use %} <span class="badge">not used</span>{% endif %}</h3>
+  {% if sec.current %}
+  {% set v = sec.current %}
+  <figure>
+    <a href="/variant-file/{{ v.id }}" target="_blank" rel="noopener"><img src="/variant-file/{{ v.id }}?thumb=1" alt="{{ t.name }} version of {{ w.title }}" style="max-width: 100%"></a>
+    <figcaption class="muted small">Current · {{ v.prompt }} · {{ v.model }} · {% if v.cost is not none %}${{ '%.2f' | format(v.cost) }}{% else %}cost unknown{% endif %} · {{ ago(v.created_at) }}</figcaption>
+  </figure>
+  <form method="post" action="/works/{{ w.key }}/variants/{{ t.slug }}/dont-use">
+    {% if sec.dont_use %}
+    <button name="on" value="0" title="Let the TV show this version again">Use again</button>
+    {% else %}
+    <button name="on" value="1" class="danger" title="Never put this version on the TV">Don't use</button>
+    {% endif %}
+  </form>
+  {% else %}
+  <p class="muted">No {{ t.name }} version yet.</p>
+  {% endif %}
+
+  {% if sec.older %}
+  <h4>Earlier versions</h4>
+  <div class="grid">
+    {% for v in sec.older %}
+    <article class="card">
+      <a href="/variant-file/{{ v.id }}" target="_blank" rel="noopener"><img loading="lazy" src="/variant-file/{{ v.id }}?thumb=1" alt="Earlier {{ t.name }} version" width="240"></a>
+      <div class="meta">{{ v.prompt }}<br>{{ v.model }} · {% if v.cost is not none %}${{ '%.2f' | format(v.cost) }}{% else %}cost unknown{% endif %} · {{ ago(v.created_at) }}</div>
+      <form method="post" action="/works/{{ w.key }}/variants/{{ v.id }}/current"><button>Use this one</button></form>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="/works/{{ w.key }}/variants/generate" class="settings">
+    <input type="hidden" name="type" value="{{ t.slug }}">
+    <label>Prompt <textarea name="prompt" rows="4">{{ t.prompt }}</textarea></label>
+    <p class="muted small">Default prompt: {{ t.prompt }}</p>
+    <button type="submit">{{ "Make another" if sec.current else "Make one" }}</button>
+  </form>
+</section>
+{% else %}
+<p class="muted">No types yet. Add one on the <a href="/variants">Seasonal</a> page.</p>
+{% endfor %}
+{% endblock %}

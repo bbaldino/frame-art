@@ -1,4 +1,5 @@
 import dataclasses
+import html
 import time
 
 import pytest
@@ -574,3 +575,99 @@ def test_variants_generate_queues_a_job(client):
     r = c.post("/variants/generate", data={"type": "halloween"})
     assert "choose at least one" in r.text
     assert len(svc.queued()) == 1
+
+
+def _work_variant(svc, tmp_path):
+    from PIL import Image
+
+    from frame_art import variants
+
+    cat = svc.catalogue()
+    variants.seed_types(cat)
+    path = tmp_path / "v.jpg"
+    Image.new("RGB", (1920, 1080), "orange").save(path, "JPEG")
+    return cat, cat.add_variant(
+        "nga:1", "halloween", 1, "make it spooky", "g", 0.12, str(path)
+    )
+
+
+def test_work_page_renders_and_404s(client, tmp_path):
+    c, svc = client
+    assert c.get("/works/nga:1").status_code == 200
+    assert c.get("/works/nga:999").status_code == 404
+    cat, v = _work_variant(svc, tmp_path)
+    default = next(t for t in cat.variant_types() if t.slug == "halloween").prompt
+    page = c.get("/works/nga:1").text
+    assert "make it spooky" in page and "$0.12" in page
+    assert f"Default prompt: {html.escape(default)}" in page
+    assert f"{html.escape(default)}</textarea>" in page
+    assert f"/variant-file/{v.id}" in page
+
+
+def test_variant_file_serves_by_id(client, tmp_path):
+    c, svc = client
+    cat, v = _work_variant(svc, tmp_path)
+    r = c.get(f"/variant-file/{v.id}")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    r = c.get(f"/variant-file/{v.id}?thumb=1")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert (svc.data / "thumbs" / "variants" / f"{v.id}.jpg").exists()
+    assert c.get("/variant-file/999").status_code == 404
+    (tmp_path / "v.jpg").unlink()
+    assert c.get(f"/variant-file/{v.id}").status_code == 404
+
+
+def test_work_dont_use_queues_versions(client, tmp_path):
+    c, svc = client
+    cat, v = _work_variant(svc, tmp_path)
+    r = c.post(
+        "/works/nga:1/variants/halloween/dont-use",
+        data={"on": "1"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/works/nga:1"
+    assert cat.variant_states()[("nga:1", "halloween")].dont_use
+    [job] = svc.queued()
+    assert job.kind == "versions" and job.args == {"keys": ["nga:1"]}
+    c.post("/works/nga:1/variants/halloween/dont-use", data={"on": "0"})
+    assert not cat.variant_states()[("nga:1", "halloween")].dont_use
+
+
+def test_work_make_current_pins_slot_only_in_the_mix(client, tmp_path):
+    c, svc = client
+    cat, v1 = _work_variant(svc, tmp_path)
+    v2 = cat.add_variant("nga:1", "halloween", 2, "again", "g", None, v1.path)
+    cat.record_publish("nga-1-monet-haystacks.jpg", "full", "nga:1", 0)
+    assert c.post(f"/works/nga:1/variants/{v1.id}/current").status_code == 200
+    assert cat.variant_states()[("nga:1", "halloween")].current == v1.id
+    assert "nga:1" not in cat.slots()  # halloween has no share
+    svc.save_settings(Settings(mix={"halloween": 10}))
+    c.post(f"/works/nga:1/variants/{v2.id}/current")
+    assert cat.slots()["nga:1"].manual
+    assert {j.kind for j in svc.queued()} == {"versions"}
+    assert c.post("/works/nga:2/variants/%d/current" % v2.id).status_code == 404
+
+
+def test_work_generate_prompt(client, tmp_path):
+    c, svc = client
+    cat, _ = _work_variant(svc, tmp_path)
+    default = next(t for t in cat.variant_types() if t.slug == "halloween").prompt
+    for prompt in (default, "with bats"):
+        r = c.post(
+            "/works/nga:1/variants/generate",
+            data={"type": "halloween", "prompt": prompt},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+    first, second = svc.queued()
+    assert first.args == {"type": "halloween", "keys": ["nga:1"], "prompt": None}
+    assert second.args["prompt"] == "with bats"
+
+
+def test_work_routes_keep_override_working(client):
+    c, svc = client
+    r = c.post(
+        "/works/nga:1/override", data={"state": "pinned"}, follow_redirects=False
+    )
+    assert r.status_code == 303
+    assert svc.catalogue().overrides() == {"nga:1": "pinned"}

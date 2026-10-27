@@ -22,5 +22,5 @@
 
 {% macro caption(w) %}
 <div class="title" title="{{ w.title }}">{% if w.page_url %}<a href="{{ w.page_url }}" target="_blank" rel="noopener">{{ w.title }}</a>{% else %}{{ w.title }}{% endif %}</div>
-<div class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %}</div>
+<div class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %} · <a class="small" href="/works/{{ w.key }}">Details</a></div>
 {% endmacro %}

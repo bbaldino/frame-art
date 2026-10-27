@@ -35,7 +35,7 @@ from starlette.templating import Jinja2Templates
 
 from . import imaging, keys, pipeline, variants
 from .classify import current_season
-from .publish import find_content, read_sidecar
+from .publish import find_content, find_work, read_sidecar
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
 from .settings import (
     CHOOSE_FROM,
@@ -706,6 +706,104 @@ def create_app(svc: Service) -> Starlette:
                 tmp.replace(out)
         return FileResponse(out, headers={"Cache-Control": "max-age=86400"})
 
+    async def variant_file(request: Request):
+        """A variant's JPEG, found by id so the request never names a path."""
+        v = svc.catalogue().variant(request.path_params["id"])
+        src = Path(v.path) if v else None
+        if not src or not src.is_file():
+            return PlainTextResponse("not found", 404)
+        if not request.query_params.get("thumb"):
+            return FileResponse(src, headers={"Cache-Control": "max-age=86400"})
+        out = thumbs / "variants" / f"{v.id}.jpg"
+        if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(src) as im:
+                im.draft("RGB", THUMB)
+                im = im.convert("RGB")
+                im.thumbnail(THUMB, Image.LANCZOS)
+                tmp = out.with_suffix(".tmp")
+                im.save(tmp, "JPEG", quality=82)
+                tmp.replace(out)
+        return FileResponse(out, headers={"Cache-Control": "max-age=86400"})
+
+    async def work_page(request: Request):
+        key = request.path_params["key"]
+        cat = svc.catalogue()
+        w = find_work(cat, key)
+        if not w:
+            return PlainTextResponse("unknown work", 404)
+        states = cat.variant_states()
+        mine = cat.variants(key)
+        sections = []
+        for t in cat.variant_types():
+            made = [v for v in mine if v.type == t.slug]
+            st = states.get((key, t.slug))
+            current = next((v for v in made if st and v.id == st.current), None)
+            sections.append(
+                {
+                    "type": t,
+                    "current": current,
+                    "older": [v for v in reversed(made) if v is not current],
+                    "dont_use": bool(st and st.dont_use),
+                }
+            )
+        return render(
+            request,
+            "work.html",
+            page="catalogue",
+            w=w,
+            override=cat.overrides().get(key),
+            collected=key in cat.collection(),
+            live=key in {p.key for p in cat.published(active=True)},
+            sections=sections,
+        )
+
+    async def generate_for_work(request: Request):
+        key = request.path_params["key"]
+        cat = svc.catalogue()
+        if not find_work(cat, key):
+            return PlainTextResponse("unknown work", 404)
+        form = await request.form()
+        vt = next((t for t in cat.variant_types() if t.slug == form.get("type")), None)
+        if not vt:
+            return PlainTextResponse("unknown type", 404)
+        prompt = (form.get("prompt") or "").strip()
+        svc.submit(
+            "generate",
+            {
+                "type": vt.slug,
+                "keys": [key],
+                "prompt": prompt if prompt and prompt != vt.prompt.strip() else None,
+            },
+        )
+        return RedirectResponse("/runs", status_code=303)
+
+    async def make_variant_current(request: Request):
+        key = request.path_params["key"]
+        cat = svc.catalogue()
+        v = cat.variant(request.path_params["id"])
+        if not v or v.key != key:
+            return PlainTextResponse("unknown variant", 404)
+        cat.set_current_variant(key, v.type, v.id)
+        # Same rule as the generate job: a hand-picked version stays on the TV.
+        if (
+            key in {p.key for p in cat.published(active=True)}
+            and svc.settings().mix.get(v.type, 0) > 0
+        ):
+            cat.set_slot(key, v.type, manual=True)
+        svc.submit("versions", {"keys": [key]})
+        return back(request, default=f"/works/{key}")
+
+    async def set_variant_dont_use(request: Request):
+        key, vtype = request.path_params["key"], request.path_params["type"]
+        cat = svc.catalogue()
+        if not any(t.slug == vtype for t in cat.variant_types()):
+            return PlainTextResponse("unknown type", 404)
+        form = await request.form()
+        cat.set_dont_use(key, vtype, form.get("on") == "1")
+        svc.submit("versions", {"keys": [key]})
+        return back(request, default=f"/works/{key}")
+
     async def now_page(request: Request):
         return render(request, "now.html", page="now", now=svc.now_showing())
 
@@ -749,6 +847,23 @@ def create_app(svc: Service) -> Starlette:
             Route("/tv/status", tv_panel),
             Route("/tv/{action}", tv_command, methods=["POST"]),
             Route("/works/{key:path}/override", set_override, methods=["POST"]),
+            Route(
+                "/works/{key:path}/variants/generate",
+                generate_for_work,
+                methods=["POST"],
+            ),
+            Route(
+                "/works/{key:path}/variants/{id:int}/current",
+                make_variant_current,
+                methods=["POST"],
+            ),
+            Route(
+                "/works/{key:path}/variants/{type}/dont-use",
+                set_variant_dont_use,
+                methods=["POST"],
+            ),
+            Route("/works/{key:path}", work_page),  # last: it matches any key
+            Route("/variant-file/{id:int}", variant_file),
             Route("/thumb/{folder}/{name}", thumb),
             Route("/healthz", healthz),
             Mount("/static", StaticFiles(directory=HERE / "static"), name="static"),
