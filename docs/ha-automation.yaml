@@ -61,9 +61,9 @@ conditions:
         entity_id: media_player.master_bedroom_frame_tv
         attribute: art_mode_status
         state: "on"
-      - condition: state
-        entity_id: media_player.master_bedroom_frame_tv
-        state: "on"
+      - condition: media_player.is_on
+        target:
+          entity_id: media_player.master_bedroom_frame_tv
     note: "Never wake a TV that is fully off: art_upload_batch would power it on."
 actions:
   - action: mqtt.publish
@@ -124,7 +124,7 @@ actions:
       to_delete: >-
         {{ ((state_attr('sensor.frame_art', 'retire') or [])
             | select('in', allowed)
-            | select('match', '^MY[_-]F?\d+$')
+            | select('match', '^MY[_-]F?\\d+$')
             | unique | list)[:30] }}
   - if:
       - "{{ to_delete | length > 0 }}"
