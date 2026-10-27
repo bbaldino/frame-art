@@ -91,6 +91,47 @@ create table if not exists runs (
     summary text,
     log text
 );
+-- Seasonal variants (0.7.0): AI-edited copies of works, added as new tables so
+-- older versions keep reading the catalogue.
+create table if not exists variant_types (
+    slug text primary key,
+    name text not null,
+    prompt text not null,
+    created_at real not null
+);
+create table if not exists variants (
+    id integer primary key,
+    key text not null references works(key),
+    type text not null,
+    n integer not null,
+    prompt text not null,
+    model text not null,
+    cost real,
+    path text not null,
+    created_at real not null,
+    unique (key, type, n)
+);
+-- Which variant of a (work, type) is current, whether Brian vetoed it, and how
+-- many nightly attempts have failed in a row.
+create table if not exists variant_state (
+    key text not null,
+    type text not null,
+    current integer,
+    dont_use integer not null default 0,
+    failures integer not null default 0,
+    primary key (key, type)
+);
+-- The work -> type assignments for the next publish; manual ones survive re-planning.
+create table if not exists slots (
+    key text primary key,
+    type text not null,
+    manual integer not null
+);
+-- Beside published (which older versions read as-is): which variant a file is.
+create table if not exists published_variants (
+    filename text primary key,
+    variant integer not null
+);
 """
 
 
@@ -103,6 +144,42 @@ class Published:
     published_at: float
     retired_at: float | None
     content_id: str | None
+
+
+@dataclass
+class VariantType:
+    slug: str
+    name: str
+    prompt: str
+
+
+@dataclass
+class Variant:
+    id: int
+    key: str
+    type: str
+    n: int
+    prompt: str
+    model: str
+    cost: float | None
+    path: str
+    created_at: float
+
+
+@dataclass
+class VariantState:
+    current: int | None
+    dont_use: bool
+    failures: int
+
+
+@dataclass
+class Slot:
+    type: str
+    manual: bool
+
+
+VARIANT_COLS = "id, key, type, n, prompt, model, cost, path, created_at"
 
 
 class Catalogue:
@@ -290,11 +367,177 @@ class Catalogue:
             out.append(r)
         return out
 
-    def record_publish(self, filename: str, folder: str, key: str, phash: int) -> None:
+    def record_publish(
+        self,
+        filename: str,
+        folder: str,
+        key: str,
+        phash: int,
+        variant: int | None = None,
+    ) -> None:
         with self.db:
             self.db.execute(
                 "insert or replace into published values (?, ?, ?, ?, ?, null, null)",
                 (filename, folder, key, f"{phash:016x}", time.time()),
+            )
+            if variant is not None:
+                self.db.execute(
+                    "insert or replace into published_variants values (?, ?)",
+                    (filename, variant),
+                )
+
+    def published_variants(self) -> dict[str, int]:
+        """filename -> variant id, for published files that are variants."""
+        return dict(self.db.execute("select filename, variant from published_variants"))
+
+    def unused_filename(self, name: str) -> str:
+        """`name`, or the first of stem-2, stem-3, ... that was never published."""
+        used = {f for (f,) in self.db.execute("select filename from published")}
+        if name not in used:
+            return name
+        p = Path(name)
+        n = 2
+        while f"{p.stem}-{n}{p.suffix}" in used:
+            n += 1
+        return f"{p.stem}-{n}{p.suffix}"
+
+    def add_variant_type(self, slug: str, name: str, prompt: str) -> None:
+        try:
+            with self.db:
+                self.db.execute(
+                    "insert into variant_types values (?, ?, ?, ?)",
+                    (slug, name, prompt, time.time()),
+                )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"variant type {slug!r} already exists") from None
+
+    def update_variant_type(self, slug: str, name: str, prompt: str) -> None:
+        with self.db:
+            self.db.execute(
+                "update variant_types set name = ?, prompt = ? where slug = ?",
+                (name, prompt, slug),
+            )
+
+    def variant_types(self) -> list[VariantType]:
+        rows = self.db.execute(
+            "select slug, name, prompt from variant_types order by created_at, rowid"
+        )
+        return [VariantType(*r) for r in rows]
+
+    def next_variant_n(self, key: str, type: str) -> int:
+        (n,) = self.db.execute(
+            "select coalesce(max(n), 0) + 1 from variants where key = ? and type = ?",
+            (key, type),
+        ).fetchone()
+        return n
+
+    def add_variant(
+        self,
+        key: str,
+        type: str,
+        n: int,
+        prompt: str,
+        model: str,
+        cost: float | None,
+        path: str,
+    ) -> Variant:
+        """Record a new variant and make it the current one (a fresh start)."""
+        now = time.time()
+        with self.db:
+            cur = self.db.execute(
+                "insert into variants (key, type, n, prompt, model, cost, path, created_at) "
+                "values (?, ?, ?, ?, ?, ?, ?, ?)",
+                (key, type, n, prompt, model, cost, path, now),
+            )
+            self.db.execute(
+                "insert or replace into variant_state values (?, ?, ?, 0, 0)",
+                (key, type, cur.lastrowid),
+            )
+        return Variant(cur.lastrowid, key, type, n, prompt, model, cost, path, now)
+
+    def variants(self, key: str | None = None) -> list[Variant]:
+        q, args = f"select {VARIANT_COLS} from variants", ()
+        if key is not None:
+            q, args = q + " where key = ?", (key,)
+        return [Variant(*r) for r in self.db.execute(q + " order by id", args)]
+
+    def variant(self, variant_id: int) -> Variant | None:
+        row = self.db.execute(
+            f"select {VARIANT_COLS} from variants where id = ?", (variant_id,)
+        ).fetchone()
+        return Variant(*row) if row else None
+
+    def _ensure_variant_state(self, key: str, type: str) -> None:
+        self.db.execute(
+            "insert or ignore into variant_state values (?, ?, null, 0, 0)", (key, type)
+        )
+
+    def set_current_variant(self, key: str, type: str, variant_id: int) -> None:
+        with self.db:
+            self._ensure_variant_state(key, type)
+            self.db.execute(
+                "update variant_state set current = ?, dont_use = 0 "
+                "where key = ? and type = ?",
+                (variant_id, key, type),
+            )
+
+    def set_dont_use(self, key: str, type: str, on: bool) -> None:
+        with self.db:
+            self._ensure_variant_state(key, type)
+            self.db.execute(
+                "update variant_state set dont_use = ? where key = ? and type = ?",
+                (int(on), key, type),
+            )
+
+    def note_variant_failure(self, key: str, type: str) -> int:
+        with self.db:
+            self._ensure_variant_state(key, type)
+            self.db.execute(
+                "update variant_state set failures = failures + 1 "
+                "where key = ? and type = ?",
+                (key, type),
+            )
+            (n,) = self.db.execute(
+                "select failures from variant_state where key = ? and type = ?",
+                (key, type),
+            ).fetchone()
+        return n
+
+    def variant_states(self) -> dict[tuple[str, str], VariantState]:
+        rows = self.db.execute(
+            "select key, type, current, dont_use, failures from variant_state"
+        )
+        return {(k, t): VariantState(c, bool(d), f) for k, t, c, d, f in rows}
+
+    def usable_variants(self) -> dict[tuple[str, str], Variant]:
+        """The current variant of each (work, type), unless Brian said not to use it."""
+        cols = ", ".join(f"v.{c.strip()}" for c in VARIANT_COLS.split(","))
+        rows = self.db.execute(
+            f"select {cols} from variant_state s join variants v on v.id = s.current "
+            "where s.dont_use = 0"
+        )
+        return {(v.key, v.type): v for v in (Variant(*r) for r in rows)}
+
+    def slots(self) -> dict[str, Slot]:
+        return {
+            k: Slot(t, bool(m))
+            for k, t, m in self.db.execute("select key, type, manual from slots")
+        }
+
+    def set_slots(self, slots: dict[str, Slot]) -> None:
+        """Replace every slot."""
+        with self.db:
+            self.db.execute("delete from slots")
+            self.db.executemany(
+                "insert into slots values (?, ?, ?)",
+                [(k, s.type, int(s.manual)) for k, s in slots.items()],
+            )
+
+    def set_slot(self, key: str, type: str, manual: bool = True) -> None:
+        with self.db:
+            self.db.execute(
+                "insert or replace into slots values (?, ?, ?)",
+                (key, type, int(manual)),
             )
 
     def record_retire(self, filename: str, content_id: str | None) -> None:
