@@ -7,6 +7,7 @@ thumbnail, loaded by the browser.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import logging
 import math
@@ -32,7 +33,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from . import imaging, keys, pipeline
+from . import imaging, keys, pipeline, variants
 from .classify import current_season
 from .publish import find_content, read_sidecar
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
@@ -517,6 +518,114 @@ def create_app(svc: Service) -> Starlette:
             fields=[f.name for f in fields(Settings)],
         )
 
+    # What the OpenRouter model charges for one 4K edit, roughly.
+    VARIANT_ESTIMATE = 0.12
+
+    def variants_view(request: Request, errors=(), notice="", mix=None, status=200):
+        cat = svc.catalogue()
+        s = svc.settings()
+        if mix is not None:  # the rejected form, so the page shows what was typed
+            s = dataclasses.replace(s, mix=mix)
+        usable = set(cat.usable_variants())
+        works = {w.key: w for w in cat.works()}
+        live: dict[str, str] = {}  # work key -> a live file to show
+        for p in cat.published(active=True):
+            live.setdefault(p.key, f"/thumb/{p.folder}/{p.filename}")
+        progress = variants.progress(cat, s)
+        candidates = {
+            row["slug"]: [
+                (k, works[k].title if k in works else k, thumb)
+                for k, thumb in live.items()
+                if (k, row["slug"]) not in usable
+            ]
+            for row in progress
+        }
+        resp = render(
+            request,
+            "variants.html",
+            page="variants",
+            rows=progress,
+            s=s,
+            total_cost=sum(r["cost"] for r in progress),
+            has_key=keys.has_key("openrouter"),
+            estimate=VARIANT_ESTIMATE,
+            candidates=candidates,
+            errors=list(errors),
+            notice=notice,
+        )
+        resp.status_code = status
+        return resp
+
+    async def variants_page(request: Request):
+        return variants_view(request)
+
+    async def add_variant_type(request: Request):
+        form = await request.form()
+        name = (form.get("name") or "").strip()
+        prompt = (form.get("prompt") or "").strip()
+        slug = pipeline.slug(name)
+        errors = []
+        if not slug:
+            errors.append("give the type a name")
+        if not prompt:
+            errors.append("give the type a prompt")
+        if not errors:
+            try:
+                svc.catalogue().add_variant_type(slug, name, prompt)
+            except ValueError:
+                errors.append(f"there is already a type called {name}")
+        if errors:
+            return variants_view(request, errors, status=400)
+        return variants_view(request, notice=f"Added {name}.")
+
+    async def edit_variant_type(request: Request):
+        slug = request.path_params["slug"]
+        cat = svc.catalogue()
+        if not any(t.slug == slug for t in cat.variant_types()):
+            return PlainTextResponse("unknown type", 404)
+        form = await request.form()
+        name = (form.get("name") or "").strip()
+        prompt = (form.get("prompt") or "").strip()
+        if not name or not prompt:
+            return variants_view(
+                request, ["a type needs a name and a prompt"], status=400
+            )
+        cat.update_variant_type(slug, name, prompt)
+        return variants_view(request, notice=f"Saved {name}.")
+
+    async def save_variant_mix(request: Request):
+        form = await request.form()
+        s = svc.settings()
+        mix, errors = {}, []
+        for t in svc.catalogue().variant_types():
+            raw = (form.get(f"share-{t.slug}") or "0").strip()
+            try:
+                mix[t.slug] = int(raw)
+            except ValueError:
+                errors.append(f"{t.name}: {raw!r} is not a whole number")
+        try:
+            limit = int(form.get("variant_limit", s.variant_limit))
+        except ValueError:
+            limit = s.variant_limit
+            errors.append("variants per night must be a whole number")
+        new = dataclasses.replace(s, mix=mix, variant_limit=limit)
+        errors += new.validate()
+        if errors:
+            return variants_view(request, errors, mix=mix, status=400)
+        svc.save_settings(new)
+        return variants_view(request, notice="Saved. Changes apply from tonight's run.")
+
+    async def generate_variants(request: Request):
+        form = await request.form()
+        vtype = form.get("type")
+        chosen = form.getlist("keys")
+        if not any(t.slug == vtype for t in svc.catalogue().variant_types()):
+            return PlainTextResponse("unknown type", 404)
+        if not chosen:
+            return variants_view(request, ["choose at least one work"], status=400)
+        svc.submit("generate", {"type": vtype, "keys": chosen, "prompt": None})
+        return RedirectResponse("/runs", status_code=303)
+
     async def compare_page(request: Request):
         sheets = sorted(svc.compare_dir.glob("compare-*.jpg"))
         order = list(imaging.CROP_LEVELS)
@@ -628,6 +737,11 @@ def create_app(svc: Service) -> Starlette:
             Route("/history", history_page),
             Route("/tags.json", tags_json),
             Route("/settings", settings_page, methods=["GET", "POST"]),
+            Route("/variants", variants_page),
+            Route("/variants/types", add_variant_type, methods=["POST"]),
+            Route("/variants/types/{slug}", edit_variant_type, methods=["POST"]),
+            Route("/variants/mix", save_variant_mix, methods=["POST"]),
+            Route("/variants/generate", generate_variants, methods=["POST"]),
             Route("/compare", compare_page),
             Route("/compare/{name}", compare_image),
             Route("/runs", runs_page),

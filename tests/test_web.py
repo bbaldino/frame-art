@@ -496,3 +496,81 @@ def test_nightly_keeps_the_publish_summary_when_variants_break(
     assert s["failed"] == ["z", "variants"]
     assert s["variants"] == {"error": "RuntimeError"}
     assert "database is locked" in run["log"]
+
+
+def test_variants_page_shows_progress_and_never_the_key(client, tmp_path, monkeypatch):
+    from frame_art import variants
+
+    c, svc = client
+    (tmp_path / "keys" / "openrouter").mkdir(parents=True)
+    (tmp_path / "keys" / "openrouter" / "key").write_text("sk-secret\n")
+    monkeypatch.setenv("FRAME_ART_KEYS", str(tmp_path / "keys"))
+    cat = svc.catalogue()
+    variants.seed_types(cat)
+    cat.record_publish("nga-1-monet-haystacks.jpg", "full", "nga:1", 0)
+    page = c.get("/variants").text
+    assert "Halloween" in page and "Seasonal" in page
+    assert "present" in page and "sk-secret" not in page
+    assert "Haystacks" in page and "/thumb/full/nga-1-monet-haystacks.jpg" in page
+
+
+def test_variants_mix_saves_and_rejects(client):
+    from frame_art import variants
+
+    c, svc = client
+    variants.seed_types(svc.catalogue())
+    r = c.post("/variants/mix", data={"share-halloween": "50", "variant_limit": "5"})
+    assert r.status_code == 200 and "Saved" in r.text
+    assert svc.settings().mix == {"halloween": 50}
+    assert svc.settings().variant_limit == 5
+    r = c.post("/variants/mix", data={"share-halloween": "150", "variant_limit": "5"})
+    assert "0-100" in r.text
+    assert svc.settings().mix == {"halloween": 50}
+    r = c.post("/variants/mix", data={"share-halloween": "x", "variant_limit": "5"})
+    assert "not a whole number" in r.text
+    assert svc.settings().mix == {"halloween": 50}
+
+
+def test_variant_types_add_and_edit(client):
+    from frame_art import variants
+
+    c, svc = client
+    variants.seed_types(svc.catalogue())
+    r = c.post("/variants/types", data={"name": "Halloween", "prompt": "boo"})
+    assert "already a type" in r.text
+    r = c.post("/variants/types", data={"name": "", "prompt": "boo"})
+    assert "give the type a name" in r.text
+    assert (
+        "Christmas"
+        in c.post("/variants/types", data={"name": "Christmas", "prompt": "snow"}).text
+    )
+    assert [t.slug for t in svc.catalogue().variant_types()] == [
+        "halloween",
+        "christmas",
+    ]
+    c.post("/variants/types/christmas", data={"name": "Xmas", "prompt": "more snow"})
+    t = svc.catalogue().variant_types()[1]
+    assert (t.name, t.prompt) == ("Xmas", "more snow")
+    assert (
+        c.post("/variants/types/nope", data={"name": "a", "prompt": "b"}).status_code
+        == 404
+    )
+
+
+def test_variants_generate_queues_a_job(client):
+    from frame_art import variants
+
+    c, svc = client
+    variants.seed_types(svc.catalogue())
+    r = c.post(
+        "/variants/generate",
+        data={"type": "halloween", "keys": ["nga:1", "nga:2"]},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and r.headers["location"] == "/runs"
+    [job] = svc.queued()
+    assert job.kind == "generate"
+    assert job.args == {"type": "halloween", "keys": ["nga:1", "nga:2"], "prompt": None}
+    r = c.post("/variants/generate", data={"type": "halloween"})
+    assert "choose at least one" in r.text
+    assert len(svc.queued()) == 1
