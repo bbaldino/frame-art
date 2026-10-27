@@ -736,3 +736,21 @@ def test_history_shows_the_live_version_not_the_one_it_replaced(client):
     page = c.get("/history").text
     assert "/thumb/full/haystacks--halloween-1.jpg" in page
     assert "/thumb/full/haystacks.jpg" not in page
+
+
+def test_history_reads_the_sidecars_once(client, monkeypatch):
+    from frame_art import publish
+
+    c, svc = client
+    svc._on_current({"content_id": "SAM-S1", "on": True})
+    svc._on_current({"content_id": "SAM-S2", "on": True})
+    reads = []
+    real = publish.read_sidecar
+
+    def counting(folder):
+        reads.append(folder.name)
+        return real(folder)
+
+    monkeypatch.setattr(publish, "read_sidecar", counting)
+    assert c.get("/history").status_code == 200
+    assert sorted(reads) == ["full", "matted"]

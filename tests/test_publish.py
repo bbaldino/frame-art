@@ -266,3 +266,21 @@ def test_metadata_kept_out_of_the_works_row(tmp_path):
         "Impressionism",
         48.1,
     )
+
+
+def test_content_index_knows_recorded_and_sidecar_ids(tmp_path):
+    cat = Catalogue(tmp_path / "db.sqlite")
+    dest = tmp_path / "out"
+    cat.record_publish("a.jpg", "full", "s:1", 0)
+    cat.record_publish("b.jpg", "matted", "s:2", 0)
+    cat.record_retire("a.jpg", "MY_F0001")  # the id is recorded on retiring
+    (dest / "matted").mkdir(parents=True)
+    sidecar = {"b.jpg": {"content_id": "MY_F0002", "modified": 1.0}}
+    (dest / "matted" / publish.SIDECAR).write_text(json.dumps(sidecar))
+    index = publish.content_index(cat, dest)
+    assert {cid: p.filename for cid, p in index.items()} == {
+        "MY_F0001": "a.jpg",
+        "MY_F0002": "b.jpg",
+    }
+    assert publish.find_content(cat, dest, "MY_F0002").filename == "b.jpg"
+    assert publish.find_content(cat, dest, "MY_F0003") is None

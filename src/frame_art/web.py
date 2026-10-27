@@ -35,7 +35,7 @@ from starlette.templating import Jinja2Templates
 
 from . import imaging, keys, pipeline, variants
 from .classify import current_season
-from .publish import find_content, find_work, read_sidecar
+from .publish import content_index, find_work, read_sidecar
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
 from .settings import (
     CHOOSE_FROM,
@@ -419,15 +419,13 @@ def create_app(svc: Service) -> Starlette:
         }
         live = {p.key for p in published if p.retired_at is None}
         todo = request.query_params.get("todo") == "1"
-        resolved: dict[str, object] = {}  # content id -> published file, or None
+        by_content = content_index(cat, svc.dest)
         labels = svc.variant_labels(cat)
         items, day = [], None
         now = time.time()
         for r in cat.shown():
             key = r["key"]
-            if r["content_id"] not in resolved:
-                resolved[r["content_id"]] = find_content(cat, svc.dest, r["content_id"])
-            shown_file = resolved[r["content_id"]]
+            shown_file = by_content.get(r["content_id"])
             if key is None:
                 # Uploaded after it was first seen: the sidecar knows it now.
                 key = shown_file.key if shown_file else None

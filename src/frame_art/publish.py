@@ -347,12 +347,20 @@ def find_work(cat: Catalogue, key: str) -> Work | None:
     return next((w for w in cat.works(source) if w.key == key), None)
 
 
+def content_index(cat: Catalogue, dest: Path) -> dict[str, Published]:
+    """TV content id -> the published file it is, live or retired.
+
+    Where two files claim an id, the first published wins.
+    """
+    sidecars = {f: read_sidecar(dest / f) for f in FOLDERS}
+    index: dict[str, Published] = {}
+    for p in cat.published():
+        for cid in (p.content_id, sidecars.get(p.folder, {}).get(p.filename)):
+            if cid:
+                index.setdefault(cid, p)
+    return index
+
+
 def find_content(cat: Catalogue, dest: Path, content_id: str) -> Published | None:
     """The published file the TV knows as ``content_id``, live or retired."""
-    sidecars = {f: read_sidecar(dest / f) for f in FOLDERS}
-    for p in cat.published():
-        if p.content_id == content_id:
-            return p
-        if sidecars.get(p.folder, {}).get(p.filename) == content_id:
-            return p
-    return None
+    return content_index(cat, dest).get(content_id)
