@@ -216,6 +216,9 @@ actions:
 # - Nothing runs while the TV is fully off, so a button never wakes it. While
 #   it is on, "mine" and "samsung" switch it to Art Mode (art_set_slideshow
 #   does that itself).
+# - Selecting a picture by hand switches the TV's slideshow off, so the
+#   slideshow is set again after art_select_image. The first call is still
+#   needed: it is what puts the TV in Art Mode before the picture is chosen.
 # - "upload" only runs the sync automation, with its own conditions, and only
 #   while that automation is turned on.
 # - "mine" shows a work from the allow-list, i.e. something HA uploaded from
@@ -308,6 +311,15 @@ actions:
               content_id: "{{ choices | random }}"
             note: "The TV is already awake and in Art Mode (art_set_slideshow saw to it)."
             response_variable: picked
+          - action: samsungtv_smart.art_set_slideshow
+            target:
+              entity_id: media_player.master_bedroom_frame_tv
+            data:
+              duration: "{{ duration }}"
+              shuffle: true
+              category_id: "{{ 2 if request == 'mine' else 4 }}"
+            response_variable: slideshow
+            note: "Picking a picture turns the TV's slideshow off, so turn it back on."
       - variables:
           result: >-
             {% set s = slideshow[tv] | default({'error': 'no response'}) %}
