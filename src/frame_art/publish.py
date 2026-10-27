@@ -28,8 +28,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from PIL import Image
+
 from . import imaging, pipeline
-from .catalogue import Catalogue, Published
+from .catalogue import Catalogue, Published, Variant
+from .model import Work
 from .net import Http
 
 log = logging.getLogger(__name__)
@@ -234,6 +237,10 @@ class Publisher:
         rest = [p for p in live if p not in banned and overrides.get(p.key) != "pinned"]
         excess = 0 if pool is None else len(live) - len(banned) - pool
         doomed = banned + rest[: max(0, excess)]  # oldest first
+        return self._retire_files(doomed)
+
+    def _retire_files(self, doomed: list[Published]) -> list[str]:
+        """Delete these live files and note the TV ids HA must delete."""
         if not doomed:
             return []
         sidecars = {f: read_sidecar(self.dest / f) for f in FOLDERS}
@@ -250,6 +257,34 @@ class Publisher:
                 content_id or "never uploaded",
             )
         return retired
+
+    def prefs_for(self, w: Work) -> pipeline.Prefs:
+        return self.photo_prefs if w.kind == "photograph" else self.prefs
+
+    def swap(self, p: Published, im: Image.Image, variant: Variant | None) -> str:
+        """Replace live file ``p`` with ``im`` (a variant, or None for the original).
+
+        The new file gets a name never published before, so HA uploads it as new
+        art, and the old one is retired like any other. Unlike adding a work,
+        there is no duplicate-picture check: it is the same work.
+        """
+        w = find_work(self.cat, p.key)
+        if w is None:
+            raise LookupError(f"{p.key} is not in the catalogue")
+        name = pipeline.filename(w)
+        if variant is not None:
+            name = f"{Path(name).stem}--{variant.type}-{variant.n}.jpg"
+        out = pipeline.render_image(w, im, self.prefs_for(w), self.pad_style)
+        folder = pipeline.folder_for(out.plan, self.pad_style)
+        path = self.dest / folder / self.cat.unused_filename(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pipeline.write_atomic(out.image, path, self.dest / ".staging")
+        self.cat.record_publish(
+            path.name, folder, p.key, out.phash, variant=variant.id if variant else None
+        )
+        self._retire_files([p])
+        log.info("swapped %s/%s for %s/%s", p.folder, p.filename, folder, path.name)
+        return f"{folder}/{path.name}"
 
     def _write_meta(self) -> None:
         works = {w.key: w for w in self.cat.works()}
@@ -292,6 +327,11 @@ def pending(cat: Catalogue, dest: Path) -> dict:
         if content_id and content_id not in deleted:
             retire.append(content_id)
     return {"to_upload": to_upload, "retire": retire, "live": len(live)}
+
+
+def find_work(cat: Catalogue, key: str) -> Work | None:
+    source = key.split(":", 1)[0]
+    return next((w for w in cat.works(source) if w.key == key), None)
 
 
 def find_content(cat: Catalogue, dest: Path, content_id: str) -> Published | None:
