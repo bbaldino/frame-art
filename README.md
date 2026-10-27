@@ -38,8 +38,11 @@ Home Assistant learns what to do from an MQTT-discovered `sensor.frame_art` and
 acknowledges on `frame-art/ack`; see `docs/design.md` for the automation.
 The overview's TV buttons (upload now, show frame-art's works, back to the
 Samsung art) only publish a request on `frame-art/command`; a Home Assistant
-automation decides whether to act on it. `docs/ha-automation.yaml` holds all
-three automations.
+automation decides whether to act on it. While an upload runs, the upload
+automation reports its progress on `frame-art/ack`, and the overview's TV panel
+refreshes itself until it's done; a fourth automation publishes, retained on
+`frame-art/uploads`, whether uploads are turned on. `docs/ha-automation.yaml`
+holds all four automations.
 
 ## Development
 

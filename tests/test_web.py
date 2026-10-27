@@ -1,4 +1,5 @@
 import dataclasses
+import time
 
 import pytest
 from starlette.testclient import TestClient
@@ -309,3 +310,43 @@ def test_tv_request_answered_before_send_returns(client):
     svc.link = Quick()
     c.post("/tv/mine")
     assert svc.catalogue().get("tv_command")["status"] == "done"
+
+
+def test_tv_panel_follows_an_upload(client):
+    c, svc = client
+    assert "data-live" not in c.get("/tv/status").text
+    svc._on_ack({"sync": {"phase": "uploading", "total": 9}})
+    panel = c.get("/tv/status").text
+    assert "data-live" in panel and "Uploading to the TV" in panel
+    assert "About 0 of 9" in panel  # HA hasn't reported yet: an estimate
+    cat = svc.catalogue()
+    cat.put("tv_sync", {**cat.get("tv_sync"), "started": time.time() - 20})
+    assert "About 3 of 9" in c.get("/tv/status").text
+    svc._on_ack({"upload": {"uploaded": ["MY_F0001"] * 8, "failed": ["x.jpg"]}})
+    assert "8 of 9 uploaded" in c.get("/tv/status").text
+    svc._on_ack({"sync": {"phase": "deleting", "total": 2}})
+    svc._on_ack({"deleted": "MY_F0001"})
+    assert "1 of 2 deleted" in c.get("/tv/status").text
+    svc._on_ack({"sync": {"phase": "done"}})
+    panel = c.get("/tv/status").text
+    assert "data-live" not in panel and "Last upload: finished" in panel
+    assert '8 uploaded, <span class="warn">1 failed' in panel
+
+
+def test_tv_panel_notices_a_silent_upload(client):
+    c, svc = client
+    svc._on_ack({"sync": {"phase": "uploading", "total": 2}})
+    cat = svc.catalogue()
+    cat.put("tv_sync", {**cat.get("tv_sync"), "started": 0, "at": 0})
+    panel = c.get("/tv/status").text
+    assert "stopped reporting" in panel and "data-live" not in panel
+
+
+def test_upload_button_says_when_nothing_will_happen(client):
+    c, svc = client
+    svc._on_uploads({"enabled": False})
+    assert "Uploads are turned off in Home Assistant" in c.get("/").text
+    svc._on_uploads({"enabled": True})
+    assert "Uploads are turned off" not in c.get("/").text
+    svc._on_uploads({"enabled": "yes"})  # ignored
+    assert svc.catalogue().get("uploads_enabled") is True

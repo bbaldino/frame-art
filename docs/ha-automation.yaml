@@ -18,6 +18,10 @@
 # - The samsungtv_smart art services return {"error": ...} instead of raising,
 #   so results are checked and reported, not assumed. They are entity services,
 #   so HA wraps each response by entity id: {"media_player.<tv>": {...}}.
+# - Progress for frame-art's status panel goes out on frame-art/ack as
+#   {"sync": {"phase": ...}}: before the batch, before any deletes, and at the
+#   end. The batch is one call, so there is no per-file progress inside it. If
+#   a run dies part way, "done" never arrives and frame-art says it went quiet.
 alias: "Frame Art: sync new art to the bedroom TV"
 description: >-
   Uploads new frame-art works to the Master Bedroom Frame TV and deletes retired
@@ -56,6 +60,12 @@ conditions:
         state: "on"
     note: "Never wake a TV that is fully off: art_upload_batch would power it on."
 actions:
+  - action: mqtt.publish
+    data:
+      topic: frame-art/ack
+      payload: >-
+        {{ {'sync': {'phase': 'uploading',
+                     'total': state_attr('sensor.frame_art', 'to_upload') | int(0)}} | to_json }}
   - action: samsungtv_smart.art_upload_batch
     target:
       entity_id: media_player.master_bedroom_frame_tv
@@ -107,6 +117,13 @@ actions:
             | select('in', allowed)
             | select('match', '^MY[_-]F?\d+$')
             | unique | list)[:30] }}
+  - if:
+      - "{{ to_delete | length > 0 }}"
+    then:
+      - action: mqtt.publish
+        data:
+          topic: frame-art/ack
+          payload: "{{ {'sync': {'phase': 'deleting', 'total': to_delete | length}} | to_json }}"
   - repeat:
       for_each: "{{ to_delete }}"
       sequence:
@@ -132,6 +149,10 @@ actions:
                 topic: frame-art/ack
                 payload: "{{ {'deleted': repeat.item} | to_json }}"
     note: "Only ids HA uploaded itself (on the to-do allow-list) are deleted."
+  - action: mqtt.publish
+    data:
+      topic: frame-art/ack
+      payload: "{{ {'sync': {'phase': 'done'}} | to_json }}"
 ---
 # Second automation: tell frame-art what the TV is showing, for the
 # "Now showing" page and sensor.frame_art_now_showing. It only reads a sensor
@@ -293,3 +314,27 @@ actions:
         {% set c = {'id': request_id, 'ok': result.error is not defined} %}
         {% if result.error is defined %}{% set c = {'id': request_id, 'ok': false, 'error': result.error} %}{% endif %}
         {{ {'command': c} | to_json }}
+---
+# Fourth automation: tell frame-art whether uploads are turned on, so the
+# "Upload new works now" button can say up front that nothing will happen.
+# Retained, so frame-art learns it on every (re)connect. Read-only: it reports
+# the sync automation's on/off state and changes nothing.
+alias: "Frame Art: report whether uploads are on"
+id: frame_art_uploads_enabled
+mode: queued
+max: 3
+triggers:
+  - trigger: homeassistant
+    event: start
+  - trigger: state
+    entity_id: automation.frame_art_sync_new_art_to_the_bedroom_tv
+    to:
+      - "on"
+      - "off"
+actions:
+  - action: mqtt.publish
+    data:
+      topic: frame-art/uploads
+      retain: true
+      payload: >-
+        {{ {'enabled': is_state('automation.frame_art_sync_new_art_to_the_bedroom_tv', 'on')} | to_json }}

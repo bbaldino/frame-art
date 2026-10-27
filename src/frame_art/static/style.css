@@ -80,6 +80,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .hero { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1.5rem; align-items: start; }
 .tv img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; box-shadow: var(--shadow); background: #000; display: block; }
 .tv p { margin: 0.4rem 0 0; font-size: 0.85rem; }
+.tv .notice { padding: 0.5rem 0.7rem; border: 1px solid currentColor; border-radius: 6px; }
+.sync-panel {
+  margin-top: 0.6rem; padding: 0.6rem 0.75rem; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel);
+}
+.sync-head { font-size: 0.9rem; margin-bottom: 0.35rem; }
+.sync-panel progress { width: 100%; height: 0.6rem; accent-color: var(--accent); }
 .tv-missing {
   aspect-ratio: 16 / 9; display: grid; place-items: center; padding: 1rem; text-align: center;
   border: 1px dashed var(--line); border-radius: 8px; color: var(--muted);

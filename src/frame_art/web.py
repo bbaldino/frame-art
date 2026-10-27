@@ -186,12 +186,55 @@ def create_app(svc: Service) -> Starlette:
 
     # A TV request HA hasn't answered by now probably has nobody listening.
     NO_ANSWER = 120
+    # art_upload_batch takes about this long per file at throttle 3 (9 in 53s).
+    PER_FILE = 6
+
+    def tv_status(cat) -> dict:
+        """The TV panel: the last button press and any upload in progress."""
+        now = time.time()
+        cmd = cat.get("tv_command")
+        unanswered = bool(
+            cmd and cmd["status"] == "sent" and now - cmd["at"] > NO_ANSWER
+        )
+        sync = cat.get("tv_sync")
+        if sync:
+            elapsed = now - sync["started"]
+            sync = {**sync, "elapsed": elapsed}
+            if sync["phase"] == "uploading" and sync.get("uploaded") is None:
+                total = sync.get("total") or 0
+                # HA reports only when the whole batch is done, so this is a guess.
+                sync["estimate"] = min(max(total - 1, 0), int(elapsed // PER_FILE))
+            # A run HA hasn't reported on in far longer than it should take.
+            limit = 300 + PER_FILE * 5 * (
+                (sync.get("total") or 0) + (sync.get("delete_total") or 0)
+            )
+            sync["stale"] = sync["phase"] != "done" and now - sync["at"] > limit
+            sync["running"] = sync["phase"] != "done" and not sync["stale"]
+        # An upload request is answered as soon as HA starts the upload
+        # automation, a moment before that reports in: keep watching for it.
+        upload_starting = bool(
+            cmd
+            and cmd["action"] == "upload"
+            and cmd["status"] == "done"
+            and now - cmd["at"] < 30
+            and not (sync and sync["started"] >= cmd["at"])
+        )
+        return {
+            "tv_command": cmd,
+            "tv_unanswered": unanswered,
+            "tv_sync": sync,
+            "uploads_enabled": cat.get("uploads_enabled"),
+            "tv_live": bool(
+                (cmd and cmd["status"] == "sent" and not unanswered)
+                or (sync and sync["running"])
+                or upload_starting
+            ),
+        }
 
     async def overview(request: Request):
         cat = svc.catalogue()
         s = svc.settings()
         state = svc.publish_state(cat)
-        cmd = cat.get("tv_command")
         return render(
             request,
             "overview.html",
@@ -206,13 +249,24 @@ def create_app(svc: Service) -> Starlette:
             mqtt=svc.link.connected if svc.link else None,
             last_upload=cat.get("last_upload"),
             tv_actions=TV_ACTIONS,
-            tv_command=cmd,
-            tv_unanswered=bool(
-                cmd and cmd["status"] == "sent" and time.time() - cmd["at"] > NO_ANSWER
-            ),
             slideshow=SLIDESHOW[s.slideshow],
             now=svc.now_showing(cat),
             catalogue_size=len(cat.works()),
+            **tv_status(cat),
+        )
+
+    async def tv_panel(request: Request):
+        """Just the TV panel, which the overview polls while something is happening."""
+        cat = svc.catalogue()
+        return render(
+            request,
+            "_tv_status.html",
+            # Not publish_state(): polling shouldn't republish to HA every 2s.
+            state={"pending": bool(cat.get("ha_work"))},
+            tv_actions=TV_ACTIONS,
+            slideshow=SLIDESHOW[svc.settings().slideshow],
+            now=svc.now_showing(cat),
+            **tv_status(cat),
         )
 
     async def pool(request: Request):
@@ -576,6 +630,7 @@ def create_app(svc: Service) -> Starlette:
             Route("/compare/{name}", compare_image),
             Route("/runs", runs_page),
             Route("/jobs/{kind}", submit_job, methods=["POST"]),
+            Route("/tv/status", tv_panel),
             Route("/tv/{action}", tv_command, methods=["POST"]),
             Route("/works/{key:path}/override", set_override, methods=["POST"]),
             Route("/thumb/{folder}/{name}", thumb),

@@ -22,6 +22,17 @@ retained, so a restart never replays one):
 
 A third HA automation carries them out and answers on ``frame-art/ack`` with
 {"command": {"id": ..., "ok": true}} or {"command": {"id": ..., "error": "..."}}.
+
+The upload automation also reports its progress on ``frame-art/ack``, for the
+web UI's status panel (art_upload_batch is one call, so there is no per-file
+progress in between):
+
+    {"sync": {"phase": "uploading", "total": 9}}    before the batch
+    {"sync": {"phase": "deleting", "total": 2}}     before the deletes
+    {"sync": {"phase": "done"}}                     at the end
+
+and a fourth publishes, retained on ``frame-art/uploads``, whether that
+automation is turned on: {"enabled": true}.
 """
 
 from __future__ import annotations
@@ -41,6 +52,7 @@ ACK = "frame-art/ack"
 CURRENT = "frame-art/current"
 NOW = "frame-art/now"
 COMMAND = "frame-art/command"
+UPLOADS = "frame-art/uploads"
 DISCOVERY = "homeassistant/sensor/frame_art/state/config"
 NOW_DISCOVERY = "homeassistant/sensor/frame_art/now_showing/config"
 
@@ -53,9 +65,11 @@ class HaLink:
         on_ack: Callable[[dict], None],
         version: str,
         on_current: Callable[[dict], None] | None = None,
+        on_uploads: Callable[[dict], None] | None = None,
     ):
         self.on_ack = on_ack
         self.on_current = on_current
+        self.on_uploads = on_uploads
         self.version = version
         self._last: dict | None = None
         self._last_now: dict | None = None
@@ -84,7 +98,7 @@ class HaLink:
             NOW_DISCOVERY, json.dumps(self._now_discovery()), qos=1, retain=True
         )
         client.publish(STATUS, "online", qos=1, retain=True)
-        client.subscribe([(ACK, 1), (CURRENT, 1)])
+        client.subscribe([(ACK, 1), (CURRENT, 1), (UPLOADS, 1)])
         with self._lock:
             if self._last is not None:
                 client.publish(STATE, json.dumps(self._last), qos=1, retain=True)
@@ -99,7 +113,9 @@ class HaLink:
         except ValueError as ex:
             log.warning("mqtt: ignoring malformed ack %r: %s", msg.payload[:200], ex)
             return
-        handler = self.on_current if msg.topic == CURRENT else self.on_ack
+        handler = {CURRENT: self.on_current, UPLOADS: self.on_uploads}.get(
+            msg.topic, self.on_ack
+        )
         if handler is None:
             return
         try:

@@ -275,3 +275,40 @@ if (viewer) {
     card()?.scrollIntoView({ block: "center" });
   });
 }
+
+// The overview's TV panel: the buttons post without a page load, and while a
+// request or an upload is in progress the panel refreshes itself every two
+// seconds. Without JavaScript the buttons post and redirect as usual.
+const tvPanel = () => document.getElementById("tv-status");
+if (tvPanel()) {
+  let timer;
+  const refresh = async () => {
+    clearTimeout(timer);
+    try {
+      const resp = await fetch("/tv/status");
+      if (resp.ok) {
+        const page = new DOMParser().parseFromString(await resp.text(), "text/html");
+        const fresh = page.getElementById("tv-status");
+        if (fresh) tvPanel().replaceWith(fresh);
+      }
+    } catch {
+      // Try again on the next tick.
+    }
+    if (tvPanel().hasAttribute("data-live")) timer = setTimeout(refresh, 2000);
+  };
+  document.addEventListener("submit", async (event) => {
+    const form = event.target;
+    if (!form.closest("#tv-status")) return;
+    event.preventDefault();
+    form.querySelector("button").disabled = true;
+    try {
+      const resp = await fetch(form.action, { method: "POST" });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    } catch {
+      form.submit();
+      return;
+    }
+    refresh();
+  });
+  if (tvPanel().hasAttribute("data-live")) timer = setTimeout(refresh, 2000);
+}

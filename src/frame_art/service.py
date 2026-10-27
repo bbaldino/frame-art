@@ -111,7 +111,14 @@ class Service:
         self._joblog = _JobLog()
         logging.getLogger("frame_art").addHandler(self._joblog)
         self.link = (
-            HaLink(mqtt_host, mqtt_port, self._on_ack, version, self._on_current)
+            HaLink(
+                mqtt_host,
+                mqtt_port,
+                self._on_ack,
+                version,
+                self._on_current,
+                self._on_uploads,
+            )
             if mqtt_host
             else None
         )
@@ -285,6 +292,10 @@ class Service:
         if cid := payload.get("deleted"):
             log.info("ha: deleted %s from the TV", cid)
             cat.record_deleted(str(cid))
+            self._sync_progress(cat, deleted=1)
+        if "sync" in payload:
+            self._on_sync(cat, payload["sync"])
+            return
         if "command" in payload:
             self._on_command(cat, payload["command"])
             return
@@ -292,6 +303,12 @@ class Service:
             result = payload["upload"] if isinstance(payload["upload"], dict) else {}
             log.info("ha: upload result %s", result)
             cat.put("last_upload", {"at": time.time(), "result": result})
+            self._sync_progress(
+                cat,
+                uploaded=len(result.get("uploaded") or []),
+                failed=len(result.get("failed") or []),
+                error=result.get("error") and str(result["error"]),
+            )
         self.publish_state(cat)
         # A fresh upload may be what the TV is already showing.
         self.publish_now(cat)
@@ -321,6 +338,39 @@ class Service:
         log.info("ha: %s: %s", last.get("action"), error or "done")
         status = "failed" if error else "done"
         cat.put("tv_command", {**last, "status": status, "error": error and str(error)})
+
+    def _on_sync(self, cat: Catalogue, report) -> None:
+        """Progress of HA's upload automation, for the web UI."""
+        if not isinstance(report, dict):
+            return
+        phase, now = report.get("phase"), time.time()
+        total = report.get("total")
+        total = total if isinstance(total, int) and total >= 0 else None
+        if phase == "uploading":
+            log.info("ha: uploading %s works", total)
+            cat.put(
+                "tv_sync", {"phase": phase, "total": total, "started": now, "at": now}
+            )
+        elif phase in ("deleting", "done"):
+            last = cat.get("tv_sync") or {"started": now}
+            sync = {**last, "phase": phase, "at": now}
+            if phase == "deleting":
+                sync |= {"delete_total": total, "deleted": 0}
+            cat.put("tv_sync", sync)
+
+    def _sync_progress(self, cat: Catalogue, deleted: int = 0, **result) -> None:
+        sync = cat.get("tv_sync")
+        if not sync or sync["phase"] == "done":
+            return  # an automation that doesn't report progress
+        if deleted:
+            sync["deleted"] = sync.get("deleted", 0) + deleted
+        sync.update(result)
+        cat.put("tv_sync", {**sync, "at": time.time()})
+
+    def _on_uploads(self, payload: dict) -> None:
+        enabled = payload.get("enabled")
+        if isinstance(enabled, bool):
+            self.catalogue().put("uploads_enabled", enabled)
 
     def _on_current(self, payload: dict) -> None:
         cid = payload.get("content_id")

@@ -1,0 +1,56 @@
+{% macro took(secs) %}{% if secs >= 60 %}{{ (secs // 60) | int }}m {% endif %}{{ (secs % 60) | int }}s{% endmacro %}
+{# The overview polls /tv/status for this while data-live is set. #}
+<div id="tv-status"{% if tv_live %} data-live{% endif %}>
+  {% set tv_off = now.tv_on is sameas false %}
+  {% set sync = tv_sync %}
+  {% set uploading = sync and sync.running %}
+  <div class="buttons tv-buttons">
+    {% for k, label in tv_actions.items() %}
+    {% if tv_off %}{% set why = "The TV is off" %}
+    {% elif k == "upload" and uploading %}{% set why = "Already uploading" %}
+    {% elif k == "upload" and uploads_enabled is sameas false %}{% set why = "Uploads are turned off in Home Assistant" %}
+    {% elif k == "upload" and not state.pending %}{% set why = "Nothing waiting to upload" %}
+    {% else %}{% set why = "" %}{% endif %}
+    <form method="post" action="/tv/{{ k }}"><button{% if why %} disabled title="{{ why }}"{% endif %}>{{ label }}</button></form>
+    {% endfor %}
+  </div>
+  {% if tv_off %}
+  <p class="notice warn">The TV is off. Home Assistant never wakes it, so these buttons do nothing until it's on or in Art Mode.</p>
+  {% elif uploads_enabled is sameas false %}
+  <p class="notice warn">Uploads are turned off in Home Assistant (the "sync new art" automation), so nothing will be uploaded until it's turned back on.</p>
+  {% endif %}
+
+  {% if sync and sync.running %}
+  <div class="sync-panel" role="status">
+    {% if sync.phase == "uploading" %}
+      {% set total = sync.total or 0 %}
+      {% set done = sync.uploaded if sync.uploaded is defined else sync.estimate %}
+      <div class="sync-head"><span class="busy">Uploading to the TV</span> <span class="muted">· running for {{ took(sync.elapsed) }}</span></div>
+      <progress{% if total %} max="{{ total }}" value="{{ done }}"{% endif %}></progress>
+      <div class="small">{% if sync.uploaded is defined %}{{ sync.uploaded }} of {{ total }} uploaded{% if sync.failed %}, <span class="warn">{{ sync.failed }} failed</span>{% endif %}{% else %}About {{ done }} of {{ total }} so far <span class="muted">(an estimate: Home Assistant reports only when the whole batch is done, which takes about {{ took(total * 6) }} for {{ total }})</span>{% endif %}</div>
+    {% else %}
+      <div class="sync-head"><span class="busy">Removing retired works</span> <span class="muted">· running for {{ took(sync.elapsed) }}</span></div>
+      <progress max="{{ sync.delete_total or 1 }}" value="{{ sync.deleted or 0 }}"></progress>
+      <div class="small">{{ sync.uploaded or 0 }} uploaded{% if sync.failed %}, <span class="warn">{{ sync.failed }} failed</span>{% endif %} · {{ sync.deleted or 0 }} of {{ sync.delete_total or 0 }} deleted</div>
+    {% endif %}
+  </div>
+  {% elif sync and sync.stale %}
+  <p class="notice warn">An upload started {{ ago(sync.started) }}, but Home Assistant stopped reporting on it {{ ago(sync.at) }}. It may have failed; check the automation's traces in Home Assistant.</p>
+  {% elif sync %}
+  <p class="muted small">Last upload: finished {{ ago(sync.at) }} in {{ took(sync.at - sync.started) }} ·
+    {% if sync.error %}<span class="warn">{{ sync.error }}</span>{% else %}{{ sync.uploaded or 0 }} uploaded{% if sync.failed %}, <span class="warn">{{ sync.failed }} failed</span>{% endif %}{% if sync.delete_total %}, {{ sync.deleted or 0 }} of {{ sync.delete_total }} deleted{% endif %}{% endif %}</p>
+  {% endif %}
+
+  {% set cmd = tv_command %}
+  {% if cmd and (cmd.status in ("failed", "unsent") or tv_unanswered) %}
+  <p class="notice warn">{{ tv_actions[cmd.action] }} ({{ ago(cmd.at) }}):
+    {% if cmd.status == "failed" %}{{ cmd.error }}
+    {% elif cmd.status == "unsent" %}not sent, because frame-art isn't connected to MQTT.
+    {% else %}sent, but Home Assistant never answered.{% endif %}</p>
+  {% elif cmd and cmd.status == "sent" %}
+  <p class="small"><span class="busy">{{ tv_actions[cmd.action] }}: waiting for Home Assistant…</span></p>
+  {% elif cmd %}
+  <p class="muted small">Last: {{ tv_actions[cmd.action] }}, {{ ago(cmd.at) }} · {{ "started" if cmd.action == "upload" else "done" }}</p>
+  {% endif %}
+  <p class="muted small">Home Assistant carries these out while the TV is on or in Art Mode; it never wakes a TV that's off. Both "Show" buttons switch to Art Mode and shuffle, changing the picture every {{ slideshow }} (<a href="/settings">change</a>).</p>
+</div>
