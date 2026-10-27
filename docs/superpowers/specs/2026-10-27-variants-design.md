@@ -1,6 +1,6 @@
 # Seasonal variants: design
 
-Status: draft for Brian's review, 2026-10-27.
+Status: approved 2026-10-27; implemented on branch feat/seasonal-variants.
 
 ## Why
 

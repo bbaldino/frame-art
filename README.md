@@ -34,6 +34,12 @@ don't, and pin the ones that should never leave the TV. It also holds the
 settings: crop tolerance, background style, kinds, museums, nudes filter, pool
 size, nightly run time.
 
+Seasonal variants are AI-edited versions of your works (a Halloween look, say)
+that take the place of the original on the TV for a season. Define the types and
+the nightly mix on the Seasonal page; it needs an OpenRouter key (see
+`docs/api-keys.md`). The design is in
+`docs/superpowers/specs/2026-10-27-variants-design.md`.
+
 Home Assistant learns what to do from an MQTT-discovered `sensor.frame_art` and
 acknowledges on `frame-art/ack`; see `docs/design.md` for the automation.
 The overview's TV buttons (upload now, show frame-art's works, back to the

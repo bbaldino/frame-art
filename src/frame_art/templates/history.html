@@ -14,6 +14,7 @@
     {% if it.image %}<img loading="lazy" referrerpolicy="no-referrer" src="{{ it.image }}" data-full="{{ it.full or it.image }}" alt="{{ it.w.title if it.w else '' }}">{% else %}<div class="noimg"></div>{% endif %}
     {% if it.w %}{{ caption(it.w) }}{% else %}<div class="title">Not from frame-art</div><div class="who muted">TV id {{ it.row.content_id }}</div>{% endif %}
     <div class="meta when">{{ it.started }} · {% if it.current %}<strong>showing now</strong>, {{ it.span }} so far{% else %}{{ it.span }}{% endif %}{% if it.live is not none %} · {{ "on the TV" if it.live else "retired" }}{% endif %}</div>
+    {% if it.variant %}<div class="status-line"><span class="badge">{{ it.variant }} version</span></div>{% endif %}
     {% if it.state == "banned" %}<div class="status-line"><span class="badge banned">Banned</span></div>{% endif %}
     {% if it.w %}{{ override_buttons(it.key, it.state, "/history" ~ ("?todo=1" if todo else "") ~ "#h" ~ it.row.id, it.collected) }}{% endif %}
   </article>

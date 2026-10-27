@@ -684,3 +684,33 @@ def test_work_posts_404_for_unknown_type_or_key(client, tmp_path):
     ):
         assert c.post(path, data=data).status_code == 404, path
     assert not svc.queued()
+
+
+def _show_variant(svc):
+    import json
+
+    cat = svc.catalogue()
+    cat.add_variant_type("halloween", "Halloween", "boo")
+    v = cat.add_variant("nga:1", "halloween", 1, "p", "m", None, "/d/1.jpg")
+    cat.record_publish("haystacks--halloween-1.jpg", "full", "nga:1", 0, variant=v.id)
+    (svc.dest / "full").mkdir(parents=True, exist_ok=True)
+    sidecar = {
+        "haystacks--halloween-1.jpg": {"content_id": "MY_F0099", "modified": 1.0}
+    }
+    (svc.dest / "full" / ".samsungtv_upload.json").write_text(json.dumps(sidecar))
+    svc._on_current({"content_id": "MY_F0099", "on": True})
+
+
+def test_now_showing_names_the_variant(client):
+    c, svc = client
+    svc.catalogue().record_publish("haystacks.jpg", "full", "nga:1", 0)
+    _show_variant(svc)
+    assert svc.now_showing()["variant"] == {"type": "Halloween", "n": 1}
+    page = c.get("/now").text
+    assert "Halloween version" in page and "/works/nga:1" in page
+
+
+def test_history_names_the_variant(client):
+    c, svc = client
+    _show_variant(svc)
+    assert "Halloween version" in c.get("/history").text

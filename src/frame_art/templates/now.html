@@ -12,6 +12,7 @@
   <a href="/render/{{ now.file }}" target="_blank" rel="noopener"><img src="/render/{{ now.file }}" alt="{{ now.title }}"></a>
   <div class="about">
     <h2>{% if now.url %}<a href="{{ now.url }}" target="_blank" rel="noopener">{{ now.title }}</a>{% else %}{{ now.title }}{% endif %}</h2>
+    {% if now.variant %}<p><span class="badge">{{ now.variant.type }} version</span></p>{% endif %}
     <p class="who">{{ now.artist or "Unknown artist" }}{% if now.date %}, {{ now.date }}{% endif %}</p>
     {% if now.description %}<p>{{ now.description }}</p>{% endif %}
     <dl>
@@ -24,6 +25,7 @@
       {% if now.colors %}<dt>Colours</dt><dd class="swatches">{% for c in now.colors %}<span style="background: {{ c }}" title="{{ c }}"></span>{% endfor %}</dd>{% endif %}
       <dt>Licence</dt><dd>{{ now.license }}</dd>
     </dl>
+    <p><a href="/works/{{ now.key }}">Details</a></p>
     <p class="muted small">Showing since {{ ago(now.since) }} · TV id {{ now.content_id }}</p>
   </div>
 </div>

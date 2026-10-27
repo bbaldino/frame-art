@@ -454,6 +454,16 @@ class Service:
         cat.note_shown(cid, p.key if p else None, showing=on is not False)
         self.publish_now(cat)
 
+    def variant_labels(self, cat: Catalogue) -> dict[str, dict]:
+        """filename -> {"type": <type name>, "n": <n>} for published variant files."""
+        names = {t.slug: t.name for t in cat.variant_types()}
+        labels = {}
+        for filename, vid in cat.published_variants().items():
+            v = cat.variant(vid)
+            if v:
+                labels[filename] = {"type": names.get(v.type, v.type), "n": v.n}
+        return labels
+
     def now_showing(self, cat: Catalogue | None = None) -> dict:
         """What the TV shows, as far as frame-art knows it."""
         cat = cat or self.catalogue()
@@ -490,6 +500,9 @@ class Service:
             subjects=w.subjects[:15],
             colors=self._palette(cat, w.key, self.dest / p.folder / p.filename),
         )
+        variant = self.variant_labels(cat).get(p.filename)
+        if variant:
+            info["variant"] = variant
         return info
 
     def _palette(self, cat: Catalogue, key: str, path: Path) -> list[str]:

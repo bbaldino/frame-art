@@ -415,17 +415,19 @@ def create_app(svc: Service) -> Starlette:
         latest = {p.key: p for p in published}  # oldest first, so the last wins
         live = {p.key for p in published if p.retired_at is None}
         todo = request.query_params.get("todo") == "1"
-        resolved: dict[str, str | None] = {}
+        resolved: dict[str, object] = {}  # content id -> published file, or None
+        labels = svc.variant_labels(cat)
         items, day = [], None
         now = time.time()
         for r in cat.shown():
             key = r["key"]
+            if r["content_id"] not in resolved:
+                resolved[r["content_id"]] = find_content(cat, svc.dest, r["content_id"])
+            shown_file = resolved[r["content_id"]]
             if key is None:
                 # Uploaded after it was first seen: the sidecar knows it now.
-                if r["content_id"] not in resolved:
-                    p = find_content(cat, svc.dest, r["content_id"])
-                    resolved[r["content_id"]] = p.key if p else None
-                key = resolved[r["content_id"]]
+                key = shown_file.key if shown_file else None
+            variant = labels.get(shown_file.filename) if shown_file else None
             w = works.get(key) if key else None
             state = overrides.get(key) if key else None
             collected = key in collection
@@ -444,6 +446,7 @@ def create_app(svc: Service) -> Starlette:
                     "key": key,
                     "state": state,
                     "collected": collected,
+                    "variant": variant["type"] if variant else None,
                     # None: never published (frame-art didn't put it there).
                     "live": (key in live) if key in latest else None,
                     "image": f"/thumb/{p.folder}/{p.filename}"

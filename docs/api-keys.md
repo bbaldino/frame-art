@@ -26,6 +26,17 @@ mkdir -p ~/.config/pexels && umask 077 && printf '%s\n' 'PASTE-KEY' > ~/.config/
 
 Keys never go in settings.json, the repo, the message bus or a log.
 
+## AI image editing
+
+| Service | Sign up | Cost | Used for |
+|---|---|---|---|
+| `openrouter` | https://openrouter.ai/keys | Pay as you go: about $0.12 per edit with `google/gemini-nano-banana-2.1` | Seasonal variants (Settings → Seasonal): AI-edited versions of your works. |
+
+The key file is `<keys dir>/openrouter/key`. Set a spending limit on the key in
+OpenRouter, since nightly generation spends money on its own. The deployed
+container's keys mount still needs wiring (see above) before the key can be
+used there.
+
 ## Photography
 
 | Service | Sign up | Free tier | Adds | Verdict |
