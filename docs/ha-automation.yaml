@@ -250,6 +250,7 @@ variables:
   # Declared here so the steps below update them rather than shadow them.
   choices: []
   picked: {}
+  reshuffle: {}
   result: {}
 actions:
   - if:
@@ -318,15 +319,17 @@ actions:
               duration: "{{ duration }}"
               shuffle: true
               category_id: "{{ 2 if request == 'mine' else 4 }}"
-            response_variable: slideshow
+            response_variable: reshuffle
             note: "Picking a picture turns the TV's slideshow off, so turn it back on."
       - variables:
           result: >-
             {% set s = slideshow[tv] | default({'error': 'no response'}) %}
             {% set p = picked[tv] | default({}) %}
+            {% set r = reshuffle[tv] | default({}) %}
             {% if s.error is defined %}{{ {'error': 'Slideshow: ' ~ s.error} }}
             {% elif not choices %}{{ {'error': 'Nothing to show yet: no works uploaded' if request == 'mine' else 'No Favourites on the TV'} }}
             {% elif p.error is defined %}{{ {'error': 'Picture: ' ~ p.error} }}
+            {% elif r.error is defined %}{{ {'error': 'Slideshow after picking: ' ~ r.error} }}
             {% else %}{{ {} }}{% endif %}
   - action: mqtt.publish
     data:
