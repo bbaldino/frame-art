@@ -209,7 +209,7 @@ def test_nearest_aspect():
 **Interfaces:**
 - Produces: `pipeline.render_image(work: Work, im: Image.Image, prefs: Prefs, pad_style: str = "blur") -> Output` — the part of `render()` after `load_work` (plan from `im.size`, `NotFullScreen` / `TooSmall` checks, phash, render, palette). `render()` becomes `render_image(cand.work, load_work(http, cand), cand.prefs, pad_style)`.
 
-- [ ] **Step 1: Write the failing test** `test_render_image_fills_the_panel`: a 1600x1200 image with default prefs gives `out.image.size == imaging.PANEL` and `out.plan.mode == "pad"`; a 600x400 image raises `pipeline.TooSmall`.
+- [ ] **Step 1: Write the failing test** `test_render_image_fills_the_panel`: a 3000x2250 image with default prefs gives `out.image.size == imaging.PANEL` and `out.plan.mode == "pad"`; a 600x400 image raises `pipeline.TooSmall`.
 - [ ] **Step 2: Run** → FAIL.
 - [ ] **Step 3: Extract `render_image`.**
 - [ ] **Step 4: Run** `uv run pytest -q` → pass.
@@ -293,10 +293,11 @@ def test_needed_skips_usable_dont_use_and_repeated_failures():
   - `Publisher.swap(p: Published, im: Image.Image, variant: Variant | None) -> str` — renders `im` with `render_image`, writes it under `cat.unused_filename(name)` (`name` is `pipeline.filename(w)` for the original, or `<stem>--<type>-<n>.jpg`), calls `record_publish(..., variant=variant.id if variant else None)`, then retires `p` the same way `_retire` does (extract that loop body into `_retire_files(doomed: list[Published])`). Returns `"<folder>/<new filename>"`.
   - `variants.source_path(data: Path, w: Work) -> Path`, `variants.variant_path(data: Path, w: Work, type: str, n: int) -> Path`
   - `variants.load_source(http, data: Path, w: Work, prefs: pipeline.Prefs) -> Image.Image` — the cached trimmed source, or `pipeline.load_work` on a `Candidate` built from `pipeline.exclusion(w, prefs)` (falling back to `imaging.plan_for(w.width, w.height, prefs.max_crop)` when excluded), saved at quality 95
+  - `variants.HALLOWEEN_PROMPT` — the spec appendix prompt, verbatim (defined here; Task 7 reuses it)
   - `variants.generate(cat, http, data: Path, api_key: str, pub: Publisher, key: str, type: str, prompt: str | None = None) -> Variant` — prompt defaults to the type's; saves the edit at quality 95; `add_variant`. On any exception it calls `note_variant_failure` and re-raises.
   - `variants.apply_versions(cat, http, data: Path, pub: Publisher, keys: set[str] | None = None) -> dict` — for each live work (optionally only `keys`): wanted = the usable variant for its slot's type, else the original; if the live file's `published_variants` entry differs, `pub.swap` it. Returns `{"swapped": [...], "failed": [...]}`; a failure leaves the work as it is. Calls `pub._write_meta()` once when anything changed.
 
-- [ ] **Step 1: Write the failing tests** (reuse the `setup` fixture pattern from `tests/test_publish.py`; monkeypatch `openrouter.edit_image` to return `Edit(<solid 1920x1080 image>, 0.12, "gen-x")` and `pipeline.load_work` to return a solid 1600x900 image):
+- [ ] **Step 1: Write the failing tests** (reuse the `setup` fixture pattern from `tests/test_publish.py`; monkeypatch `openrouter.edit_image` to return `Edit(<solid 3840x2160 image>, 0.12, "gen-x")` and `pipeline.load_work` to return a solid 3840x2160 image; smaller fakes trip `TooSmall`. Add the "halloween" type with `HALLOWEEN_PROMPT` in the fixture):
 
 ```python
 def test_generate_then_swap_and_revert(vsetup):
@@ -340,7 +341,7 @@ def test_source_is_cached(vsetup, monkeypatch): # second load_source does not ca
 **Interfaces:**
 - Consumes: Tasks 1-6.
 - Produces:
-  - `variants.DEFAULT_TYPES = (("halloween", "Halloween", HALLOWEEN_PROMPT),)` (prompt verbatim from the spec appendix); `variants.seed_types(cat) -> None` — once (kv `variant_types_seeded`), only if there are no types; called from `Service.start()`
+  - `variants.DEFAULT_TYPES = (("halloween", "Halloween", HALLOWEEN_PROMPT),)` (`HALLOWEEN_PROMPT` from Task 6); `variants.seed_types(cat) -> None` — once (kv `variant_types_seeded`), only if there are no types; called from `Service.start()`
   - `variants.nightly(cat, http, data: Path, pub: Publisher, settings: Settings, api_key: str | None) -> dict` — `assign_slots` (mix types not in `variant_types()` are ignored) → `set_slots` → generate `needed(...)[: settings.variant_limit]` (skipped with a logged note when `api_key` is None; each failure logged and skipped) → `apply_versions`. Returns `{"slots": {type: count}, "generated": [...], "gen_failed": [...], "swapped": [...], "cost": float}`.
   - `variants.progress(cat, settings) -> list[dict]` — per variant type: `slug, name, prompt, share, live_share` (percent of live files that are this type's variants), `slotted`, `ready` (slotted with a usable variant), `needed`, `stuck` (keys at `NIGHTLY_FAILURES`), `cost` (sum of the type's variant costs)
   - `jobs.nightly` calls `variants.nightly` after `publish`, with `keys.read_key("openrouter")` and `Http(timeout=300)` for the edits, and merges its summary under `"variants"`; a `"gen_failed"` entry makes the run `partial`.
