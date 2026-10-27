@@ -91,7 +91,7 @@ create table if not exists runs (
     summary text,
     log text
 );
--- Seasonal variants (0.7.0): AI-edited copies of works, added as new tables so
+-- Seasonal variants (0.9.0): AI-edited copies of works, added as new tables so
 -- older versions keep reading the catalogue.
 create table if not exists variant_types (
     slug text primary key,
