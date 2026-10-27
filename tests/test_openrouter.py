@@ -1,6 +1,7 @@
 import base64
 import io
 
+import httpx
 import pytest
 from PIL import Image
 
@@ -59,6 +60,8 @@ def test_edit_sends_image_and_reads_result():
     assert body["image_config"] == {"aspect_ratio": "3:2", "image_size": "4K"}
     assert body["messages"][0]["content"][0] == {"type": "text", "text": "spooky"}
     assert http.calls[0]["headers"]["Authorization"] == "Bearer sk-secret"
+    # Each attempt is billed, so a failure is never retried.
+    assert http.calls[0]["retries"] == 0
     sent = Image.open(
         io.BytesIO(
             base64.b64decode(
@@ -111,3 +114,17 @@ def test_edit_asks_for_the_given_aspect():
     )
     openrouter.edit_image(http, "k", Image.new("RGB", (1600, 1000)), "p", aspect="16:9")
     assert http.calls[0]["json"]["image_config"]["aspect_ratio"] == "16:9"
+
+
+class RaisingHttp:
+    def request(self, method, url, **kw):
+        raise httpx.ReadTimeout(f"timed out; headers {kw['headers']}")
+
+
+def test_transport_failure_is_an_edit_failure_without_the_key():
+    with pytest.raises(openrouter.EditFailed, match="ReadTimeout") as ex:
+        openrouter.edit_image(
+            RaisingHttp(), "sk-secret", Image.new("RGB", (10, 10)), "p"
+        )
+    assert "sk-secret" not in str(ex.value)
+    assert ex.value.__cause__ is None and ex.value.__suppress_context__

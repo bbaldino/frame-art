@@ -4,6 +4,7 @@ import base64
 import io
 from dataclasses import dataclass
 
+import httpx
 from PIL import Image
 
 from .net import Http
@@ -64,7 +65,8 @@ def edit_image(
     """Ask OpenRouter to edit `im` per `prompt`. Raises EditFailed on any failure.
 
     The result has shape ``aspect`` (one of ASPECTS), by default the nearest to
-    ``im``'s.
+    ``im``'s. The request is never retried: each attempt may be billed, and a
+    timeout can come after OpenRouter has done (and charged for) the edit.
     """
     aspect = aspect or nearest_aspect(*im.size)
     body = {
@@ -82,9 +84,17 @@ def edit_image(
             }
         ],
     }
-    resp = http.request(
-        "POST", URL, json=body, headers={"Authorization": f"Bearer {api_key}"}
-    )
+    try:
+        resp = http.request(
+            "POST",
+            URL,
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+            retries=0,
+        )
+    except httpx.HTTPError as ex:
+        # Never chain: the request, with its key, hangs off the exception.
+        raise EditFailed(f"OpenRouter request failed: {type(ex).__name__}") from None
     try:
         data = resp.json()
     except ValueError:
