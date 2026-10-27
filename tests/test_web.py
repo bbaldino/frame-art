@@ -671,3 +671,16 @@ def test_work_routes_keep_override_working(client):
     )
     assert r.status_code == 303
     assert svc.catalogue().overrides() == {"nga:1": "pinned"}
+
+
+def test_work_posts_404_for_unknown_type_or_key(client, tmp_path):
+    c, svc = client
+    _work_variant(svc, tmp_path)
+    for path, data in (
+        ("/works/nga:1/variants/nope/dont-use", {"on": "1"}),
+        ("/works/nga:999/variants/halloween/dont-use", {"on": "1"}),
+        ("/works/nga:1/variants/generate", {"type": "nope"}),
+        ("/works/nga:999/variants/generate", {"type": "halloween"}),
+    ):
+        assert c.post(path, data=data).status_code == 404, path
+    assert not svc.queued()

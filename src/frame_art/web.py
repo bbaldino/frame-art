@@ -175,6 +175,19 @@ def create_app(svc: Service) -> Starlette:
     )
     thumbs = svc.data / "thumbs"
 
+    def cached_thumb(src: Path, out: Path) -> Path:
+        """``out`` is a thumbnail of ``src``, made now if missing or older."""
+        if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(src) as im:
+                im.draft("RGB", THUMB)
+                im = im.convert("RGB")
+                im.thumbnail(THUMB, Image.LANCZOS)
+                tmp = out.with_suffix(".tmp")
+                im.save(tmp, "JPEG", quality=82)
+                tmp.replace(out)
+        return out
+
     def render(request: Request, name: str, **ctx):
         return templates.TemplateResponse(request, name, ctx)
 
@@ -694,16 +707,7 @@ def create_app(svc: Service) -> Starlette:
         src = svc.dest / folder / name
         if not src.exists():
             return PlainTextResponse("not found", 404)
-        out = thumbs / folder / name
-        if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
-            out.parent.mkdir(parents=True, exist_ok=True)
-            with Image.open(src) as im:
-                im.draft("RGB", THUMB)
-                im = im.convert("RGB")
-                im.thumbnail(THUMB, Image.LANCZOS)
-                tmp = out.with_suffix(".tmp")
-                im.save(tmp, "JPEG", quality=82)
-                tmp.replace(out)
+        out = cached_thumb(src, thumbs / folder / name)
         return FileResponse(out, headers={"Cache-Control": "max-age=86400"})
 
     async def variant_file(request: Request):
@@ -714,16 +718,7 @@ def create_app(svc: Service) -> Starlette:
             return PlainTextResponse("not found", 404)
         if not request.query_params.get("thumb"):
             return FileResponse(src, headers={"Cache-Control": "max-age=86400"})
-        out = thumbs / "variants" / f"{v.id}.jpg"
-        if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
-            out.parent.mkdir(parents=True, exist_ok=True)
-            with Image.open(src) as im:
-                im.draft("RGB", THUMB)
-                im = im.convert("RGB")
-                im.thumbnail(THUMB, Image.LANCZOS)
-                tmp = out.with_suffix(".tmp")
-                im.save(tmp, "JPEG", quality=82)
-                tmp.replace(out)
+        out = cached_thumb(src, thumbs / "variants" / f"{v.id}.jpg")
         return FileResponse(out, headers={"Cache-Control": "max-age=86400"})
 
     async def work_page(request: Request):
@@ -797,6 +792,8 @@ def create_app(svc: Service) -> Starlette:
     async def set_variant_dont_use(request: Request):
         key, vtype = request.path_params["key"], request.path_params["type"]
         cat = svc.catalogue()
+        if not find_work(cat, key):
+            return PlainTextResponse("unknown work", 404)
         if not any(t.slug == vtype for t in cat.variant_types()):
             return PlainTextResponse("unknown type", 404)
         form = await request.form()
