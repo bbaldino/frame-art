@@ -8,16 +8,17 @@
 {% if not has_key %}<p class="error">No OpenRouter key on the server, so no versions can be made. Save it as a one-line file (chmod 600); see docs/api-keys.md.</p>{% else %}<p class="muted">OpenRouter key: <span class="badge ok">present</span></p>{% endif %}
 
 <h2>Progress</h2>
-<table class="runs">
-  <thead><tr><th>Type</th><th>Wanted</th><th>On the TV</th><th>Ready</th><th>Cost so far</th></tr></thead>
+<div class="table-wrap">
+<table class="runs progress">
+  <thead><tr><th>Type</th><th>Wanted</th><th>On the TV</th><th>Ready</th><th class="num">Cost so far</th></tr></thead>
   <tbody>
   {% for r in rows %}
   <tr>
     <td>{{ r.name }}</td>
     <td>{{ r.share }}%</td>
     <td>{{ r.live_share }}%</td>
-    <td>{{ r.ready }} of {{ r.slotted }}{% if r.needed %} · {{ r.needed }} to make{% endif %}</td>
-    <td>${{ '%.2f' | format(r.cost) }}</td>
+    <td>{{ r.ready }} of {{ r.slotted }}{% if r.needed %}<br><span class="muted small">{{ r.needed }} to make</span>{% endif %}</td>
+    <td class="num">${{ '%.2f' | format(r.cost) }}</td>
   </tr>
   {% if r.stuck %}
   <tr><td colspan="5" class="muted small">Gave up after repeated failures: {{ r.stuck | join(", ") }}</td></tr>
@@ -26,21 +27,22 @@
   <tr><td colspan="5" class="muted">No types yet.</td></tr>
   {% endfor %}
   </tbody>
-  <tfoot><tr><td colspan="4">Total</td><td>${{ '%.2f' | format(total_cost) }}</td></tr></tfoot>
+  <tfoot><tr><td colspan="4">Total</td><td class="num">${{ '%.2f' | format(total_cost) }}</td></tr></tfoot>
 </table>
+</div>
 
+<h2>Mix</h2>
 <form method="post" action="/variants/mix" class="settings">
   <fieldset>
-    <legend>Mix</legend>
-    <p class="muted">The share of the works on the TV that show each type. Originals get the rest.</p>
-    <div class="row">
+    <p class="muted small">The share of the works on the TV that show each type. Originals get the rest.</p>
+    <div class="shares">
       {% for r in rows %}
-      <label>{{ r.name }} <input type="number" name="share-{{ r.slug }}" min="0" max="100" step="1" value="{{ s.mix.get(r.slug, 0) }}"> %</label>
+      <label>{{ r.name }} <span class="suffix"><input type="number" name="share-{{ r.slug }}" min="0" max="100" step="1" value="{{ s.mix.get(r.slug, 0) }}"> %</span></label>
       {% endfor %}
-      <span>Originals: {{ s.originals_share() }}%</span>
+      <div class="readout">Originals <span>{{ s.originals_share() }}%</span></div>
     </div>
-    <label>New versions made per night <input type="number" name="variant_limit" min="0" max="50" value="{{ s.variant_limit }}"></label>
-    <button type="submit">Save mix</button>
+    <label class="inline">New versions made per night <input type="number" name="variant_limit" min="0" max="50" value="{{ s.variant_limit }}"></label>
+    <div class="form-actions"><button type="submit" class="primary">Save mix</button></div>
   </fieldset>
 </form>
 
@@ -49,18 +51,18 @@
 <form method="post" action="/variants/types/{{ r.slug }}" class="settings">
   <fieldset>
     <legend>{{ r.name }}</legend>
-    <label>Name <input type="text" name="name" value="{{ r.name }}"></label>
-    <label>Prompt <textarea name="prompt" rows="4">{{ r.prompt }}</textarea></label>
-    <button type="submit">Save {{ r.name }}</button>
+    <label class="stack">Name <input type="text" name="name" value="{{ r.name }}"></label>
+    <label class="stack">Prompt <textarea name="prompt" rows="5">{{ r.prompt }}</textarea></label>
+    <div class="form-actions"><button type="submit">Save {{ r.name }}</button></div>
   </fieldset>
 </form>
 {% endfor %}
 <form method="post" action="/variants/types" class="settings">
   <fieldset>
     <legend>Add a type</legend>
-    <label>Name <input type="text" name="name" placeholder="Christmas"></label>
-    <label>Prompt <textarea name="prompt" rows="4" placeholder="What to change about the picture"></textarea></label>
-    <button type="submit">Add type</button>
+    <label class="stack">Name <input type="text" name="name" placeholder="Christmas"></label>
+    <label class="stack">Prompt <textarea name="prompt" rows="5" placeholder="What to change about the picture"></textarea></label>
+    <div class="form-actions"><button type="submit">Add type</button></div>
   </fieldset>
 </form>
 
@@ -71,12 +73,16 @@
   <input type="hidden" name="type" value="{{ r.slug }}">
   <fieldset>
     <legend>{{ r.name }}</legend>
-    {% for key, title, thumb in candidates[r.slug] %}
-    <label class="check"><input type="checkbox" name="keys" value="{{ key }}"> <img src="{{ thumb }}" alt="" width="96" loading="lazy"> {{ title }}</label>
+    {% if candidates[r.slug] %}
+    <div class="picks">
+      {% for key, title, thumb in candidates[r.slug] %}
+      <label class="pick"><input type="checkbox" name="keys" value="{{ key }}"><img src="{{ thumb }}" alt="" loading="lazy"><span>{{ title }}</span></label>
+      {% endfor %}
+    </div>
+    <div class="form-actions"><button type="submit">Generate {{ r.name }} versions</button></div>
     {% else %}
     <p class="muted">Every work on the TV already has one.</p>
-    {% endfor %}
-    {% if candidates[r.slug] %}<button type="submit">Generate {{ r.name }} versions</button>{% endif %}
+    {% endif %}
   </fieldset>
 </form>
 {% endfor %}

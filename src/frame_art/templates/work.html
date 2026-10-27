@@ -46,7 +46,7 @@
 
   <form method="post" action="/works/{{ w.key }}/variants/generate" class="settings">
     <input type="hidden" name="type" value="{{ t.slug }}">
-    <label>Prompt <textarea name="prompt" rows="4">{{ t.prompt }}</textarea></label>
+    <label class="stack">Prompt <textarea name="prompt" rows="5">{{ t.prompt }}</textarea></label>
     <p class="muted small">Default prompt: {{ t.prompt }}</p>
     <button type="submit">{{ "Make another" if sec.current else "Make one" }}</button>
   </form>
