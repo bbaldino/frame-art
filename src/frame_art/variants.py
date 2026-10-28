@@ -61,7 +61,8 @@ def assign_slots(
     ``target`` is how many works each type gets, and ``live`` is oldest-published
     first. Manual slots survive a shrinking count, but not their type dropping
     out of the target. With ``ready_only``, only works with a usable variant of
-    the type get a slot (manual slots aside).
+    the type get a slot (manual slots aside), and a type earlier in ``target``
+    (a narrower schedule's) may take such a work from a type later in it.
     """
     types = [t for t, n in target.items() if n > 0]
     age = {key: i for i, key in enumerate(live)}
@@ -83,7 +84,7 @@ def assign_slots(
         for key in droppable[: max(0, len(members) - target[t])]:
             del slots[key]
 
-    for t in types:
+    for i, t in enumerate(types):
         missing = target[t] - sum(1 for s in slots.values() if s.type == t)
         # Works that already have a variant first, then the newest.
         free = sorted(
@@ -94,7 +95,21 @@ def assign_slots(
             ),
             key=lambda k: ((k, t) not in usable, -age[k]),
         )
-        for key in free[: max(0, missing)]:
+        take = free[: max(0, missing)]
+        if ready_only and len(take) < missing:
+            # ``target`` lists narrower types first: take works with a ready
+            # version of ``t`` from a wider type, which refills in its turn.
+            wider = set(types[i + 1 :])
+            held = sorted(
+                (
+                    k
+                    for k, s in slots.items()
+                    if s.type in wider and not s.manual and (k, t) in usable
+                ),
+                key=lambda k: -age[k],
+            )
+            take += held[: missing - len(take)]
+        for key in take:
             slots[key] = Slot(t, False)
 
     return slots
@@ -277,8 +292,11 @@ def nightly(
     usable = set(cat.usable_variants())
     running = schedules.layers(sch, today)
     ahead = schedules.upcoming(sch, today)
-    plans = [_plan(live, running, cat.slots(), usable)]
-    plans += [_plan(live, schedules.layers(sch, d), {}, usable) for d, _ in ahead]
+    # Upcoming plans start from today's slots too, so a narrow schedule's
+    # versions land on the works a wider one will give up when it starts.
+    current = cat.slots()
+    plans = [_plan(live, running, current, usable)]
+    plans += [_plan(live, schedules.layers(sch, d), current, usable) for d, _ in ahead]
     states = cat.variant_states()
     pairs = list(dict.fromkeys(p for plan in plans for p in needed(plan, states, live)))
     ranked = schedules.order(running + [s for _, s in ahead])

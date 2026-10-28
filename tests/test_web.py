@@ -377,6 +377,7 @@ def test_old_mix_migrates_to_everyday(tmp_path):
         ("Everyday", "01-01", "12-31", {"halloween": 75})
     ]
     assert s.count == 5
+    assert Settings.load(p).schedules[0].id == s.schedules[0].id  # stable until saved
     p.write_text(json.dumps({"mix": {}}))
     assert Settings.load(p).schedules == []
     p.write_text(json.dumps({"mix": {"halloween": "lots"}, "count": 5}))

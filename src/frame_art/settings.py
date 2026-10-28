@@ -167,7 +167,8 @@ class Settings:
         mix = raw.get("mix")
         if "schedules" not in raw and isinstance(mix, dict) and mix:
             # Before schedules there was one year-round mix.
-            raw["schedules"] = [asdict(schedules.everyday(mix))]
+            # A fixed id, so the editor can find it before the settings are saved.
+            raw["schedules"] = [asdict(replace(schedules.everyday(mix), id="everyday"))]
         # Keep every field that is valid on its own, so a file written by a
         # newer version (an unknown source, say) still keeps the rest.
         s = cls()

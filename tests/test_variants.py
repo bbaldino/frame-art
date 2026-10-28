@@ -53,6 +53,19 @@ def test_ready_only_shows_only_made_versions():
     assert got == {"b": Slot("hw", True), "c": Slot("hw", False)}
 
 
+def test_ready_only_narrower_type_takes_works_from_a_wider_one():
+    # Listed narrowest first: birthday's ready versions are on works Halloween holds.
+    cur = {k: Slot("hw", False) for k in LIVE}
+    usable = {(k, "hw") for k in LIVE} | {("c", "bd"), ("d", "bd")}
+    got = assign_slots(LIVE, {"bd": 2, "hw": 2}, cur, usable, ready_only=True)
+    assert got == {
+        "a": Slot("hw", False),
+        "b": Slot("hw", False),
+        "c": Slot("bd", False),
+        "d": Slot("bd", False),
+    }
+
+
 def test_needed_skips_usable_dont_use_and_repeated_failures():
     slots = {k: Slot("hw", False) for k in LIVE}
     states = {
@@ -271,6 +284,20 @@ def test_lookahead_keeps_making_for_the_same_works(vsetup4):
     variants.nightly(cat, None, data, pub, s, "k", TODAY)
     out = variants.nightly(cat, None, data, pub, s, "k", date(2026, 10, 29))
     assert out["generated"] == [] and len(cat.variants()) == 2
+
+
+def test_lookahead_inside_a_wider_schedule_shows_on_its_first_day(vsetup4):
+    cat, data, pub, settings = vsetup4
+    s = _with_birthday(cat, settings, everyday({"halloween": 100}), NOV2)
+    for day in (20, 21):  # Halloween fills all four works before the lookahead
+        variants.nightly(cat, None, data, pub, s, "k", date(2026, 10, day))
+    assert cat.slots() and {sl.type for sl in cat.slots().values()} == {"halloween"}
+    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
+    assert {v.type for v in cat.variants()} == {"halloween", "birthday"}
+    assert out["slots"] == {"halloween": 4}  # not shown before Nov 2
+    off = dataclasses.replace(s, variant_limit=0)
+    out = variants.nightly(cat, None, data, pub, off, "k", date(2026, 11, 2))
+    assert out["slots"] == {"birthday": 2, "halloween": 2}
 
 
 def test_budget_goes_to_the_narrowest_schedule_first(vsetup4):
