@@ -9,12 +9,20 @@
 # - The MQTT broker is anonymous, so anything on the LAN can publish to
 #   frame-art/state. The folder is therefore hardcoded here, never read from the
 #   payload, and deletes are limited to ids on the allow-list (never Brian's own
-#   photos), matching ^MY[_-]F?\d+$, at most 30 per run.
+#   photos), matching ^MY[_-]F?\d+$. There is no per-run cap: a forged payload
+#   could at worst delete frame-art's own pictures, which re-upload, and a
+#   schedule change can retire most of the pool in one night.
 # - art_upload_batch powers on a TV that is fully off. Uploads only run while
 #   the TV is already on or in Art Mode, so a 2 AM run never lights the bedroom.
 #   Pending work waits for the TV to come on (or the noon retry).
-# - art_set_slideshow forces Art Mode, so it is not called here; the slideshow
-#   setting persists on the TV and was set once by hand.
+# - Deleting the picture on screen makes the TV fall back to Samsung art. So
+#   before the deletes, if the TV is in Art Mode and showing a picture about to
+#   go, it picks another frame-art picture that is staying (allow-list minus
+#   this run's deletes), then restores the slideshow at the TV's own interval
+#   (slideshow_status, in minutes), since picking a picture turns it off.
+#   art_set_slideshow forces Art Mode, so both calls sit inside the Art Mode
+#   check. With no cap, to_delete is the whole retire list, so the picture
+#   picked is never one a later run deletes.
 # - The samsungtv_smart art services return {"error": ...} instead of raising,
 #   so results are checked and reported, not assumed. They are entity services,
 #   so HA wraps each response by entity id: {"media_player.<tv>": {...}}.
@@ -122,10 +130,45 @@ actions:
   - variables:
       allowed: "{{ owned['todo.frame_art_uploads']['items'] | map(attribute='summary') | list }}"
       to_delete: >-
-        {{ ((state_attr('sensor.frame_art', 'retire') or [])
+        {{ (state_attr('sensor.frame_art', 'retire') or [])
             | select('in', allowed)
             | select('match', '^MY[_-]F?\\d+$')
-            | unique | list)[:30] }}
+            | unique | list }}
+  - variables:
+      art: sensor.master_bedroom_frame_tv_frame_art
+      showing: "{{ state_attr(art, 'current_content_id') }}"
+      keep: >-
+        {{ allowed | reject('in', to_delete)
+           | select('match', '^MY[_-]F?\\d+$') | list }}
+      minutes: "{{ state_attr(art, 'slideshow_status') | int(0) }}"
+  - if:
+      - condition: state
+        entity_id: media_player.master_bedroom_frame_tv
+        attribute: art_mode_status
+        state: "on"
+      - "{{ showing in to_delete and keep | length > 0 }}"
+    then:
+      - action: samsungtv_smart.art_select_image
+        target:
+          entity_id: media_player.master_bedroom_frame_tv
+        data:
+          content_id: "{{ keep | random }}"
+        continue_on_error: true
+      - if:
+          - "{{ minutes | int(0) > 0 }}"
+        then:
+          - action: samsungtv_smart.art_set_slideshow
+            target:
+              entity_id: media_player.master_bedroom_frame_tv
+            data:
+              duration: "{{ minutes }}"
+              shuffle: true
+              category_id: 2
+            continue_on_error: true
+            note: "Picking a picture turns the TV's slideshow off, so turn it back on."
+    note: >-
+      Move off the picture on screen before it is deleted, so the TV doesn't fall
+      back to Samsung art. Only in Art Mode: art_set_slideshow forces Art Mode.
   - if:
       - "{{ to_delete | length > 0 }}"
     then:
