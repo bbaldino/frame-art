@@ -7,6 +7,110 @@
 {% if errors %}<div class="error"><strong>Not saved:</strong><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
 {% if not has_key %}<p class="error">No OpenRouter key on the server, so no versions can be made. Save it as a one-line file (chmod 600); see docs/api-keys.md.</p>{% else %}<p class="muted">OpenRouter key: <span class="badge ok">present</span></p>{% endif %}
 
+{% macro share_row(r) -%}
+<div class="share-row" data-slug="{{ r.slug }}" data-name="{{ r.name }}">
+  <span class="share-name">{{ r.name }}</span>
+  <span class="suffix"><input type="number" name="share-{{ r.slug }}" min="0" max="100" step="1" value="{{ r.value }}" aria-label="{{ r.name }} share"> %</span>
+  <span class="share-ready">{% if r.m is defined %}<span class="meter"><span style="width:{{ r.pct }}%"></span></span><span class="muted small">{{ r.n }} of {{ r.m }} ready</span>{% endif %}</span>
+  <button type="button" class="remove" aria-label="Remove {{ r.name }}" title="Remove {{ r.name }}">×</button>
+</div>
+{%- endmacro %}
+
+<h2>Schedules</h2>
+<p class="muted small">Each schedule gives types a share of the screen on its dates, every year. Where schedules overlap, the narrowest (lowest on the timeline) takes its share first; each wider one takes its share of what is left, and originals get the rest. Versions are made up to a week before a schedule starts.</p>
+<div class="timeline">
+  <div class="tl-months" style="grid-template-columns:{% for d in month_days %}{{ d }}fr {% endfor %}">{% for m in months %}<span>{{ m }}</span>{% endfor %}</div>
+  <div class="tl-rows">
+  {% for b in timeline %}
+  <div class="tl-row">
+    {% for left, width in b.pieces %}<a class="bar c{{ b.color }}{% if b.id == editing %} sel{% endif %}" href="/variants?edit={{ b.id }}#editor" style="left:{{ left }}%;width:{{ width }}%" title="{{ b.label }}">{% if loop.index0 == b.label_at %}{{ b.label }}{% endif %}</a>{% endfor %}
+    {% if b.label_at is none %}<span class="tl-label" style="{% if b.side_left is not none %}left:{{ b.side_left }}%{% else %}right:{{ b.side_right }}%{% endif %}">{{ b.label }}</span>{% endif %}
+  </div>
+  {% else %}
+  <p class="muted tl-empty">No schedules yet, so the TV shows originals all year.</p>
+  {% endfor %}
+  <div class="tl-today" style="left:{{ today_pct }}%" title="Today"></div>
+  </div>
+</div>
+
+<h3>Today’s screen</h3>
+<div class="strip" role="img" aria-label="{% for x in strip %}{{ x.name }} {{ x.pct }}%{% if not loop.last %}, {% endif %}{% endfor %}">{% for x in strip %}{% if x.pct %}<span class="c{{ x.color }}" style="width:{{ x.pct }}%"></span>{% endif %}{% endfor %}</div>
+<ul class="strip-legend">
+  {% for x in strip %}<li><i class="c{{ x.color }}"></i>{{ x.name }} {{ x.pct }}% <span class="muted">(target {{ '%g' | format(x.target) }}%)</span></li>{% endfor %}
+</ul>
+
+<div class="schedule-actions">
+  <a class="button" href="/variants?edit=new#editor">+ Add schedule</a>
+  <form method="post" action="/variants/limit" class="limit">
+    <label class="inline">New versions made per night <input type="number" name="variant_limit" min="0" max="50" value="{{ s.variant_limit }}"></label>
+    <button type="submit">Save</button>
+  </form>
+</div>
+
+{% if ed %}
+<form method="post" action="{% if ed.new %}/variants/schedules{% else %}/variants/schedules/{{ ed.id }}{% endif %}" class="settings schedule-editor" id="editor">
+  <fieldset>
+    <legend>{% if ed.new %}New schedule{% else %}{{ ed.name }}{% endif %}</legend>
+    <label class="stack">Name <input type="text" name="name" value="{{ ed.name }}" placeholder="Halloween"></label>
+    <div class="dates">
+      <label>From
+        <select name="start_month">{% for m in months %}<option value="{{ loop.index }}"{% if ed.start_month == loop.index | string %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        <input type="number" name="start_day" min="1" max="31" value="{{ ed.start_day }}" aria-label="Start day"></label>
+      <label>to
+        <select name="end_month">{% for m in months %}<option value="{{ loop.index }}"{% if ed.end_month == loop.index | string %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        <input type="number" name="end_day" min="1" max="31" value="{{ ed.end_day }}" aria-label="End day"></label>
+      <span class="muted">every year</span>
+    </div>
+    <div class="share-rows" id="share-rows">
+      {% for r in ed.rows %}{{ share_row(r) }}{% endfor %}
+    </div>
+    {% for slug, name in ed.others %}<template data-slug="{{ slug }}">{{ share_row({"slug": slug, "name": name, "value": 0}) }}</template>{% endfor %}
+    <select id="add-type" aria-label="Add a type"{% if not ed.others %} hidden{% endif %}>
+      <option value="">+ Add a type</option>
+      {% for slug, name in ed.others %}<option value="{{ slug }}">{{ name }}</option>{% endfor %}
+    </select>
+    <p class="schedule-readout">This schedule takes <b id="schedule-total">{{ ed.total }}%</b> of the screen; the rest follows whatever wider schedule is running.</p>
+    <div class="form-actions"><button type="submit" class="primary">Save</button> <a href="/variants">Cancel</a></div>
+  </fieldset>
+</form>
+{% if not ed.new %}
+<form method="post" action="/variants/schedules/{{ ed.id }}/delete" class="delete-schedule" onsubmit="return confirm('Delete this schedule?')">
+  <button type="submit" class="danger">Delete schedule</button>
+</form>
+{% endif %}
+<script>
+(() => {
+  const rows = document.getElementById('share-rows')
+  const add = document.getElementById('add-type')
+  const total = document.getElementById('schedule-total')
+  const update = () => {
+    let sum = 0
+    rows.querySelectorAll('input').forEach((i) => (sum += parseInt(i.value, 10) || 0))
+    total.textContent = `${sum}%`
+  }
+  add.addEventListener('change', () => {
+    const slug = add.value
+    if (!slug) return
+    rows.append(document.querySelector(`template[data-slug="${slug}"]`).content.cloneNode(true))
+    add.querySelector(`option[value="${slug}"]`).remove()
+    add.value = ''
+    add.hidden = add.options.length < 2
+    rows.lastElementChild.querySelector('input').focus()
+    update()
+  })
+  rows.addEventListener('click', (e) => {
+    const row = e.target.closest('.remove') && e.target.closest('.share-row')
+    if (!row) return
+    add.append(new Option(row.dataset.name, row.dataset.slug))
+    add.hidden = false
+    row.remove()
+    update()
+  })
+  rows.addEventListener('input', update)
+})()
+</script>
+{% endif %}
+
 <h2>Progress</h2>
 <div class="table-wrap">
 <table class="runs progress">
@@ -30,14 +134,6 @@
   <tfoot><tr><td colspan="4">Total</td><td class="num">${{ '%.2f' | format(total_cost) }}</td></tr></tfoot>
 </table>
 </div>
-
-<h2>Schedules</h2>
-<form method="post" action="/variants/limit" class="settings">
-  <fieldset>
-    <label class="inline">New versions made per night <input type="number" name="variant_limit" min="0" max="50" value="{{ s.variant_limit }}"></label>
-    <div class="form-actions"><button type="submit" class="primary">Save</button></div>
-  </fieldset>
-</form>
 
 <h2>Types</h2>
 {% for r in rows %}

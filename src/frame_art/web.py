@@ -33,10 +33,11 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from . import imaging, keys, pipeline, variants
+from . import imaging, keys, pipeline, schedules, variants
 from .catalogue import Variant
 from .classify import current_season
 from .publish import content_index, find_work, read_sidecar
+from .schedules import Schedule
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
 from .settings import (
     CHOOSE_FROM,
@@ -572,15 +573,63 @@ def create_app(svc: Service) -> Starlette:
     # What the OpenRouter model charges for one 4K edit, roughly.
     VARIANT_ESTIMATE = 0.12
 
-    def variants_view(request: Request, errors=(), notice="", status=200):
+    MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")  # fmt: skip
+    # Days per month, for the timeline's month columns.
+    MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+    # A bar narrower than this (percent of the year) puts its label beside it.
+    NARROW_BAR = 9
+
+    def schedule_editor(s, sch, types, today, live, ready, is_new):
+        """The editor's fields and rows for ``s`` (a saved schedule or a draft)."""
+        start_m, _, start_d = s.start.partition("-")
+        end_m, _, end_d = s.end.partition("-")
+        known = next((k for k in sch if k.id == s.id), None)
+        day = today
+        if known and not schedules.covers(known, today):
+            day = schedules.next_start(known, today)
+        # This schedule's own portion: the cascade up to it, less the layers above.
+        ls = schedules.layers(sch, day)
+        mine = ls.index(known) + 1 if known in ls else 0
+        above = schedules.allocate(ls[: mine - 1], len(live)) if mine else {}
+        upto = schedules.allocate(ls[:mine], len(live))
+        rows = []
+        for slug, value in s.shares.items():
+            if slug not in types:
+                continue
+            m = upto.get(slug, 0) - above.get(slug, 0)
+            n = min(m, max(0, ready.get(slug, 0) - above.get(slug, 0)))
+            rows.append(
+                {"slug": slug, "name": types[slug], "value": value, "n": n, "m": m,
+                 "pct": round(100 * n / m) if m else 0}
+            )  # fmt: skip
+        return {
+            "id": s.id,
+            "new": is_new,
+            "name": s.name,
+            "start_month": start_m.lstrip("0"),
+            "start_day": start_d.lstrip("0"),
+            "end_month": end_m.lstrip("0"),
+            "end_day": end_d.lstrip("0"),
+            "rows": rows,
+            "others": [(k, v) for k, v in types.items() if k not in s.shares],
+            "total": sum(v for v in s.shares.values() if isinstance(v, int)),
+        }
+
+    def variants_view(request: Request, errors=(), notice="", status=200, draft=None):
         cat = svc.catalogue()
         s = svc.settings()
+        today = svc.today()
+        vtypes = cat.variant_types()
+        types = {t.slug: t.name for t in vtypes}
+        color = {t.slug: i % 6 for i, t in enumerate(vtypes)}
+        sch = schedules.known(s.schedules, set(types))
         usable = set(cat.usable_variants())
         works = {w.key: w for w in cat.works()}
         live: dict[str, str] = {}  # work key -> a live file to show
         for p in cat.published(active=True):
             live.setdefault(p.key, f"/thumb/{p.folder}/{p.filename}")
-        progress = variants.progress(cat, s, svc.today())
+        progress = variants.progress(cat, s, today)
         candidates = {
             row["slug"]: [
                 (k, works[k].title if k in works else k, thumb)
@@ -589,6 +638,49 @@ def create_app(svc: Service) -> Starlette:
             ]
             for row in progress
         }
+
+        # The timeline: widest at the top, so the schedule that wins is lowest.
+        timeline = []
+        for k in reversed(schedules.order(sch)):
+            pieces = schedules.bars(k)
+            widest = max(range(len(pieces)), key=lambda i: pieces[i][1])
+            left, width = pieces[widest]
+            main = max(k.shares, key=k.shares.get) if k.total() else None
+            timeline.append(
+                {"id": k.id, "label": f"{k.name} · {k.total()}%", "pieces": pieces,
+                 "label_at": widest if width >= NARROW_BAR else None,
+                 "side_left": left + width if left + width < 70 else None,
+                 "side_right": 100 - left if left + width >= 70 else None,
+                 "color": color.get(main, "x")}
+            )  # fmt: skip
+        start_of_year = datetime.date(today.year, 1, 1)
+        today_pct = min((today - start_of_year).days, 364) / 365 * 100
+
+        # Today's screen: what's showing, with today's target alongside.
+        target = s.today_shares(today, set(types))
+        strip = [
+            {"name": r["name"], "pct": r["live_share"],
+             "target": round(target.get(r["slug"], 0), 1), "color": color[r["slug"]]}
+            for r in progress
+            if r["live_share"] or target.get(r["slug"])
+        ]  # fmt: skip
+        strip.append(
+            {"name": "Originals", "pct": max(0, 100 - sum(x["pct"] for x in strip)),
+             "target": round(100 - sum(target.values()), 1), "color": "x"}
+        )  # fmt: skip
+
+        editing = draft.id if draft else request.query_params.get("edit")
+        ed = None
+        ready = Counter(t for k, t in usable if k in live)
+        if draft is not None:
+            ed = schedule_editor(draft, sch, types, today, live, ready, not draft.id)
+        elif editing == "new":
+            mmdd = today.strftime("%m-%d")
+            blank = Schedule("", "", mmdd, mmdd, {})
+            ed = schedule_editor(blank, sch, types, today, live, ready, True)
+        elif saved := next((k for k in s.schedules if k.id == editing), None):
+            ed = schedule_editor(saved, sch, types, today, live, ready, False)
+
         resp = render(
             request,
             "variants.html",
@@ -601,6 +693,13 @@ def create_app(svc: Service) -> Starlette:
             candidates=candidates,
             errors=list(errors),
             notice=notice,
+            months=MONTHS,
+            month_days=MONTH_DAYS,
+            timeline=timeline,
+            today_pct=today_pct,
+            strip=strip,
+            ed=ed,
+            editing=editing,
         )
         resp.status_code = status
         return resp
@@ -655,6 +754,86 @@ def create_app(svc: Service) -> Starlette:
             return variants_view(request, errors, status=400)
         svc.save_settings(new)
         return variants_view(request, notice="Saved. Changes apply from tonight's run.")
+
+    def schedule_from_form(form, sid: str) -> tuple[Schedule, list[str]]:
+        """The schedule a form describes, with what was typed kept for a re-render."""
+        types = {t.slug: t.name for t in svc.catalogue().variant_types()}
+        errors = []
+
+        def mmdd(month: str, day: str) -> str:
+            m = (form.get(month) or "").strip()
+            d = (form.get(day) or "").strip()
+            if m.isdecimal() and d.isdecimal():
+                return f"{int(m):02d}-{int(d):02d}"
+            return f"{m}-{d}"  # fails validation, and shows as typed
+
+        shares = {}
+        for key, raw in form.multi_items():
+            slug = key.removeprefix("share-")
+            if slug == key or slug not in types:
+                continue
+            raw = raw.strip()
+            try:
+                shares[slug] = int(raw)
+            except ValueError:
+                shares[slug] = raw
+                errors.append(f"{types[slug]}: {raw!r} is not a whole number")
+        s = Schedule(
+            sid,
+            (form.get("name") or "").strip(),
+            mmdd("start_month", "start_day"),
+            mmdd("end_month", "end_day"),
+            shares,
+        )
+        return s, errors or schedules.validate(s)
+
+    async def add_schedule(request: Request):
+        form = await request.form()
+        s, errors = schedule_from_form(form, "")
+        if errors:
+            return variants_view(request, errors, status=400, draft=s)
+        s = dataclasses.replace(s, id=schedules.new_id())
+        new = dataclasses.replace(
+            svc.settings(), schedules=[*svc.settings().schedules, s]
+        )
+        if errors := new.validate():
+            return variants_view(request, errors, status=400, draft=s)
+        svc.save_settings(new)
+        return variants_view(
+            request, notice=f"Saved {s.name}. Changes apply from tonight's run."
+        )
+
+    async def save_schedule(request: Request):
+        sid = request.path_params["id"]
+        current = svc.settings()
+        if not any(k.id == sid for k in current.schedules):
+            return PlainTextResponse("unknown schedule", 404)
+        form = await request.form()
+        s, errors = schedule_from_form(form, sid)
+        if errors:
+            return variants_view(request, errors, status=400, draft=s)
+        new = dataclasses.replace(
+            current,
+            schedules=[s if k.id == sid else k for k in current.schedules],
+        )
+        if errors := new.validate():
+            return variants_view(request, errors, status=400, draft=s)
+        svc.save_settings(new)
+        return variants_view(
+            request, notice=f"Saved {s.name}. Changes apply from tonight's run."
+        )
+
+    async def delete_schedule(request: Request):
+        sid = request.path_params["id"]
+        current = svc.settings()
+        gone = next((k for k in current.schedules if k.id == sid), None)
+        if gone is None:
+            return PlainTextResponse("unknown schedule", 404)
+        rest = [k for k in current.schedules if k.id != sid]
+        svc.save_settings(dataclasses.replace(current, schedules=rest))
+        return variants_view(
+            request, notice=f"Deleted {gone.name}. Changes apply from tonight's run."
+        )
 
     async def generate_variants(request: Request):
         form = await request.form()
@@ -864,6 +1043,9 @@ def create_app(svc: Service) -> Starlette:
             Route("/variants/types", add_variant_type, methods=["POST"]),
             Route("/variants/types/{slug}", edit_variant_type, methods=["POST"]),
             Route("/variants/limit", save_variant_limit, methods=["POST"]),
+            Route("/variants/schedules", add_schedule, methods=["POST"]),
+            Route("/variants/schedules/{id}", save_schedule, methods=["POST"]),
+            Route("/variants/schedules/{id}/delete", delete_schedule, methods=["POST"]),
             Route("/variants/generate", generate_variants, methods=["POST"]),
             Route("/compare", compare_page),
             Route("/compare/{name}", compare_image),

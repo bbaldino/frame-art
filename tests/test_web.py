@@ -810,3 +810,145 @@ def test_catalogue_tags_works_with_a_seasonal_version(client, tmp_path):
     assert "Haystacks" not in page
     got = c.get("/tags.json?q=hallo").json()
     assert {"tag": "Halloween version", "kind": "seasonal", "count": 1} in got
+
+
+def _schedule_form(name="Halloween", start=(10, 1), end=(10, 31), **shares):
+    return {
+        "name": name,
+        "start_month": str(start[0]),
+        "start_day": str(start[1]),
+        "end_month": str(end[0]),
+        "end_day": str(end[1]),
+        **{f"share-{k}": v for k, v in shares.items()},
+    }
+
+
+def test_schedule_add_edit_delete(client):
+    from frame_art import variants
+
+    c, svc = client
+    variants.seed_types(svc.catalogue())
+    r = c.post("/variants/schedules", data=_schedule_form(halloween="50"))
+    assert r.status_code == 200 and "Saved" in r.text
+    [s] = svc.settings().schedules
+    assert (s.name, s.start, s.end, s.shares) == (
+        "Halloween", "10-01", "10-31", {"halloween": 50}
+    )  # fmt: skip
+    page = c.get("/variants").text
+    assert f'href="/variants?edit={s.id}#editor"' in page
+    assert "Halloween · 50%" in page
+    editor = c.get(f"/variants?edit={s.id}").text
+    assert 'value="Halloween"' in editor and "every year" in editor
+    form = _schedule_form(name="Spooky", halloween="60")
+    assert c.post(f"/variants/schedules/{s.id}", data=form).status_code == 200
+    [s2] = svc.settings().schedules
+    assert (s2.id, s2.name, s2.shares) == (s.id, "Spooky", {"halloween": 60})
+    form = _schedule_form(name="Spooky")  # the row was removed
+    c.post(f"/variants/schedules/{s.id}", data=form)
+    assert svc.settings().schedules[0].shares == {}
+    r = c.post(f"/variants/schedules/{s.id}/delete")
+    assert r.status_code == 200 and "Deleted Spooky" in r.text
+    assert svc.settings().schedules == []
+
+
+def test_schedule_editor_rejects_and_shows_what_was_typed(client):
+    from frame_art import variants
+
+    c, svc = client
+    cat = svc.catalogue()
+    variants.seed_types(cat)
+    cat.add_variant_type("fall", "Fall", "make it autumn")
+    r = c.post("/variants/schedules", data=_schedule_form(name="Boo", halloween="x"))
+    assert r.status_code == 400 and "not a whole number" in r.text
+    assert 'value="x"' in r.text and 'value="Boo"' in r.text
+    form = _schedule_form(start=(2, 30), halloween="5")
+    r = c.post("/variants/schedules", data=form)
+    assert r.status_code == 400 and "not a real date" in r.text
+    form = _schedule_form(start=(13, 1), halloween="5")
+    assert c.post("/variants/schedules", data=form).status_code == 400
+    r = c.post("/variants/schedules", data=_schedule_form(name=" ", halloween="5"))
+    assert r.status_code == 400 and "needs a name" in r.text
+    form = _schedule_form(halloween="60", fall="50")
+    r = c.post("/variants/schedules", data=form)
+    assert r.status_code == 400 and "at most 100" in r.text
+    assert svc.settings().schedules == []
+
+
+def test_schedule_unknown_id_is_404(client):
+    c, _ = client
+    form = _schedule_form(halloween="5")
+    assert c.post("/variants/schedules/nope", data=form).status_code == 404
+    assert c.post("/variants/schedules/nope/delete").status_code == 404
+    assert c.get("/variants?edit=nope").status_code == 200  # no editor, no error
+
+
+def test_editor_lists_only_types_not_in_the_schedule(client):
+    from frame_art import variants
+    from frame_art.schedules import Schedule
+
+    c, svc = client
+    cat = svc.catalogue()
+    variants.seed_types(cat)
+    cat.add_variant_type("fall", "Fall", "make it autumn")
+    s = Schedule("abc", "Halloween", "10-01", "10-31", {"halloween": 50})
+    svc.save_settings(Settings(schedules=[s]))
+    page = c.get("/variants?edit=abc").text
+    assert 'name="share-halloween"' in page
+    assert '<option value="fall">' in page
+    assert '<option value="halloween">' not in page
+    assert "+ Add a type" in page and "Delete schedule" in page
+    assert "This schedule takes <b" in page
+    new = c.get("/variants?edit=new").text
+    assert '<option value="halloween">' in new and "Delete schedule" not in new
+
+
+def test_today_strip_and_deleted_type(client, monkeypatch):
+    import datetime
+
+    from frame_art import variants
+    from frame_art.schedules import Schedule
+
+    c, svc = client
+    variants.seed_types(svc.catalogue())
+    monkeypatch.setattr(svc, "today", lambda: datetime.date(2026, 10, 28))
+    s = Schedule("abc", "Spooky", "10-01", "10-31", {"halloween": 50, "zzgone": 40})
+    svc.save_settings(Settings(schedules=[s]))
+    page = c.get("/variants").text
+    assert "Today’s screen" in page and "target 50%" in page
+    assert "Spooky · 50%" in page and "zzgone" not in page
+    assert "zzgone" not in c.get("/variants?edit=abc").text
+    # Not running today: N of M counts against its next start (Dec 1).
+    svc.catalogue().record_publish("nga-1-monet-haystacks.jpg", "full", "nga:1", 0)
+    s = Schedule("xyz", "Xmas", "12-01", "12-26", {"halloween": 100})
+    svc.save_settings(Settings(schedules=[s]))
+    assert "0 of 1 ready" in c.get("/variants?edit=xyz").text
+
+
+def test_wrapping_schedule_draws_two_bars(client):
+    from frame_art.schedules import Schedule
+
+    c, svc = client
+    s = Schedule("w", "Holidays", "12-20", "01-05", {})
+    svc.save_settings(Settings(schedules=[s]))
+    page = c.get("/variants").text
+    assert page.count('href="/variants?edit=w#editor"') == 2
+
+
+def test_n_of_m_counts_only_this_schedules_portion(client, monkeypatch):
+    import datetime
+
+    from frame_art import variants
+    from frame_art.schedules import Schedule
+
+    c, svc = client
+    cat = svc.catalogue()
+    variants.seed_types(cat)
+    for i in range(4):
+        cat.record_publish(f"nga-{i}-x.jpg", "full", f"nga:{i}", 0)
+    monkeypatch.setattr(svc, "today", lambda: datetime.date(2026, 10, 28))
+    every = Schedule("e", "Everyday", "01-01", "12-31", {"halloween": 50})
+    spooky = Schedule("o", "Spooky", "10-01", "10-31", {"halloween": 50})
+    svc.save_settings(Settings(schedules=[every, spooky]))
+    # Spooky takes 2 of the 4; Everyday takes half of the other 2.
+    assert "0 of 2 ready" in c.get("/variants?edit=o").text
+    assert "0 of 1 ready" in c.get("/variants?edit=e").text
