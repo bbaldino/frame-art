@@ -2,13 +2,14 @@
 
 Which version of each live work the TV holds is decided by slots: a slot gives
 a work a variant type, and works without a slot show their original. The mix
-says what share of the live works hold each type.
+schedules (see schedules.py) say what share of the live works hold each type.
 """
 
 from __future__ import annotations
 
 import logging
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 from PIL import Image
@@ -242,10 +243,11 @@ def nightly(
     pub: Publisher,
     settings: Settings,
     api_key: str | None,
+    today: date,
 ) -> dict:
     """The nightly variant step: reassign slots, make what's missing, swap."""
     known = {t.slug for t in cat.variant_types()}
-    mix = {t: share for t, share in settings.mix.items() if t in known}
+    mix = settings.today_shares(today, known)
     live = _live(cat)
     slots = assign_slots(live, mix, cat.slots(), set(cat.usable_variants()))
     cat.set_slots(slots)
@@ -285,8 +287,9 @@ def nightly(
     }
 
 
-def progress(cat: Catalogue, settings: Settings) -> list[dict]:
+def progress(cat: Catalogue, settings: Settings, today: date) -> list[dict]:
     """How far each variant type is from its share of the TV."""
+    shares = settings.today_shares(today, {t.slug for t in cat.variant_types()})
     live = _live(cat)
     slots = cat.slots()
     states = cat.variant_states()
@@ -316,7 +319,7 @@ def progress(cat: Catalogue, settings: Settings) -> list[dict]:
                 "slug": vt.slug,
                 "name": vt.name,
                 "prompt": vt.prompt,
-                "share": settings.mix.get(vt.slug, 0),
+                "share": shares.get(vt.slug, 0),
                 "live_share": round(100 * showing[vt.slug] / len(live_files))
                 if live_files
                 else 0,

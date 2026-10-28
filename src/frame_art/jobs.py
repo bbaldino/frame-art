@@ -101,7 +101,12 @@ def publish(
 
 
 def nightly(
-    cat: Catalogue, http: Http, data: Path, dest: Path, settings: Settings
+    cat: Catalogue,
+    http: Http,
+    data: Path,
+    dest: Path,
+    settings: Settings,
+    today: datetime.date,
 ) -> dict:
     summary = {}
     if time.time() - last_crawl(cat) > settings.recrawl_days * 86400:
@@ -131,6 +136,7 @@ def nightly(
             publisher(cat, http, dest, settings),
             settings,
             keys.read_key("openrouter"),
+            today,
         )
     except Exception as ex:  # noqa: BLE001 - keep what publishing did
         log.exception("variants: the seasonal step failed")

@@ -1,5 +1,6 @@
 import dataclasses
 import html
+import json
 import time
 
 import pytest
@@ -7,6 +8,7 @@ from starlette.testclient import TestClient
 
 from frame_art.catalogue import Catalogue
 from frame_art.model import Work
+from frame_art.schedules import everyday
 from frame_art.service import Service
 from frame_art.settings import Settings
 from frame_art.web import create_app
@@ -358,24 +360,56 @@ def test_upload_button_says_when_nothing_will_happen(client):
     assert svc.catalogue().get("uploads_enabled")["enabled"] is True
 
 
-def test_mix_validates(tmp_path):
-    assert Settings(mix={"halloween": 50}).validate() == []
-    assert Settings(mix={"halloween": 60, "autumn": 50}).validate()
-    assert Settings(mix={"halloween": -1}).validate()
+def test_schedules_validate():
+    assert Settings(schedules=[everyday({"halloween": 50})]).validate() == []
+    assert Settings(schedules=[everyday({"halloween": 60, "autumn": 50})]).validate()
+    assert Settings(schedules=[everyday({"halloween": -1})]).validate()
     assert Settings(variant_limit=51).validate()
-    assert Settings(mix={"halloween": 30}).originals_share() == 70
+    dup = everyday({"halloween": 5})
+    assert Settings(schedules=[dup, dup]).validate()  # ids must be unique
 
 
-def test_saving_settings_keeps_the_mix(client):
+def test_old_mix_migrates_to_everyday(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"mix": {"halloween": 75}, "count": 5}))
+    s = Settings.load(p)
+    assert [(x.name, x.start, x.end, x.shares) for x in s.schedules] == [
+        ("Everyday", "01-01", "12-31", {"halloween": 75})
+    ]
+    assert s.count == 5
+    p.write_text(json.dumps({"mix": {}}))
+    assert Settings.load(p).schedules == []
+    p.write_text(json.dumps({"mix": {"halloween": "lots"}, "count": 5}))
+    assert Settings.load(p) == Settings(count=5)
+
+
+def test_schedules_round_trip_and_bad_ones_are_dropped(tmp_path):
+    p = tmp_path / "settings.json"
+    s = Settings(schedules=[everyday({"halloween": 50})], count=4)
+    s.save(p)
+    assert Settings.load(p) == s
+    raw = json.loads(p.read_text())
+    raw["schedules"][0]["start"] = "13-40"
+    p.write_text(json.dumps(raw))
+    back = Settings.load(p)
+    assert back.schedules == [] and back.count == 4
+    for junk in ("nope", [{"id": "x"}], [{**raw["schedules"][0], "extra": 1}], [5]):
+        p.write_text(json.dumps({"schedules": junk, "count": 4}))
+        back = Settings.load(p)
+        assert back.schedules == [] and back.count == 4
+
+
+def test_saving_settings_keeps_schedules_and_limit(client):
     c, svc = client
+    sched = [everyday({"halloween": 50})]
     svc.save_settings(
-        dataclasses.replace(svc.settings(), mix={"halloween": 50}, variant_limit=4)
+        dataclasses.replace(svc.settings(), schedules=sched, variant_limit=4)
     )
     form = {"crop": "medium", "pad_style": "blur", "kinds": "painting",
             "sources": "nga", "count": "5", "pool": "100", "run_at": "03:30",
             "recrawl_days": "7", "crawl_limit": "300"}  # fmt: skip
     assert "Saved" in c.post("/settings", data=form).text
-    assert svc.settings().mix == {"halloween": 50}
+    assert svc.settings().schedules == sched
     assert svc.settings().variant_limit == 4
 
 
@@ -426,7 +460,7 @@ def test_generate_job_makes_a_variant_and_puts_it_on_the_tv(
     cat = svc.catalogue()
     variants.seed_types(cat)
     cat.record_publish("nga-1-monet-haystacks.jpg", "full", "nga:1", 0)
-    svc.save_settings(Settings(mix={"halloween": 10}))
+    svc.save_settings(Settings(schedules=[everyday({"halloween": 10})]))
     svc._run(
         Job("generate", {"type": "halloween", "keys": ["nga:1"], "prompt": "spooky"})
     )
@@ -454,8 +488,9 @@ def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "publish", lambda *a, **k: PublishResult(["x"], [], []))
     calls = []
 
-    def fake_nightly(cat, http, data, pub, settings, api_key):
+    def fake_nightly(cat, http, data, pub, settings, api_key, today):
         calls.append(api_key)
+        assert today == svc.today()
         return {
             "slots": {},
             "generated": [],
@@ -520,21 +555,16 @@ def test_variants_page_shows_progress_and_never_the_key(client, tmp_path, monkey
     assert "/catalogue?tag=halloween%20version" in page
 
 
-def test_variants_mix_saves_and_rejects(client):
-    from frame_art import variants
-
+def test_variant_limit_saves_and_rejects(client):
     c, svc = client
-    variants.seed_types(svc.catalogue())
-    r = c.post("/variants/mix", data={"share-halloween": "50", "variant_limit": "5"})
+    r = c.post("/variants/limit", data={"variant_limit": "5"})
     assert r.status_code == 200 and "Saved" in r.text
-    assert svc.settings().mix == {"halloween": 50}
     assert svc.settings().variant_limit == 5
-    r = c.post("/variants/mix", data={"share-halloween": "150", "variant_limit": "5"})
-    assert "0-100" in r.text
-    assert svc.settings().mix == {"halloween": 50}
-    r = c.post("/variants/mix", data={"share-halloween": "x", "variant_limit": "5"})
-    assert "not a whole number" in r.text
-    assert svc.settings().mix == {"halloween": 50}
+    r = c.post("/variants/limit", data={"variant_limit": "x"})
+    assert r.status_code == 400 and "whole number" in r.text
+    r = c.post("/variants/limit", data={"variant_limit": "99"})
+    assert r.status_code == 400 and "0-50" in r.text
+    assert svc.settings().variant_limit == 5
 
 
 def test_variant_types_add_and_edit(client):
@@ -646,7 +676,7 @@ def test_work_make_current_pins_slot_only_in_the_mix(client, tmp_path):
     assert c.post(f"/works/nga:1/variants/{v1.id}/current").status_code == 200
     assert cat.variant_states()[("nga:1", "halloween")].current == v1.id
     assert "nga:1" not in cat.slots()  # halloween has no share
-    svc.save_settings(Settings(mix={"halloween": 10}))
+    svc.save_settings(Settings(schedules=[everyday({"halloween": 10})]))
     c.post(f"/works/nga:1/variants/{v2.id}/current")
     assert cat.slots()["nga:1"].manual
     assert {j.kind for j in svc.queued()} == {"versions"}

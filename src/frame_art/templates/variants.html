@@ -15,7 +15,7 @@
   {% for r in rows %}
   <tr>
     <td><a href="/catalogue?tag={{ (r.name ~ ' version') | lower | urlencode }}" title="Browse the works with a {{ r.name }} version">{{ r.name }}</a></td>
-    <td>{{ r.share }}%</td>
+    <td>{{ '%g' | format(r.share | round(1)) }}%</td>
     <td>{{ r.live_share }}%</td>
     <td>{{ r.ready }} of {{ r.slotted }}{% if r.needed %}<br><span class="muted small">{{ r.needed }} to make</span>{% endif %}</td>
     <td class="num">${{ '%.2f' | format(r.cost) }}</td>
@@ -31,18 +31,11 @@
 </table>
 </div>
 
-<h2>Mix</h2>
-<form method="post" action="/variants/mix" class="settings">
+<h2>Schedules</h2>
+<form method="post" action="/variants/limit" class="settings">
   <fieldset>
-    <p class="muted small">The share of the works on the TV that show each type. Originals get the rest.</p>
-    <div class="shares">
-      {% for r in rows %}
-      <label>{{ r.name }} <span class="suffix"><input type="number" name="share-{{ r.slug }}" min="0" max="100" step="1" value="{{ s.mix.get(r.slug, 0) }}"> %</span></label>
-      {% endfor %}
-      <div class="readout">Originals <span>{{ s.originals_share() }}%</span></div>
-    </div>
     <label class="inline">New versions made per night <input type="number" name="variant_limit" min="0" max="50" value="{{ s.variant_limit }}"></label>
-    <div class="form-actions"><button type="submit" class="primary">Save mix</button></div>
+    <div class="form-actions"><button type="submit" class="primary">Save</button></div>
   </fieldset>
 </form>
 

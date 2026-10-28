@@ -147,6 +147,10 @@ class Service:
     def settings(self) -> Settings:
         return Settings.load(self.settings_path)
 
+    def today(self) -> datetime.date:
+        """The date in the service's timezone, which decides the schedules."""
+        return datetime.datetime.now(self.tz).date()
+
     def save_settings(self, s: Settings) -> None:
         s.save(self.settings_path)
         self._wake.set()  # the run time may have changed
@@ -216,7 +220,7 @@ class Service:
         kind, s = job.kind, self.settings()
         http = Http()
         if kind == "nightly":
-            return jobs.nightly(cat, http, self.data, self.dest, s)
+            return jobs.nightly(cat, http, self.data, self.dest, s, self.today())
         if kind == "crawl-photos":
             photo_sources = [x for x in s.sources if x in PHOTO_SOURCES]
             if not photo_sources:
@@ -268,6 +272,7 @@ class Service:
         http = Http(timeout=300)  # edits take a minute or more each
         pub = jobs.publisher(cat, http, self.dest, s)
         live = {p.key for p in cat.published(active=True)}
+        today = s.today_shares(self.today(), {t.slug for t in cat.variant_types()})
         generated: list[str] = []
         failed: list[str] = []
         cost = 0.0
@@ -286,7 +291,7 @@ class Service:
             generated.append(key)
             cost += v.cost or 0.0
             # Made by hand, so show it, even past the type's share.
-            if key in live and s.mix.get(type, 0) > 0:
+            if key in live and type in today:
                 cat.set_slot(key, type, manual=True)
         res = variants.apply_versions(cat, http, self.data, pub, keys=set(generated))
         failed += [k for k in res["failed"] if k not in failed]

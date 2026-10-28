@@ -6,9 +6,11 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field, fields, replace
+from datetime import date
 from pathlib import Path
 
-from . import imaging, pipeline
+from . import imaging, pipeline, schedules
+from .schedules import Schedule
 from .sources import ART_KINDS
 
 log = logging.getLogger(__name__)
@@ -71,9 +73,9 @@ class Settings:
     # Works per source and kind. 2000 takes ~40 min and gives ~660 full-screen
     # paintings at the strict crop level (AIC caps its search at 1000).
     crawl_limit: int = 2000
-    # Seasonal variants: the share (percent) of the pool for each variant type.
-    # Originals get whatever is left over.
-    mix: dict[str, int] = field(default_factory=dict)
+    # Seasonal variants: yearly date ranges, each with a share (percent) of the
+    # pool per variant type. Originals get whatever is left over.
+    schedules: list[Schedule] = field(default_factory=list)
     variant_limit: int = 10  # AI edits made per nightly run
 
     def prefs(self) -> pipeline.Prefs:
@@ -102,8 +104,9 @@ class Settings:
         """Kinds the nightly run may publish."""
         return (*self.kinds, "photograph") if self.photo_share else tuple(self.kinds)
 
-    def originals_share(self) -> int:
-        return 100 - sum(self.mix.values())
+    def today_shares(self, day: date, types: set[str]) -> dict[str, float]:
+        """The target percent per variant type on ``day``, for types that exist."""
+        return schedules.shares_for(schedules.known(self.schedules, types), day)
 
     def validate(self) -> list[str]:
         errors = []
@@ -136,13 +139,15 @@ class Settings:
             errors.append("recrawl interval must be 1-365 days")
         if not 10 <= self.crawl_limit <= 10000:
             errors.append("crawl depth must be 10-10000")
-        if not isinstance(self.mix, dict) or not all(
-            isinstance(k, str) and type(v) is int and 0 <= v <= 100
-            for k, v in self.mix.items()
+        if not isinstance(self.schedules, list) or not all(
+            isinstance(s, Schedule) for s in self.schedules
         ):
-            errors.append("seasonal shares must be whole numbers 0-100%")
-        elif sum(self.mix.values()) > 100:
-            errors.append("seasonal shares must add up to 100% or less")
+            errors.append("schedules must be a list of schedules")
+        else:
+            for s in self.schedules:
+                errors += [f"{s.name}: {e}" for e in schedules.validate(s)]
+            if len({s.id for s in self.schedules}) < len(self.schedules):
+                errors.append("schedule ids must be unique")
         if not 0 <= self.variant_limit <= 50:
             errors.append("variants per night must be 0-50")
         return errors
@@ -159,6 +164,10 @@ class Settings:
         if not isinstance(raw, dict):
             log.warning("settings: %s is not an object; using defaults", path)
             return cls()
+        mix = raw.get("mix")
+        if "schedules" not in raw and isinstance(mix, dict) and mix:
+            # Before schedules there was one year-round mix.
+            raw["schedules"] = [asdict(schedules.everyday(mix))]
         # Keep every field that is valid on its own, so a file written by a
         # newer version (an unknown source, say) still keeps the rest.
         s = cls()
@@ -172,8 +181,10 @@ class Settings:
                     for v in value
                     if v in (SOURCES if f.name == "sources" else ART_KINDS)
                 ]
-            trial = replace(s, **{f.name: value})
             try:
+                if f.name == "schedules" and isinstance(value, list):
+                    value = [Schedule(**d) for d in value]
+                trial = replace(s, **{f.name: value})
                 errors = trial.validate()
             except (TypeError, ValueError):
                 errors = ["wrong type"]

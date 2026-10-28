@@ -125,7 +125,9 @@ def cmd_publish(args, cat: Catalogue, http: Http) -> None:
 
 
 def cmd_nightly(args, cat: Catalogue, http: Http) -> None:
-    jobs.nightly(cat, http, args.data, args.dest, _settings(args))
+    jobs.nightly(
+        cat, http, args.data, args.dest, _settings(args), datetime.date.today()
+    )
 
 
 def cmd_serve(args, cat: Catalogue, http: Http) -> None:

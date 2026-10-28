@@ -1,5 +1,6 @@
 import dataclasses
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -8,10 +9,12 @@ from PIL import Image
 from frame_art import openrouter, pipeline, publish, variants
 from frame_art.catalogue import Catalogue, Slot, VariantState
 from frame_art.model import Work
+from frame_art.schedules import everyday
 from frame_art.settings import Settings
 from frame_art.variants import HALLOWEEN_PROMPT, assign_slots, needed
 
 LIVE = ["a", "b", "c", "d"]  # oldest first
+TODAY = date(2026, 10, 28)
 
 
 def test_half_mix_takes_newest_works():
@@ -207,13 +210,13 @@ def vsetup4(tmp_path, monkeypatch):
     monkeypatch.setattr(openrouter, "edit_image", fake_edit)
     monkeypatch.setattr(pipeline, "load_work", lambda http, cand: solid("navy"))
     pub = publish.Publisher(cat, None, dest, "blur")
-    settings = Settings(mix={"halloween": 100}, variant_limit=2)
+    settings = Settings(schedules=[everyday({"halloween": 100})], variant_limit=2)
     return cat, tmp_path / "data", pub, settings
 
 
 def test_nightly_generates_up_to_the_limit_and_swaps(vsetup4):
     cat, data, pub, settings = vsetup4
-    out = variants.nightly(cat, None, data, pub, settings, "k")
+    out = variants.nightly(cat, None, data, pub, settings, "k", TODAY)
     assert out["slots"] == {"halloween": 4}
     assert len(out["generated"]) == 2 and len(out["swapped"]) == 2
     assert out["generated"] == ["s1:4", "s0:3"]  # newest first
@@ -223,10 +226,10 @@ def test_nightly_generates_up_to_the_limit_and_swaps(vsetup4):
 
 def test_nightly_without_key_or_limit_still_reverts(vsetup4):
     cat, data, pub, settings = vsetup4
-    variants.nightly(cat, None, data, pub, settings, "k")
+    variants.nightly(cat, None, data, pub, settings, "k", TODAY)
     assert len(cat.published_variants()) == 2
-    off = dataclasses.replace(settings, mix={}, variant_limit=0)
-    out = variants.nightly(cat, None, data, pub, off, None)
+    off = dataclasses.replace(settings, schedules=[], variant_limit=0)
+    out = variants.nightly(cat, None, data, pub, off, None, TODAY)
     assert len(out["swapped"]) == 2 and out["generated"] == []
     assert out["slots"] == {}
     live = {p.filename for p in cat.published(active=True)}
@@ -235,7 +238,7 @@ def test_nightly_without_key_or_limit_still_reverts(vsetup4):
 
 def test_nightly_without_key_generates_nothing(vsetup4):
     cat, data, pub, settings = vsetup4
-    out = variants.nightly(cat, None, data, pub, settings, None)
+    out = variants.nightly(cat, None, data, pub, settings, None, TODAY)
     assert out["generated"] == out["gen_failed"] == out["swapped"] == []
     assert cat.variant_states() == {}  # no attempt, so no failure counted
 
@@ -243,9 +246,8 @@ def test_nightly_without_key_generates_nothing(vsetup4):
 def test_nightly_ignores_types_that_do_not_exist(vsetup4):
     cat, data, pub, settings = vsetup4
     mix = {"halloween": 50, "winter": 50}
-    out = variants.nightly(
-        cat, None, data, pub, dataclasses.replace(settings, mix=mix), "k"
-    )
+    s = dataclasses.replace(settings, schedules=[everyday(mix)])
+    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
     assert out["slots"] == {"halloween": 2}
 
 
@@ -262,7 +264,7 @@ def test_nightly_carries_on_after_a_failed_edit(vsetup4, monkeypatch):
         return openrouter.Edit(solid("orange"), 0.12, "gen-x")
 
     monkeypatch.setattr(openrouter, "edit_image", flaky)
-    out = variants.nightly(cat, None, data, pub, settings, "k")
+    out = variants.nightly(cat, None, data, pub, settings, "k", TODAY)
     assert len(out["gen_failed"]) == 1 and len(out["generated"]) == 1
     assert out["gen_failed"] == ["s1:4"] and out["generated"] == ["s0:3"]
     assert out["cost"] == 0.12 and len(out["swapped"]) == 1
@@ -271,10 +273,10 @@ def test_nightly_carries_on_after_a_failed_edit(vsetup4, monkeypatch):
 
 def test_progress_lists_stuck_works(vsetup4):
     cat, data, pub, settings = vsetup4
-    variants.nightly(cat, None, data, pub, settings, "k")
+    variants.nightly(cat, None, data, pub, settings, "k", TODAY)
     for _ in range(variants.NIGHTLY_FAILURES):
         cat.note_variant_failure("s2:2", "halloween")
-    [p] = variants.progress(cat, settings)
+    [p] = variants.progress(cat, settings, TODAY)
     assert p["slug"] == "halloween" and p["name"] == "Halloween"
     assert p["prompt"] == HALLOWEEN_PROMPT
     assert p["share"] == 100 and p["live_share"] == 50
@@ -285,8 +287,8 @@ def test_progress_lists_stuck_works(vsetup4):
 
 def test_progress_counts(vsetup4):
     cat, data, pub, settings = vsetup4
-    variants.nightly(cat, None, data, pub, settings, "k")
-    [p] = variants.progress(cat, settings)
+    variants.nightly(cat, None, data, pub, settings, "k", TODAY)
+    [p] = variants.progress(cat, settings, TODAY)
     assert (p["ready"], p["needed"], p["stuck"], p["cost"]) == (2, 2, [], 0.24)
 
 
@@ -306,11 +308,11 @@ def test_seed_types_once_and_only_when_empty(tmp_path):
 
 def test_live_share_counts_only_files_on_the_tv(vsetup4):
     cat, data, pub, settings = vsetup4
-    variants.nightly(cat, None, data, pub, settings, "k")
-    assert variants.progress(cat, settings)[0]["live_share"] == 50
-    off = dataclasses.replace(settings, mix={}, variant_limit=0)
-    variants.nightly(cat, None, data, pub, off, None)  # back to originals
-    assert variants.progress(cat, off)[0]["live_share"] == 0
+    variants.nightly(cat, None, data, pub, settings, "k", TODAY)
+    assert variants.progress(cat, settings, TODAY)[0]["live_share"] == 50
+    off = dataclasses.replace(settings, schedules=[], variant_limit=0)
+    variants.nightly(cat, None, data, pub, off, None, TODAY)  # back to originals
+    assert variants.progress(cat, off, TODAY)[0]["live_share"] == 0
 
 
 def test_swap_keeps_the_age_so_retirement_takes_the_oldest(vsetup4):
@@ -380,6 +382,6 @@ def test_nightly_reports_failed_swaps(vsetup4, monkeypatch, caplog):
         raise OSError("disk full")
 
     monkeypatch.setattr(pub, "swap", broken)
-    out = variants.nightly(cat, None, data, pub, settings, "k")
+    out = variants.nightly(cat, None, data, pub, settings, "k", TODAY)
     assert out["swap_failed"] == ["s0:3", "s1:4"] and out["swapped"] == []
     assert "s1:4: could not swap versions: OSError: disk full" in caplog.text

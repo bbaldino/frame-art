@@ -520,7 +520,7 @@ def create_app(svc: Service) -> Starlette:
             form = await request.form()
             new = Settings()
             # Not on this form; edited elsewhere, so carry them over.
-            new.mix, new.variant_limit = s.mix, s.variant_limit
+            new.schedules, new.variant_limit = s.schedules, s.variant_limit
             try:
                 new.crop = form.get("crop", s.crop)
                 new.pad_style = form.get("pad_style", s.pad_style)
@@ -572,17 +572,15 @@ def create_app(svc: Service) -> Starlette:
     # What the OpenRouter model charges for one 4K edit, roughly.
     VARIANT_ESTIMATE = 0.12
 
-    def variants_view(request: Request, errors=(), notice="", mix=None, status=200):
+    def variants_view(request: Request, errors=(), notice="", status=200):
         cat = svc.catalogue()
         s = svc.settings()
-        if mix is not None:  # the rejected form, so the page shows what was typed
-            s = dataclasses.replace(s, mix=mix)
         usable = set(cat.usable_variants())
         works = {w.key: w for w in cat.works()}
         live: dict[str, str] = {}  # work key -> a live file to show
         for p in cat.published(active=True):
             live.setdefault(p.key, f"/thumb/{p.folder}/{p.filename}")
-        progress = variants.progress(cat, s)
+        progress = variants.progress(cat, s, svc.today())
         candidates = {
             row["slug"]: [
                 (k, works[k].title if k in works else k, thumb)
@@ -644,25 +642,17 @@ def create_app(svc: Service) -> Starlette:
         cat.update_variant_type(slug, name, prompt)
         return variants_view(request, notice=f"Saved {name}.")
 
-    async def save_variant_mix(request: Request):
+    async def save_variant_limit(request: Request):
         form = await request.form()
         s = svc.settings()
-        mix, errors = {}, []
-        for t in svc.catalogue().variant_types():
-            raw = (form.get(f"share-{t.slug}") or "0").strip()
-            try:
-                mix[t.slug] = int(raw)
-            except ValueError:
-                errors.append(f"{t.name}: {raw!r} is not a whole number")
         try:
-            limit = int(form.get("variant_limit", s.variant_limit))
-        except ValueError:
-            limit = s.variant_limit
-            errors.append("variants per night must be a whole number")
-        new = dataclasses.replace(s, mix=mix, variant_limit=limit)
-        errors += new.validate()
+            new = dataclasses.replace(s, variant_limit=int(form.get("variant_limit")))
+        except (TypeError, ValueError):
+            errors = ["variants per night must be a whole number"]
+        else:
+            errors = new.validate()
         if errors:
-            return variants_view(request, errors, mix=mix, status=400)
+            return variants_view(request, errors, status=400)
         svc.save_settings(new)
         return variants_view(request, notice="Saved. Changes apply from tonight's run.")
 
@@ -819,9 +809,9 @@ def create_app(svc: Service) -> Starlette:
             return PlainTextResponse("unknown variant", 404)
         cat.set_current_variant(key, v.type, v.id)
         # Same rule as the generate job: a hand-picked version stays on the TV.
-        if (
-            key in {p.key for p in cat.published(active=True)}
-            and svc.settings().mix.get(v.type, 0) > 0
+        types = {t.slug for t in cat.variant_types()}
+        if key in {p.key for p in cat.published(active=True)} and v.type in (
+            svc.settings().today_shares(svc.today(), types)
         ):
             cat.set_slot(key, v.type, manual=True)
         svc.submit("versions", {"keys": [key]})
@@ -873,7 +863,7 @@ def create_app(svc: Service) -> Starlette:
             Route("/variants", variants_page),
             Route("/variants/types", add_variant_type, methods=["POST"]),
             Route("/variants/types/{slug}", edit_variant_type, methods=["POST"]),
-            Route("/variants/mix", save_variant_mix, methods=["POST"]),
+            Route("/variants/limit", save_variant_limit, methods=["POST"]),
             Route("/variants/generate", generate_variants, methods=["POST"]),
             Route("/compare", compare_page),
             Route("/compare/{name}", compare_image),
