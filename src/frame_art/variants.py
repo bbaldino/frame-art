@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from frame_art import imaging, openrouter, pipeline
+from frame_art import imaging, openrouter, pipeline, schedules
 from frame_art.catalogue import Catalogue, Slot, Variant, VariantState
 from frame_art.model import Work
 from frame_art.net import Http
@@ -50,22 +50,27 @@ def seed_types(cat: Catalogue) -> None:
 
 def assign_slots(
     live: list[str],
-    mix: dict[str, int],
+    target: dict[str, int],
     current: dict[str, Slot],
     usable: set[tuple[str, str]],
+    *,
+    ready_only: bool = False,
 ) -> dict[str, Slot]:
-    """Slots for the live works, keeping current ones where the mix allows.
+    """Slots for the live works, keeping current ones where the target allows.
 
-    ``live`` is oldest-published first. Manual slots survive a shrinking share,
-    but not their type leaving the mix.
+    ``target`` is how many works each type gets, and ``live`` is oldest-published
+    first. Manual slots survive a shrinking count, but not their type dropping
+    out of the target. With ``ready_only``, only works with a usable variant of
+    the type get a slot (manual slots aside).
     """
-    types = [t for t, share in mix.items() if share > 0]
-    target = {t: round(mix[t] * len(live) / 100) for t in types}
+    types = [t for t, n in target.items() if n > 0]
     age = {key: i for i, key in enumerate(live)}
     slots = {
         key: Slot(s.type, s.manual)
         for key, s in current.items()
-        if key in age and s.type in target
+        if key in age
+        and s.type in types
+        and (not ready_only or s.manual or (key, s.type) in usable)
     }
 
     for t in types:
@@ -82,7 +87,11 @@ def assign_slots(
         missing = target[t] - sum(1 for s in slots.values() if s.type == t)
         # Works that already have a variant first, then the newest.
         free = sorted(
-            (k for k in live if k not in slots),
+            (
+                k
+                for k in live
+                if k not in slots and (not ready_only or (k, t) in usable)
+            ),
             key=lambda k: ((k, t) not in usable, -age[k]),
         )
         for key in free[: max(0, missing)]:
@@ -231,6 +240,16 @@ def apply_versions(
     return {"swapped": swapped, "failed": failed}
 
 
+def _plan(
+    live: list[str],
+    layers: list[schedules.Schedule],
+    current: dict[str, Slot],
+    usable: set[tuple[str, str]],
+) -> dict[str, Slot]:
+    """Slots for the schedules' full shares, whether or not versions are ready."""
+    return assign_slots(live, schedules.allocate(layers, len(live)), current, usable)
+
+
 def _live(cat: Catalogue) -> list[str]:
     """Live work keys, oldest-published first."""
     return list(dict.fromkeys(p.key for p in cat.published(active=True)))
@@ -245,14 +264,31 @@ def nightly(
     api_key: str | None,
     today: date,
 ) -> dict:
-    """The nightly variant step: reassign slots, make what's missing, swap."""
-    known = {t.slug for t in cat.variant_types()}
-    mix = settings.today_shares(today, known)
-    live = _live(cat)
-    slots = assign_slots(live, mix, cat.slots(), set(cat.usable_variants()))
-    cat.set_slots(slots)
+    """The nightly variant step: make what the schedules need, then swap.
 
-    todo = needed(slots, cat.variant_states(), live)[: settings.variant_limit]
+    Versions are made for today's schedules and for those starting within a
+    week, narrowest schedule first, up to the nightly limit. The TV shows only
+    versions that are ready; a schedule's unfilled share falls to the next one
+    down (see schedules.allocate).
+    """
+    types = {t.slug for t in cat.variant_types()}
+    sch = schedules.known(settings.schedules, types)
+    live = _live(cat)
+    usable = set(cat.usable_variants())
+    running = schedules.layers(sch, today)
+    ahead = schedules.upcoming(sch, today)
+    plans = [_plan(live, running, cat.slots(), usable)]
+    plans += [_plan(live, schedules.layers(sch, d), {}, usable) for d, _ in ahead]
+    states = cat.variant_states()
+    pairs = list(dict.fromkeys(p for plan in plans for p in needed(plan, states, live)))
+    ranked = schedules.order(running + [s for _, s in ahead])
+    rank = {}
+    for i, s in enumerate(ranked):
+        for t, share in s.shares.items():
+            if share > 0:
+                rank.setdefault(t, i)
+    pairs.sort(key=lambda p: rank.get(p[1], len(ranked)))
+    todo = pairs[: settings.variant_limit]
     generated: list[str] = []
     gen_failed: list[str] = []
     cost = 0.0
@@ -272,6 +308,16 @@ def nightly(
         generated.append(key)
         cost += v.cost or 0.0
 
+    usable = set(cat.usable_variants())
+    ready = Counter(t for k, t in usable if k in live)
+    slots = assign_slots(
+        live,
+        schedules.allocate(running, len(live), ready),
+        cat.slots(),
+        usable,
+        ready_only=True,
+    )
+    cat.set_slots(slots)
     res = apply_versions(cat, http, data, pub)
     log.info(
         "variants: %d made, %d failed, %d swapped, %d swaps failed",
@@ -289,11 +335,13 @@ def nightly(
 
 def progress(cat: Catalogue, settings: Settings, today: date) -> list[dict]:
     """How far each variant type is from its share of the TV."""
-    shares = settings.today_shares(today, {t.slug for t in cat.variant_types()})
+    types = {t.slug for t in cat.variant_types()}
+    shares = settings.today_shares(today, types)
     live = _live(cat)
-    slots = cat.slots()
+    usable = set(cat.usable_variants())
+    sch = schedules.known(settings.schedules, types)
+    slots = _plan(live, schedules.layers(sch, today), cat.slots(), usable)
     states = cat.variant_states()
-    usable = cat.usable_variants()
     todo = needed(slots, states, live)
     all_variants = cat.variants()
     type_of = {v.id: v.type for v in all_variants}

@@ -9,7 +9,7 @@ from PIL import Image
 from frame_art import openrouter, pipeline, publish, variants
 from frame_art.catalogue import Catalogue, Slot, VariantState
 from frame_art.model import Work
-from frame_art.schedules import everyday
+from frame_art.schedules import Schedule, everyday
 from frame_art.settings import Settings
 from frame_art.variants import HALLOWEEN_PROMPT, assign_slots, needed
 
@@ -18,7 +18,7 @@ TODAY = date(2026, 10, 28)
 
 
 def test_half_mix_takes_newest_works():
-    assert assign_slots(LIVE, {"hw": 50}, {}, set()) == {
+    assert assign_slots(LIVE, {"hw": 2}, {}, set()) == {
         "c": Slot("hw", False),
         "d": Slot("hw", False),
     }
@@ -26,7 +26,7 @@ def test_half_mix_takes_newest_works():
 
 def test_slots_stick_and_prefer_works_with_variants():
     cur = {"a": Slot("hw", False)}
-    got = assign_slots(LIVE, {"hw": 50}, cur, {("b", "hw")})
+    got = assign_slots(LIVE, {"hw": 2}, cur, {("b", "hw")})
     assert set(got) == {"a", "b"}
 
 
@@ -36,13 +36,21 @@ def test_type_leaving_the_mix_clears_its_slots_even_manual():
 
 def test_shrinking_share_keeps_manual_and_drops_variantless_first():
     cur = {k: Slot("hw", k == "a") for k in LIVE}
-    got = assign_slots(LIVE, {"hw": 50}, cur, {("a", "hw"), ("c", "hw"), ("d", "hw")})
+    got = assign_slots(LIVE, {"hw": 2}, cur, {("a", "hw"), ("c", "hw"), ("d", "hw")})
     assert set(got) == {"a", "d"}  # b has no variant; then oldest (c) goes
 
 
 def test_retired_works_lose_their_slot():
-    got = assign_slots(["a"], {"hw": 100}, {"z": Slot("hw", False)}, set())
+    got = assign_slots(["a"], {"hw": 1}, {"z": Slot("hw", False)}, set())
     assert got == {"a": Slot("hw", False)}
+
+
+def test_ready_only_shows_only_made_versions():
+    cur = {"a": Slot("hw", False), "b": Slot("hw", True)}
+    got = assign_slots(
+        LIVE, {"hw": 3}, cur, {("c", "hw"), ("b", "hw")}, ready_only=True
+    )
+    assert got == {"b": Slot("hw", True), "c": Slot("hw", False)}
 
 
 def test_needed_skips_usable_dont_use_and_repeated_failures():
@@ -214,14 +222,64 @@ def vsetup4(tmp_path, monkeypatch):
     return cat, tmp_path / "data", pub, settings
 
 
-def test_nightly_generates_up_to_the_limit_and_swaps(vsetup4):
+def test_nightly_shows_only_ready_versions(vsetup4):
     cat, data, pub, settings = vsetup4
     out = variants.nightly(cat, None, data, pub, settings, "k", TODAY)
-    assert out["slots"] == {"halloween": 4}
-    assert len(out["generated"]) == 2 and len(out["swapped"]) == 2
     assert out["generated"] == ["s1:4", "s0:3"]  # newest first
+    assert out["slots"] == {"halloween": 2} and len(out["swapped"]) == 2
     assert out["gen_failed"] == [] and out["cost"] == 0.24
-    assert set(cat.slots()) == {"s1:1", "s2:2", "s0:3", "s1:4"}
+    assert set(cat.slots()) == {"s1:4", "s0:3"}  # the rest stay originals
+    out = variants.nightly(cat, None, data, pub, settings, "k", date(2026, 10, 29))
+    assert out["generated"] == ["s2:2", "s1:1"]  # same works kept, two more made
+    assert out["slots"] == {"halloween": 4}
+
+
+def _with_birthday(cat, settings, *schedules, limit=2):
+    cat.add_variant_type("birthday", "Birthday", "make it a birthday")
+    return dataclasses.replace(settings, schedules=list(schedules), variant_limit=limit)
+
+
+def test_shortfall_gives_the_rest_to_the_wider_schedule(vsetup4):
+    cat, data, pub, settings = vsetup4
+    for key in ("s1:1", "s2:2", "s0:3", "s1:4"):
+        variants.generate(cat, None, data, "k", pub, key, "halloween")
+    bday = Schedule("b", "Birthday", "10-28", "10-28", {"birthday": 50})
+    s = _with_birthday(cat, settings, everyday({"halloween": 100}), bday, limit=0)
+    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
+    # No birthday versions yet: all four keep Halloween, none revert to originals.
+    assert out["generated"] == [] and out["slots"] == {"halloween": 4}
+    assert {sl.type for sl in cat.slots().values()} == {"halloween"}
+
+
+NOV2 = Schedule("b", "Birthday", "11-02", "11-02", {"birthday": 50})
+
+
+def test_lookahead_makes_but_does_not_show(vsetup4):
+    cat, data, pub, settings = vsetup4
+    s = _with_birthday(cat, settings, NOV2)
+    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
+    assert out["generated"] == ["s1:4", "s0:3"]
+    assert out["slots"] == {} and cat.slots() == {} and out["swapped"] == []
+    out = variants.nightly(cat, None, data, pub, s, "k", date(2026, 11, 2))
+    assert out["slots"] == {"birthday": 2} and out["generated"] == []
+    assert set(cat.slots()) == {"s1:4", "s0:3"}
+
+
+def test_lookahead_keeps_making_for_the_same_works(vsetup4):
+    cat, data, pub, settings = vsetup4
+    s = _with_birthday(cat, settings, NOV2)
+    variants.nightly(cat, None, data, pub, s, "k", TODAY)
+    out = variants.nightly(cat, None, data, pub, s, "k", date(2026, 10, 29))
+    assert out["generated"] == [] and len(cat.variants()) == 2
+
+
+def test_budget_goes_to_the_narrowest_schedule_first(vsetup4):
+    cat, data, pub, settings = vsetup4
+    s = _with_birthday(cat, settings, everyday({"halloween": 100}), NOV2)
+    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
+    assert out["generated"] == ["s1:4", "s0:3"]
+    assert {v.type for v in cat.variants()} == {"birthday"}
+    assert out["slots"] == {}  # no Halloween versions ready, so originals today
 
 
 def test_nightly_without_key_or_limit_still_reverts(vsetup4):
