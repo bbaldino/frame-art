@@ -517,6 +517,7 @@ def test_variants_page_shows_progress_and_never_the_key(client, tmp_path, monkey
     assert "Halloween" in page and "Seasonal" in page
     assert "present" in page and "sk-secret" not in page
     assert "Haystacks" in page and "/thumb/full/nga-1-monet-haystacks.jpg" in page
+    assert "/catalogue?tag=halloween%20version" in page
 
 
 def test_variants_mix_saves_and_rejects(client):
@@ -754,3 +755,28 @@ def test_history_reads_the_sidecars_once(client, monkeypatch):
     monkeypatch.setattr(publish, "read_sidecar", counting)
     assert c.get("/history").status_code == 200
     assert sorted(reads) == ["full", "matted"]
+
+
+def test_catalogue_tags_works_with_a_seasonal_version(client, tmp_path):
+    c, svc = client
+    cat, v = _work_variant(svc, tmp_path)
+    cat.upsert(
+        [
+            Work(
+                source="nga", source_id="2", title="Water Lilies", artist="Monet",
+                date="1916", kind="painting", license="CC0",
+                iiif="https://example.org/iiif/2", width=4000, height=2250,
+                subjects=["halloween"],
+            )
+        ]
+    )  # fmt: skip
+    page = c.get("/catalogue").text
+    assert "Halloween version" in page and "Water Lilies" in page
+    # The seasonal tag is its own tag: a subject called "halloween" doesn't match.
+    page = c.get("/catalogue?tag=halloween+version").text
+    assert "Haystacks" in page and "Water Lilies" not in page
+    assert f"/variant-file/{v.id}?thumb=1" in page
+    page = c.get("/collection?tag=halloween+version").text
+    assert "Haystacks" not in page
+    got = c.get("/tags.json?q=hallo").json()
+    assert {"tag": "Halloween version", "kind": "seasonal", "count": 1} in got

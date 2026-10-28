@@ -14,7 +14,7 @@
   <tbody>
   {% for r in rows %}
   <tr>
-    <td>{{ r.name }}</td>
+    <td><a href="/catalogue?tag={{ (r.name ~ ' version') | lower | urlencode }}" title="Browse the works with a {{ r.name }} version">{{ r.name }}</a></td>
     <td>{{ r.share }}%</td>
     <td>{{ r.live_share }}%</td>
     <td>{{ r.ready }} of {{ r.slotted }}{% if r.needed %}<br><span class="muted small">{{ r.needed }} to make</span>{% endif %}</td>

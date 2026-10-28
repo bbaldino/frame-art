@@ -272,3 +272,4 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
   font-size: 0.85rem; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   overflow-wrap: anywhere;
 }
+.chip.seasonal { color: var(--accent); border-color: var(--accent); }

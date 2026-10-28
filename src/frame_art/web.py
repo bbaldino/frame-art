@@ -34,6 +34,7 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from . import imaging, keys, pipeline, variants
+from .catalogue import Variant
 from .classify import current_season
 from .publish import content_index, find_work, read_sidecar
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
@@ -87,17 +88,38 @@ TAG_PARAMS = ("tag", "subject", "style", "genre")  # the last three: older links
 SUGGESTIONS = 15
 
 
-def tag_pairs(w):
-    """(kind, tag) for everything a work can be filtered by."""
+def tag_pairs(w, seasonal=()):
+    """(kind, tag) for everything a work can be filtered by.
+
+    ``seasonal`` is the work's seasonal-version tags (``seasonal_tags``), which
+    live in frame-art's own tables rather than on the work.
+    """
     for kind in ("artist", "style", "genre", "place"):
         if getattr(w, kind):
             yield kind, getattr(w, kind)
     for x in w.subjects:
         yield "subject", x
+    for x in seasonal:
+        yield "seasonal", x
 
 
-def tags_of(w) -> set[str]:
-    return {t.lower() for _, t in tag_pairs(w)}
+def tags_of(w, seasonal=()) -> set[str]:
+    return {t.lower() for _, t in tag_pairs(w, seasonal)}
+
+
+def seasonal_tags(cat) -> dict[str, dict[str, Variant]]:
+    """Per work, "<Type> version" -> its current variant, for each type it has one of.
+
+    Named "... version" so the tag never collides with a subject such as
+    "Halloween".
+    """
+    names = {t.slug: t.name for t in cat.variant_types()}
+    current = {v.id: v for v in cat.variants()}
+    out: dict[str, dict[str, Variant]] = {}
+    for (key, type), st in cat.variant_states().items():
+        if st.current in current and type in names:
+            out.setdefault(key, {})[f"{names[type]} version"] = current[st.current]
+    return out
 
 
 def wanted_tags(q) -> list[str]:
@@ -106,7 +128,7 @@ def wanted_tags(q) -> list[str]:
     return list(dict.fromkeys(t for t in tags if t))
 
 
-def suggest_tags(works, tags: list[str], text: str) -> list[dict]:
+def suggest_tags(works, tags: list[str], text: str, seasonal=None) -> list[dict]:
     """Tags of the works matching ``tags``, for the catalogue's autocomplete.
 
     Word-start matches rank before matches mid-word, then by how many works
@@ -114,10 +136,13 @@ def suggest_tags(works, tags: list[str], text: str) -> list[dict]:
     """
     counts: Counter = Counter()
     names: dict[str, Counter] = {}
+    seasonal = seasonal or {}
     for w in works:
-        if tags and not set(tags) <= tags_of(w):
+        extra = seasonal.get(w.key, ())
+        if tags and not set(tags) <= tags_of(w, extra):
             continue
-        for key, (kind, tag) in {t.lower(): (k, t) for k, t in tag_pairs(w)}.items():
+        pairs = tag_pairs(w, extra)
+        for key, (kind, tag) in {t.lower(): (k, t) for k, t in pairs}.items():
             if key in tags or (text and text not in key):
                 continue
             counts[key] += 1
@@ -320,6 +345,7 @@ def create_app(svc: Service) -> Starlette:
         rows = []
         counts = dict.fromkeys(STATUSES, 0)
         works = cat.works()
+        seasonal = seasonal_tags(cat)
         for w in works:
             if only_collection and w.key not in collection:
                 continue
@@ -327,7 +353,8 @@ def create_app(svc: Service) -> Starlette:
                 continue
             if kind and w.kind != kind:
                 continue
-            if tags and not set(tags) <= tags_of(w):
+            versions = seasonal.get(w.key, {})
+            if tags and not set(tags) <= tags_of(w, versions):
                 continue
             if text and text not in searchable(w):
                 continue
@@ -365,6 +392,11 @@ def create_app(svc: Service) -> Starlette:
                     "mode": mode,
                     "override": overrides.get(w.key),
                     "collected": w.key in collection,
+                    "versions": versions,
+                    # Filtering by a seasonal tag shows that version's picture.
+                    "shown_version": next(
+                        (v for t, v in versions.items() if t.lower() in tags), None
+                    ),
                 }
             )
         if only_collection:
@@ -477,7 +509,8 @@ def create_app(svc: Service) -> Starlette:
             and (collection is None or w.key in collection)
         ]
         text = (q.get("q") or "").strip().lower()
-        return JSONResponse(suggest_tags(works, wanted_tags(q), text))
+        seasonal = {k: list(v) for k, v in seasonal_tags(cat).items()}
+        return JSONResponse(suggest_tags(works, wanted_tags(q), text, seasonal))
 
     async def settings_page(request: Request):
         errors: list[str] = []

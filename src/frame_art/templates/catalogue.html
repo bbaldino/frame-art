@@ -19,7 +19,7 @@
   </select>
   <div class="tagbox">
     {% for t in tags %}<input type="hidden" name="tag" value="{{ t }}">{% endfor %}
-    <input type="text" name="tag" id="tag-input" autocomplete="off" placeholder="Add a tag: artist, style, place, subject" aria-label="Add a tag filter" aria-autocomplete="list" aria-controls="tag-suggest">
+    <input type="text" name="tag" id="tag-input" autocomplete="off" placeholder="Add a tag: artist, style, place, subject, seasonal" aria-label="Add a tag filter" aria-autocomplete="list" aria-controls="tag-suggest">
     <ul class="suggest" id="tag-suggest" role="listbox" hidden></ul>
   </div>
   <button>Filter</button>
@@ -35,7 +35,8 @@
   {% set w = r.w %}
   <article class="card {{ r.status }}{% if r.collected %} collected{% endif %}" id="{{ card_id(w.key) }}">
     {% set t = thumb_url(w) %}
-    {% if t %}<img loading="lazy" referrerpolicy="no-referrer" src="{{ t }}" data-full="{{ preview_url(w) or t }}" alt="{{ w.title }}">{% else %}<div class="noimg"></div>{% endif %}
+    {% if r.shown_version %}<img loading="lazy" src="/variant-file/{{ r.shown_version.id }}?thumb=1" data-full="/variant-file/{{ r.shown_version.id }}" alt="{{ w.title }}, seasonal version">
+    {% elif t %}<img loading="lazy" referrerpolicy="no-referrer" src="{{ t }}" data-full="{{ preview_url(w) or t }}" alt="{{ w.title }}">{% else %}<div class="noimg"></div>{% endif %}
     {{ caption(w) }}
     <div class="meta">
       {{ source_names[w.source] }} · {{ w.kind }} · {{ w.width }}×{{ w.height }}
@@ -44,6 +45,7 @@
     </div>
     {% set facts = [w.style, w.genre, w.place] | select | list %}
     {% if facts %}<div class="meta facts">{% for f in facts %}<a href="{{ add_tag(f) }}">{{ f }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</div>{% endif %}
+    {% if r.versions %}<div class="chips">{% for v in r.versions %}<a class="chip seasonal" href="{{ add_tag(v) }}" title="Show works with a {{ v }}">{{ v }}</a>{% endfor %}</div>{% endif %}
     {% if w.subjects %}<div class="chips">{% for x in w.subjects[:6] %}<a class="chip" href="{{ add_tag(x) }}">{{ x }}</a>{% endfor %}{% if w.subjects | length > 6 %}<span class="muted small" title="{{ w.subjects[6:] | join(', ') }}">+{{ w.subjects | length - 6 }}</span>{% endif %}</div>{% endif %}
     <div class="status-line"><span class="badge {{ r.status }}">{{ statuses[r.status] }}</span>{% if r.reason %} <span class="muted">{{ r.reason }}</span>{% endif %}</div>
     {{ override_buttons(w.key, r.override, here ~ "#" ~ card_id(w.key), r.collected) }}
