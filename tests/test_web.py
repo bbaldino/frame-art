@@ -932,7 +932,27 @@ def test_wrapping_schedule_draws_two_bars(client):
     s = Schedule("w", "Holidays", "12-20", "01-05", {})
     svc.save_settings(Settings(schedules=[s]))
     page = c.get("/variants").text
-    assert page.count('href="/variants?edit=w#editor"') == 2
+    assert page.count('class="bar c') == 2
+    # Two bars, the side label and the Edit button.
+    assert page.count('href="/variants?edit=w#editor"') == 4
+
+
+def test_schedule_list_has_an_edit_button_per_schedule(client):
+    from frame_art import variants
+    from frame_art.schedules import Schedule
+
+    c, svc = client
+    variants.seed_types(svc.catalogue())
+    a = Schedule("a", "Halloween", "10-01", "10-31", {"halloween": 100})
+    b = Schedule("b", "Holidays", "12-20", "01-05", {})
+    svc.save_settings(Settings(schedules=[a, b]))
+    page = c.get("/variants").text
+    assert "Click a schedule to edit it." in page
+    items = page.split('<ul class="schedule-list">')[1].split("</ul>")[0]
+    assert "Oct 1 – Oct 31" in items and "Halloween 100%" in items
+    assert "Dec 20 – Jan 5" in items and "Originals only" in items
+    assert '<a class="button" href="/variants?edit=a#editor">Edit</a>' in items
+    assert '<a class="button" href="/variants?edit=b#editor">Edit</a>' in items
 
 
 def test_n_of_m_counts_only_this_schedules_portion(client, monkeypatch):

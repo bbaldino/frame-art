@@ -24,7 +24,7 @@
   {% for b in timeline %}
   <div class="tl-row">
     {% for left, width in b.pieces %}<a class="bar c{{ b.color }}{% if b.id == editing %} sel{% endif %}" href="/variants?edit={{ b.id }}#editor" style="left:{{ left }}%;width:{{ width }}%" title="{{ b.label }}">{% if loop.index0 == b.label_at %}{{ b.label }}{% endif %}</a>{% endfor %}
-    {% if b.label_at is none %}<span class="tl-label" style="{% if b.side_left is not none %}left:{{ b.side_left }}%{% else %}right:{{ b.side_right }}%{% endif %}">{{ b.label }}</span>{% endif %}
+    {% if b.label_at is none %}<a class="tl-label" href="/variants?edit={{ b.id }}#editor" style="{% if b.side_left is not none %}left:{{ b.side_left }}%{% else %}right:{{ b.side_right }}%{% endif %}">{{ b.label }}</a>{% endif %}
   </div>
   {% else %}
   <p class="muted tl-empty">No schedules yet, so the TV shows originals all year.</p>
@@ -32,6 +32,13 @@
   <div class="tl-today" style="left:{{ today_pct }}%" title="Today"></div>
   </div>
 </div>
+{% if timeline %}
+<p class="muted small">Click a schedule to edit it.</p>
+<ul class="schedule-list">
+  {% for b in timeline %}<li><i class="c{{ b.color }}"></i><b>{{ b.name }}</b> <span class="muted">{{ b.dates }}</span> <span>{{ b.shares }}</span> <a class="button" href="/variants?edit={{ b.id }}#editor">Edit</a></li>
+  {% endfor %}
+</ul>
+{% endif %}
 
 <h3>Today’s screen</h3>
 <div class="strip" role="img" aria-label="{% for x in strip %}{{ x.name }} {{ x.pct }}%{% if not loop.last %}, {% endif %}{% endfor %}">{% for x in strip %}{% if x.pct %}<span class="c{{ x.color }}" style="width:{{ x.pct }}%"></span>{% endif %}{% endfor %}</div>

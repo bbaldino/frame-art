@@ -290,7 +290,14 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 }
 .tl-row .bar.cx { color: #fff; }
 .tl-row .bar.sel { outline: 3px solid var(--accent); outline-offset: 1px; }
-.tl-label { position: absolute; top: 0; line-height: 1.6rem; padding: 0 0.4rem; white-space: nowrap; color: var(--ink); }
+.tl-label { position: absolute; top: 0; line-height: 1.6rem; padding: 0 0.4rem; white-space: nowrap; color: var(--ink); text-decoration: none; }
+.tl-row .bar, .tl-label { cursor: pointer; }
+.tl-row .bar:hover { filter: brightness(1.15); }
+.tl-label:hover { text-decoration: underline; }
+.schedule-list { list-style: none; padding: 0; margin: 0 0 1rem; }
+.schedule-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.75rem; padding: 0.4rem 0; border-bottom: 1px solid var(--line); }
+.schedule-list i { display: inline-block; width: 0.75rem; height: 0.75rem; border-radius: 2px; }
+.schedule-list .button { margin-left: auto; }
 .tl-today { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--danger); pointer-events: none; }
 .tl-empty { margin: 0.4rem 0; }
 .strip { display: flex; height: 1.1rem; border-radius: 4px; overflow: hidden; background: var(--line); max-width: 40rem; }

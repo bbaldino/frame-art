@@ -639,6 +639,10 @@ def create_app(svc: Service) -> Starlette:
             for row in progress
         }
 
+        def day(mmdd):
+            m, _, d = mmdd.partition("-")
+            return f"{MONTHS[int(m) - 1]} {int(d)}"
+
         # The timeline: widest at the top, so the schedule that wins is lowest.
         timeline = []
         for k in reversed(schedules.order(sch)):
@@ -647,11 +651,13 @@ def create_app(svc: Service) -> Starlette:
             left, width = pieces[widest]
             main = max(k.shares, key=k.shares.get) if k.total() else None
             timeline.append(
-                {"id": k.id, "label": f"{k.name} · {k.total()}%", "pieces": pieces,
+                {"id": k.id, "name": k.name, "label": f"{k.name} · {k.total()}%", "pieces": pieces,
                  "label_at": widest if width >= NARROW_BAR else None,
                  "side_left": left + width if left + width < 70 else None,
                  "side_right": 100 - left if left + width >= 70 else None,
-                 "color": color.get(main, "x")}
+                 "color": color.get(main, "x"), "dates": f"{day(k.start)} – {day(k.end)}",
+                 "shares": ", ".join(f"{types[t]} {p}%" for t, p in k.shares.items())
+                 or "Originals only"}
             )  # fmt: skip
         start_of_year = datetime.date(today.year, 1, 1)
         today_pct = min((today - start_of_year).days, 364) / 365 * 100
