@@ -11,22 +11,12 @@ from pathlib import Path
 
 from . import imaging, pipeline, schedules
 from .schedules import Schedule
-from .sources import ART_KINDS
+from .sources import ART_KINDS, SOURCE_NAMES  # noqa: F401 (re-exported)
 
 log = logging.getLogger(__name__)
 
 SOURCES = ("aic", "cleveland", "met", "nga", "rijks", "smk", "commons", "loc")
 PHOTO_SOURCES = ("commons", "loc")
-SOURCE_NAMES = {
-    "aic": "Art Institute of Chicago",
-    "cleveland": "Cleveland Museum of Art",
-    "met": "The Met",
-    "nga": "National Gallery of Art",
-    "rijks": "Rijksmuseum",
-    "smk": "SMK (National Gallery of Denmark)",
-    "commons": "Wikimedia Commons (Featured and Quality photos)",
-    "loc": "Library of Congress (Carol M. Highsmith archive)",
-}
 
 # Where the nightly run looks for new works.
 CHOOSE_FROM = {

@@ -35,7 +35,7 @@ Status: draft for Brian's review. Nothing in Home Assistant or on the TV has bee
 ## Where it runs (recommendation)
 Run a **sibling container on the HA Docker host (192.168.1.73)**, scheduled with supercronic inside the
 container (or a host systemd timer that runs `docker run --rm`).
-- It bind-mounts only `<ha-config>/www/frame_upload` (read-write) and its own `/data`. It never sees the
+- It bind-mounts only `<ha-config>/frame_art_pool` (read-write, outside `www`, so not web-served) and its own `/data`. It never sees the
   rest of `/config` and has no HA token.
 - Running on Unraid would also work, but writing into HA's config over SMB/NFS is more fragile.
   Disk space on the Unraid array is the only reason to choose it (the originals cache can grow; see below).
@@ -81,7 +81,10 @@ and a User-Agent that includes a contact address.
 7. **Score/select**: weighted by source tier, presence on a seed list, resolution, aspect fit, and Brian's
    taste filters (movements, eras, artists in or out). Later: thumbs up or down via `art_get_current`.
 
-## Getting files into `/config/www/frame_upload/` (as built in phase 2)
+## Getting files into `/config/frame_art_pool/`
+
+An early draft used `/config/www/frame_upload/frame-art`. It was replaced before the first deploy, so the
+output has never been served at `/local/`.
 `frame-art publish --dest <dir>` (or `nightly`) maintains this layout:
 
 ```
@@ -91,7 +94,8 @@ and a User-Agent that includes a contact address.
 <dest>/_meta/index.json   "full/<file>" -> {title, artist, date, source, license, url}
 <dest>/_meta/retire.json  {"updated", "content_ids": [...], "files": [...]}
 ```
-- `<dest>` is `/config/www/frame_upload/frame-art` (Brian approved), so his existing files in frame_upload are left alone.
+- `<dest>` is `/config/frame_art_pool` (mounted as `/out` in the container). It is outside `/config/www`, so
+  nothing in it is served over HTTP. Brian's own files in `www/frame_upload` are untouched.
 - Filename: `<source>-<id>-<artist-slug>-<title-slug>.jpg`. Published files are immutable: the integration skips
   on filename + mtime, so rewriting a file would upload a duplicate.
 - Pool rotation: each run adds `--count` (7) new works and retires the oldest beyond `--pool` (150).
@@ -100,10 +104,13 @@ and a User-Agent that includes a contact address.
 - Retiring a work deletes its file and looks up its TV content_id in the integration's sidecar
   (`<folder>/.samsungtv_upload.json`, read-only for us). `retire.json` lists ids retired in the last 14 days,
   so a night HA misses doesn't leak art onto the TV. Re-deleting an id is harmless with `continue_on_error`.
-- `_meta`, not `.meta`, because HA reads retire.json through `/local/`. Note that `/config/www` is served
-  unauthenticated at `/local/`. That is fine for public-domain art; nothing private should go there.
+- The retire list reaches HA as attributes of the MQTT `sensor.frame_art` (see `docs/ha-automation.yaml`),
+  not through `/local/`. Note that `/config/www` is served unauthenticated at `/local/`, and `hass.baldino.me`
+  is public, so nothing private may ever be written under `www`.
 
-## HA automation (draft, not applied)
+## HA automation (early draft, superseded)
+
+The applied automation is recorded in `docs/ha-automation.yaml`. This draft is kept for history only.
 A rest sensor exposes the retire list:
 ```yaml
 rest:
@@ -242,7 +249,7 @@ Source API probes (keyless, all worked):
   Met tags, NGA keywords), Wikidata depicts/genre (nude, nudity, female/male nudity, male nude), and a multilingual title
   match on nudes and classical nude subjects (Venus, Susanna, Danaë, bathers, nymphs...). It is deliberately broad. A
   known miss: an untitled or obliquely titled nude from Cleveland, Rijks or SMK with no Wikidata depicts statement.
-- Folder: `/config/www/frame_upload/frame-art/` is approved.
+- Folder: `/config/frame_art_pool/` (outside `www`) is the one deployed.
 - samsungtv_smart: Brian upgraded it to 8.14.2 himself.
 
 ## Open questions for Brian

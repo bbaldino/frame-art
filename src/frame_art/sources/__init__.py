@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from ..model import Work
 from ..net import Http
@@ -15,6 +16,47 @@ class Source(Protocol):
     def iter_works(self, http: Http, limit: int) -> Iterator[Work]:
         """Yield up to ``limit`` public-domain candidates with an image."""
         ...
+
+
+@dataclass(frozen=True)
+class SourceInfo:
+    """What kind of source this is, for the parts of the app that must tell."""
+
+    name: str
+    label: str
+    mode: Literal["crawled", "picked"]  # crawled on a schedule, or picked by Brian
+    private: bool  # personal: never in the catalogue, crawls or public pages
+    needs_login: bool
+
+
+# Settings re-exports these; they live here so the registry can use them.
+SOURCE_NAMES = {
+    "aic": "Art Institute of Chicago",
+    "cleveland": "Cleveland Museum of Art",
+    "met": "The Met",
+    "nga": "National Gallery of Art",
+    "rijks": "Rijksmuseum",
+    "smk": "SMK (National Gallery of Denmark)",
+    "commons": "Wikimedia Commons (Featured and Quality photos)",
+    "loc": "Library of Congress (Carol M. Highsmith archive)",
+}
+
+SOURCE_INFO: dict[str, SourceInfo] = {
+    **{
+        n: SourceInfo(n, label, "crawled", private=False, needs_login=False)
+        for n, label in SOURCE_NAMES.items()
+    },
+    "upload": SourceInfo(
+        "upload", "Uploaded", "picked", private=True, needs_login=False
+    ),
+    "google-photos": SourceInfo(
+        "google-photos", "Google Photos", "picked", private=True, needs_login=True
+    ),
+}
+
+
+def info(name: str) -> SourceInfo:
+    return SOURCE_INFO[name]
 
 
 ART_KINDS = ("painting", "drawing", "print")
