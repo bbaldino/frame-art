@@ -128,3 +128,22 @@ def test_transport_failure_is_an_edit_failure_without_the_key():
         )
     assert "sk-secret" not in str(ex.value)
     assert ex.value.__cause__ is None and ex.value.__suppress_context__
+
+
+def test_describe_sends_a_small_image_and_returns_text():
+    http = FakeHttp(200, {"choices": [{"message": {"content": '{"kind": "scene"}'}}]})
+    im = Image.new("RGB", (3000, 2000), "red")
+    out = openrouter.describe(http, "k", im, "What is it?", "google/x")
+    assert out == '{"kind": "scene"}'
+    body = http.calls[0]["json"]
+    assert body["model"] == "google/x" and "modalities" not in body
+    text, image = body["messages"][0]["content"]
+    assert text == {"type": "text", "text": "What is it?"}
+    sent = base64.b64decode(image["image_url"]["url"].split(",", 1)[1])
+    assert max(Image.open(io.BytesIO(sent)).size) <= 1024
+
+
+def test_describe_reports_a_402_plainly():
+    http = FakeHttp(402, {"error": {"message": "needs $1.00 in balance"}})
+    with pytest.raises(openrouter.EditFailed, match="OpenRouter returned 402: needs"):
+        openrouter.describe(http, "k", Image.new("RGB", (10, 10)), "?", "google/x")

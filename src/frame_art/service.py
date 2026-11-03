@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image
 
-from . import imaging, jobs, keys, variants
+from . import imaging, jobs, keys, photo_kind, variants
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
@@ -264,7 +264,10 @@ class Service:
                 cat, http, self.data, pub, keys=set(job.args["keys"])
             )
         if kind == "classify-photos":
-            return {"classified": 0}
+            api_key = keys.read_key("openrouter")
+            if not api_key:
+                return {"classified": 0, "note": "no OpenRouter key"}
+            return photo_kind.classify_new(self.photos(), http, api_key)
         raise ValueError(kind)
 
     def _generate(

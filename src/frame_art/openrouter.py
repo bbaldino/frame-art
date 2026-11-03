@@ -53,6 +53,56 @@ def _error_message(data) -> str | None:
     return str(err)
 
 
+def _post(http: Http, api_key: str, body: dict) -> dict:
+    """POST ``body`` once (never retried) and return the reply, or raise EditFailed."""
+    try:
+        resp = http.request(
+            "POST",
+            URL,
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+            retries=0,
+        )
+    except httpx.HTTPError as ex:
+        # Never chain: the request, with its key, hangs off the exception.
+        raise EditFailed(f"OpenRouter request failed: {type(ex).__name__}") from None
+    try:
+        data = resp.json()
+    except ValueError:
+        data = None
+    message = _error_message(data)
+    if not 200 <= resp.status_code < 300:
+        raise EditFailed(
+            f"OpenRouter returned {resp.status_code}: {message or 'no details'}"
+        )
+    if message is not None:
+        raise EditFailed(f"OpenRouter error: {message}")
+    return data
+
+
+def describe(http: Http, api_key: str, im: Image.Image, prompt: str, model: str) -> str:
+    """Ask a vision model about ``im`` (sent at most 1024px). Raises EditFailed."""
+    small = im.convert("RGB")
+    small.thumbnail((1024, 1024))
+    body = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": _data_url(small)}},
+                ],
+            }
+        ],
+    }
+    data = _post(http, api_key, body)
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise EditFailed("OpenRouter returned no text") from None
+
+
 def edit_image(
     http: Http,
     api_key: str,
@@ -84,28 +134,7 @@ def edit_image(
             }
         ],
     }
-    try:
-        resp = http.request(
-            "POST",
-            URL,
-            json=body,
-            headers={"Authorization": f"Bearer {api_key}"},
-            retries=0,
-        )
-    except httpx.HTTPError as ex:
-        # Never chain: the request, with its key, hangs off the exception.
-        raise EditFailed(f"OpenRouter request failed: {type(ex).__name__}") from None
-    try:
-        data = resp.json()
-    except ValueError:
-        data = None
-    message = _error_message(data)
-    if not 200 <= resp.status_code < 300:
-        raise EditFailed(
-            f"OpenRouter returned {resp.status_code}: {message or 'no details'}"
-        )
-    if message is not None:
-        raise EditFailed(f"OpenRouter error: {message}")
+    data = _post(http, api_key, body)
     try:
         url = data["choices"][0]["message"]["images"][0]["image_url"]["url"]
         out = Image.open(io.BytesIO(base64.b64decode(url.split(",", 1)[1])))
