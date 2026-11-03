@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Your photos · Frame Art{% endblock %}
+{% block body %}
+<h1>Your photos</h1>
+<p class="muted">Your own photos, for painting in the Studio. They stay on this server and on this page: never in the catalogue, the crawls or the public pages.</p>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{% if errors %}<div class="error"><strong>Not added:</strong><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
+
+<form method="post" action="/photos/upload" enctype="multipart/form-data" class="settings photo-upload">
+  <label>Upload photos <input type="file" name="files" accept="image/jpeg,image/png,image/webp" multiple></label>
+  <button type="submit" class="primary">Upload</button>
+  <p class="muted small">JPEG, PNG or WebP, up to 50 MB each. A photo already here is skipped.</p>
+</form>
+
+{% if photos %}
+<ul class="photo-list">
+  {% for p in photos %}
+  <li class="photo-card">
+    <img src="/photos/{{ p.id }}/thumb" alt="" loading="lazy">
+    <div class="photo-info">
+      <b>{{ p.filename }}</b>
+      <span class="muted small">{{ label(p.source) }} · {{ p.width }}×{{ p.height }}</span>
+      <form method="post" action="/photos/{{ p.id }}/kind" class="kind">
+        Kind
+        {% for k in ("portrait", "scene") %}<button type="submit" name="kind" value="{{ k }}"{% if p.kind == k %} class="on" aria-pressed="true"{% endif %}>{{ k | capitalize }}</button>{% endfor %}
+        {% if p.kind is none %}<span class="muted small">Choose a kind</span>
+        {% elif p.kind_auto and p.kind_reason %}<span class="muted small">suggested: {{ p.kind_reason }}</span>{% endif %}
+      </form>
+      <form method="post" action="/photos/{{ p.id }}/delete" class="inline-form">
+        <button type="submit" class="danger">Delete</button>
+      </form>
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No photos yet.</p>
+{% endif %}
+{% endblock %}

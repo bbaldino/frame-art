@@ -33,7 +33,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from . import imaging, keys, pipeline, schedules, variants
+from . import imaging, keys, photos, pipeline, schedules, variants
 from .catalogue import Variant
 from .classify import current_season
 from .publish import content_index, find_work, read_sidecar
@@ -47,13 +47,15 @@ from .settings import (
     SOURCES,
     Settings,
 )
-from .sources import ART_KINDS, KINDS
+from .sources import ART_KINDS, KINDS, info
 
 log = logging.getLogger(__name__)
 
 HERE = Path(__file__).parent
 PAGE = 60
 THUMB = (480, 270)
+# Largest photo an upload may carry, per file.
+MAX_UPLOAD = 50 * 1024 * 1024
 STATUSES = {
     "eligible": "Eligible",
     "live": "In the pool",
@@ -616,6 +618,86 @@ def create_app(svc: Service) -> Starlette:
             "total": sum(v for v in s.shares.values() if isinstance(v, int)),
         }
 
+    # -- Your photos: private, never on a public page --------------------------
+
+    def photos_view(request: Request, notice="", errors=(), status=200):
+        resp = render(
+            request,
+            "photos.html",
+            page="photos",
+            photos=svc.photos().all(),
+            label=lambda s: info(s).label,
+            notice=notice,
+            errors=list(errors),
+        )
+        resp.status_code = status
+        return resp
+
+    async def photos_page(request: Request):
+        return photos_view(request)
+
+    async def upload_photos(request: Request):
+        form = await request.form()
+        store, added, already, errors = svc.photos(), 0, 0, []
+        for f in form.getlist("files"):
+            if not getattr(f, "filename", None):
+                continue
+            data = await f.read(MAX_UPLOAD + 1)
+            if len(data) > MAX_UPLOAD:
+                errors.append(f"{f.filename}: too large")
+                continue
+            try:
+                p = store.add("upload", f.filename, data, f.filename)
+            except ValueError:
+                errors.append(f"{f.filename}: not a photo")
+                continue
+            if p is None:
+                already += 1
+            else:
+                added += 1
+        if added:
+            svc.submit("classify-photos")
+        notice = f"Added {added}."
+        if already:
+            notice += f" {already} already here."
+        return photos_view(request, notice, errors)
+
+    async def photo_thumb(request: Request):
+        p = svc.photos().get(request.path_params["id"])
+        if p is None or not Path(p.path).is_file():
+            return PlainTextResponse("not found", 404)
+        out = thumbs / "photos" / f"{p.id}.jpg"
+        if not out.exists():
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with photos.open_image(p) as im:
+                im = im.convert("RGB")
+                im.thumbnail((480, 480), Image.LANCZOS)
+                tmp = out.with_suffix(".tmp")
+                im.save(tmp, "JPEG", quality=85)
+                tmp.replace(out)
+        return FileResponse(out, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=86400"})  # fmt: skip
+
+    async def set_photo_kind(request: Request):
+        store, pid = svc.photos(), request.path_params["id"]
+        p = store.get(pid)
+        if p is None:
+            return PlainTextResponse("unknown photo", 404)
+        kind = (await request.form()).get("kind")
+        if kind not in photos.KINDS:
+            return photos_view(request, errors=["choose portrait or scene"], status=400)
+        store.set_kind(pid, kind, None, False)
+        return photos_view(request, notice=f"{p.filename}: {kind}.")
+
+    async def delete_photo(request: Request):
+        store, pid = svc.photos(), request.path_params["id"]
+        p = store.get(pid)
+        if p is None:
+            return PlainTextResponse("unknown photo", 404)
+        store.remove(pid)
+        (thumbs / "photos" / f"{pid}.jpg").unlink(missing_ok=True)
+        return photos_view(request, notice=f"Removed {p.filename}.")
+
     def variants_view(request: Request, errors=(), notice="", status=200, draft=None):
         cat = svc.catalogue()
         s = svc.settings()
@@ -1045,6 +1127,11 @@ def create_app(svc: Service) -> Starlette:
             Route("/history", history_page),
             Route("/tags.json", tags_json),
             Route("/settings", settings_page, methods=["GET", "POST"]),
+            Route("/photos", photos_page),
+            Route("/photos/upload", upload_photos, methods=["POST"]),
+            Route("/photos/{id}/thumb", photo_thumb),
+            Route("/photos/{id}/kind", set_photo_kind, methods=["POST"]),
+            Route("/photos/{id}/delete", delete_photo, methods=["POST"]),
             Route("/variants", variants_page),
             Route("/variants/types", add_variant_type, methods=["POST"]),
             Route("/variants/types/{slug}", edit_variant_type, methods=["POST"]),

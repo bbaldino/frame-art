@@ -25,6 +25,7 @@ from . import imaging, jobs, keys, variants
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
+from .photos import PhotoStore
 from .publish import find_content, pending
 from .settings import PHOTO_SOURCES, SOURCE_NAMES, Settings
 
@@ -42,6 +43,7 @@ JOB_KINDS = {
 ARG_JOBS = {
     "generate": "Generate seasonal variants",
     "versions": "Update seasonal versions on the TV",
+    "classify-photos": "Suggest portrait or scene for new photos",
 }
 # Requests the web UI can send HA for the TV (see halink).
 TV_ACTIONS = {
@@ -143,6 +145,10 @@ class Service:
     def catalogue(self) -> Catalogue:
         """A connection for the calling thread."""
         return Catalogue(self.data / "frame-art.db")
+
+    def photos(self) -> PhotoStore:
+        """Brian's own photos, for the calling thread."""
+        return PhotoStore(self.data / "frame-art.db", self.data / "photos")
 
     def settings(self) -> Settings:
         return Settings.load(self.settings_path)
@@ -257,6 +263,8 @@ class Service:
             return variants.apply_versions(
                 cat, http, self.data, pub, keys=set(job.args["keys"])
             )
+        if kind == "classify-photos":
+            return {"classified": 0}
         raise ValueError(kind)
 
     def _generate(

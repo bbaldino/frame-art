@@ -973,3 +973,68 @@ def test_n_of_m_counts_only_this_schedules_portion(client, monkeypatch):
     # Spooky takes 2 of the 4; Everyday takes half of the other 2.
     assert "0 of 2 ready" in c.get("/variants?edit=o").text
     assert "0 of 1 ready" in c.get("/variants?edit=e").text
+
+
+def _jpeg(color="red") -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), color).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def test_upload_lists_and_dedupes(client):
+    c, svc = client
+    files = [("files", ("a.jpg", _jpeg(), "image/jpeg")),
+             ("files", ("b.jpg", _jpeg(), "image/jpeg"))]  # fmt: skip
+    r = c.post("/photos/upload", files=files)
+    assert r.status_code == 200 and "Added 1" in r.text and "already here" in r.text
+    [p] = svc.photos().all()
+    page = c.get("/photos").text
+    assert f'src="/photos/{p.id}/thumb"' in page and "Choose a kind" in page
+    thumb = c.get(f"/photos/{p.id}/thumb")
+    assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
+
+
+def test_upload_refuses_non_images_and_keeps_the_rest(client):
+    c, svc = client
+    files = [("files", ("clip.mov", b"\x00\x00\x00 ftypqt", "video/quicktime")),
+             ("files", ("a.jpg", _jpeg(), "image/jpeg"))]  # fmt: skip
+    r = c.post("/photos/upload", files=files)
+    assert "clip.mov" in r.text and "not a photo" in r.text
+    assert len(svc.photos().all()) == 1
+
+
+def test_upload_refuses_oversized_files(client, monkeypatch):
+    from frame_art import web
+
+    c, svc = client
+    monkeypatch.setattr(web, "MAX_UPLOAD", 100)
+    r = c.post("/photos/upload", files=[("files", ("big.jpg", _jpeg(), "image/jpeg"))])
+    assert "big.jpg" in r.text and "too large" in r.text
+    assert svc.photos().all() == []
+
+
+def test_kind_override_and_delete(client):
+    c, svc = client
+    c.post("/photos/upload", files=[("files", ("a.jpg", _jpeg(), "image/jpeg"))])
+    [p] = svc.photos().all()
+    c.post(f"/photos/{p.id}/kind", data={"kind": "portrait"})
+    got = svc.photos().get(p.id)
+    assert got.kind == "portrait" and not got.kind_auto
+    assert c.post(f"/photos/{p.id}/kind", data={"kind": "nope"}).status_code == 400
+    assert c.post("/photos/nope/kind", data={"kind": "scene"}).status_code == 404
+    assert c.post(f"/photos/{p.id}/delete").status_code == 200
+    assert svc.photos().all() == []
+    assert c.get(f"/photos/{p.id}/thumb").status_code == 404
+
+
+def test_photos_stay_off_public_pages(client):
+    c, svc = client
+    files = [("files", ("secret-name.jpg", _jpeg(), "image/jpeg"))]
+    c.post("/photos/upload", files=files)
+    for page in ("/", "/catalogue", "/pool", "/collection", "/variants"):
+        assert "secret-name" not in c.get(page).text
+    assert not svc.dest.exists() or not any(svc.dest.rglob("*"))
