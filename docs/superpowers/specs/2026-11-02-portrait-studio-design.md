@@ -214,39 +214,25 @@ was retired to make room. If there are fewer saved paintings than the share
 asks for, all of them are shown, and the rest of the share goes to originals,
 the same as a seasonal type that is short of versions. Home Assistant stays the only
 thing that talks to the TV: paintings reach the TV through the same output
-folder as everything else (moved out of `www`, see below).
+folder as everything else (see below).
 
-## Moving frame-art's output out of the web-served folder (decided with Brian)
+## Where paintings go on their way to the TV
 
-Today frame-art writes to `/config/www/frame_upload/frame-art/`. Home Assistant
-serves `/config/www` at `/local/` with no login, and `hass.baldino.me` makes
-that reachable from the internet (checked 2026-11-02: the Nginx Proxy Manager
-host has no access list). That is harmless for public-domain art but not for
-family paintings. Brian chose to move **all** of frame-art's output, museum art
-included, to one folder outside `www`, so everything lives in the same place.
+frame-art's output is **already outside the web-served folder**. The deployed
+stack mounts `/config/frame_art_pool` (not under `/config/www`) as `/out`,
+and the HA automation uploads from `/config/frame_art_pool/full`. The retire
+list reaches HA as attributes of the MQTT `sensor.frame_art`, not through
+`/local/`. Checked 2026-11-02: `/local/frame_upload/frame-art/_meta/*` returns
+404. (`docs/design.md` still describes the earlier `www/frame_upload` draft
+and should be corrected.) Saved paintings therefore go to the same folder as
+everything else, and no HA change is needed for privacy.
 
-- The new folder is outside `/config/www`, so nothing in it is served over
-  HTTP. Brian's own files in `frame_upload/` are left alone.
-- **HA changes are needed**, and they need Brian's OK and a proxmox review:
-  1. The upload automation uses the new folder. samsungtv_smart may need the
-     folder in `allowlist_external_dirs`; verify this.
-  2. The retire list can no longer be read through `/local/`. Today a rest
-     sensor reads it there. *(My call)*: frame-art serves the retire list
-     from its own LAN web UI, and HA's rest sensor reads it from there.
-  3. The frame-art compose file mounts the new folder in place of the old
-     one.
-- **Migration risk.** The integration remembers what it uploaded in a sidecar
-  file (`.samsungtv_upload.json`), stored per folder. Moving the folder could
-  make it upload every work again and leave duplicates on the TV, or lose
-  track of which TV content ids to delete. The builder must plan the move so
-  that neither happens, for example by carrying the sidecar entries across or
-  retiring old content ids first, and must test it before the real switch.
-- This move ships **before** any personal photo or painting is written
-  anywhere HA can see.
-- The `_meta/index.json` titles and the `sensor.frame_art_now_showing` entity
-  show a portrait as "Portrait" with no file title. *(My call)*: the
-  sensor's state lives in HA, which can be reached from outside, so it should
-  give nothing about a family photo away.
+Two things still need care:
+- `_meta/index.json` and `sensor.frame_art_now_showing` carry titles. A saved
+  painting shows as "Portrait" with no file title or source photo name
+  *(my call)*. HA's state is visible to anyone who can log in to HA, so it
+  should give nothing about a family photo away.
+- Paintings' filenames should not carry personal names or photo titles.
 
 ## Constraints
 
@@ -280,8 +266,7 @@ included, to one folder outside `www`, so everything lives in the same place.
   paint fails ("OpenRouter: balance too low"). It must not just say "failed".
 - **Deployment.** Release and deploy follow the usual flow: a pinned image, a
   homelab-stacks PR, and proxmox's check. Any HA change needs Brian's OK and a
-  proxmox review. This design needs the HA changes listed in the
-  section on moving the output folder.
+  proxmox review. This design needs no HA change.
 
 ## Left to the builder
 
