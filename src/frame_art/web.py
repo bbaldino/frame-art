@@ -626,6 +626,11 @@ def create_app(svc: Service) -> Starlette:
     # How long a started Google sign-in may wait for its pasted address.
     SIGNIN_TTL = 15 * 60
 
+    def photos_busy() -> bool:
+        """An import or kind suggestion is queued or running (the page reloads)."""
+        jobs_ = [*svc.queued(), svc.current]
+        return any(j and j.kind in ("import-google", "classify-photos") for j in jobs_)
+
     def photos_view(
         request: Request, notice="", errors=(), status=200, google_expired=False
     ):
@@ -641,6 +646,7 @@ def create_app(svc: Service) -> Starlette:
             google_signed_in=google_photos.signed_in(google_token),
             google_expired=google_expired,
             pick=svc.catalogue().get("google_pick"),
+            adding=photos_busy(),
         )
         resp.status_code = status
         return resp
@@ -662,9 +668,6 @@ def create_app(svc: Service) -> Starlette:
                 elif google_photos.session_done(http, token, pick["id"]):
                     svc.submit("import-google", {"session": pick["id"]})
                     cat.put("google_pick", None)
-                    notice = (
-                        "Adding your picked photos; they appear here within a minute."
-                    )
             except google_photos.SignInNeeded:
                 cat.put("google_pick", None)
                 expired = True

@@ -1125,9 +1125,23 @@ def test_pending_pick_offers_the_picker_and_refreshes(client, tmp_path, monkeypa
 def test_finished_pick_queues_the_import(client, tmp_path, monkeypatch):
     c, svc, gp, submitted = _signed_in_with_pick(client, tmp_path, monkeypatch)
     monkeypatch.setattr(gp, "session_done", lambda http, token, id: True)
-    page = c.get("/photos").text
+    c.get("/photos").text
     assert submitted == [("import-google", {"session": "s1"})]
-    assert not svc.catalogue().get("google_pick") and 'http-equiv="refresh"' not in page
+    assert not svc.catalogue().get("google_pick")
+
+
+def test_page_keeps_refreshing_until_picked_photos_arrive(
+    client, tmp_path, monkeypatch
+):
+    from frame_art.service import Job
+
+    c, svc = client
+    page = c.get("/photos").text
+    assert 'http-equiv="refresh"' not in page
+    for kind in ("import-google", "classify-photos"):
+        monkeypatch.setattr(svc, "queued", lambda kind=kind: [Job(kind, None)])
+        page = c.get("/photos").text
+        assert 'http-equiv="refresh"' in page and "Adding your photos" in page
 
 
 def test_expired_pick_is_dropped_without_an_import(client, tmp_path, monkeypatch):
