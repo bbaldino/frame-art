@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image
 
-from . import google_photos, imaging, jobs, keys, photo_kind, variants
+from . import google_photos, imaging, jobs, keys, photo_kind, providers, variants
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
@@ -94,11 +94,11 @@ def pins_to_collection(cat: Catalogue) -> None:
     cat.put("pins_to_collection", True)
 
 
-def _openrouter_key() -> str:
-    api_key = keys.read_key("openrouter")
-    if api_key is None:
+def _image_provider(http: Http) -> providers.ImageProvider:
+    provider = providers.image_provider(http)
+    if provider is None:
         raise RuntimeError(f"no OpenRouter key in {keys.key_path('openrouter')}")
-    return api_key
+    return provider
 
 
 class Service:
@@ -306,8 +306,8 @@ class Service:
         prompt: str | None,
     ) -> dict:
         """Make a ``type`` variant of each work, by hand (outside the nightly limit)."""
-        api_key = _openrouter_key()
         http = Http(timeout=300)  # edits take a minute or more each
+        provider = _image_provider(http)
         pub = jobs.publisher(cat, http, self.dest, s)
         live = {p.key for p in cat.published(active=True)}
         today = s.today_shares(self.today(), {t.slug for t in cat.variant_types()})
@@ -317,7 +317,7 @@ class Service:
         for key in keys:
             try:
                 v = variants.generate(
-                    cat, http, self.data, api_key, pub, key, type, prompt
+                    cat, http, self.data, provider, pub, key, type, prompt
                 )
             except Exception as ex:  # noqa: BLE001 - one bad work must not stop the rest
                 log.warning(

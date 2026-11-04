@@ -9,6 +9,7 @@ from PIL import Image
 from frame_art import openrouter, pipeline, publish, variants
 from frame_art.catalogue import Catalogue, Slot, VariantState
 from frame_art.model import Work
+from frame_art.providers import OpenRouterProvider
 from frame_art.schedules import Schedule, everyday
 from frame_art.settings import Settings
 from frame_art.variants import HALLOWEEN_PROMPT, assign_slots, needed
@@ -120,7 +121,9 @@ def vsetup(tmp_path, monkeypatch):
 
 def test_generate_then_swap_and_revert(vsetup):
     cat, dest, data, pub = vsetup
-    v = variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    v = variants.generate(
+        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+    )
     assert v.n == 1 and Path(v.path).exists() and v.prompt == HALLOWEEN_PROMPT
     assert v.cost == 0.12 and v.model == openrouter.MODEL
     stem = "s1-1-artist-1-work-1"
@@ -156,7 +159,9 @@ def test_generate_failure_is_counted_and_reraised(vsetup, monkeypatch):
 
     monkeypatch.setattr(openrouter, "edit_image", boom)
     with pytest.raises(openrouter.EditFailed):
-        variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+        variants.generate(
+            cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+        )
     assert cat.variant_states()[("s1:1", "halloween")].failures == 1
     assert cat.variants() == []
 
@@ -180,7 +185,9 @@ def test_source_is_cached(vsetup, monkeypatch):
 
 def test_failed_swap_leaves_the_work_alone(vsetup):
     cat, dest, data, pub = vsetup
-    v = variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    v = variants.generate(
+        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+    )
     Path(v.path).unlink()  # the variant file has gone missing
     cat.set_slots({"s1:1": Slot("halloween", False)})
     res = variants.apply_versions(cat, None, data, pub)
@@ -198,7 +205,9 @@ def test_add_variant_failure_is_counted(vsetup, monkeypatch):
 
     monkeypatch.setattr(cat, "add_variant", broken)
     with pytest.raises(RuntimeError):
-        variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+        variants.generate(
+            cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+        )
     assert cat.variant_states()[("s1:1", "halloween")].failures == 1
 
 
@@ -255,7 +264,9 @@ def _with_birthday(cat, settings, *schedules, limit=2):
 def test_shortfall_gives_the_rest_to_the_wider_schedule(vsetup4):
     cat, data, pub, settings = vsetup4
     for key in ("s1:1", "s2:2", "s0:3", "s1:4"):
-        variants.generate(cat, None, data, "k", pub, key, "halloween")
+        variants.generate(
+            cat, None, data, OpenRouterProvider(None, "k"), pub, key, "halloween"
+        )
     bday = Schedule("b", "Birthday", "10-28", "10-28", {"birthday": 50})
     s = _with_birthday(cat, settings, everyday({"halloween": 100}), bday, limit=0)
     out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
@@ -402,7 +413,9 @@ def test_live_share_counts_only_files_on_the_tv(vsetup4):
 
 def test_swap_keeps_the_age_so_retirement_takes_the_oldest(vsetup4):
     cat, data, pub, settings = vsetup4
-    variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    variants.generate(
+        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+    )
     cat.set_slots({"s1:1": Slot("halloween", False)})
     [before] = [p for p in cat.published(active=True) if p.key == "s1:1"]
     assert variants.apply_versions(cat, None, data, pub)["swapped"]
@@ -435,7 +448,9 @@ def test_full_screen_source_gets_a_full_screen_variant(vsetup, monkeypatch):
     monkeypatch.setattr(openrouter, "edit_image", fake_edit)
     # Matte: a padded render would land in matted/.
     pub = publish.Publisher(cat, None, dest, "matte")
-    variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    variants.generate(
+        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+    )
     assert asked == ["16:9"]
     cat.set_slots({"s1:1": Slot("halloween", False)})
     [swapped] = variants.apply_versions(cat, None, data, pub)["swapped"]
@@ -454,7 +469,9 @@ def test_swap_keeps_a_live_work_that_no_longer_fills_the_screen(vsetup, monkeypa
     monkeypatch.setattr(openrouter, "edit_image", square_edit)
     prefs = pipeline.Prefs(full_screen_only=True)
     pub = publish.Publisher(cat, None, dest, "matte", prefs=prefs)
-    variants.generate(cat, None, data, "k", pub, "s1:1", "halloween")
+    variants.generate(
+        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+    )
     cat.set_slots({"s1:1": Slot("halloween", False)})
     res = variants.apply_versions(cat, None, data, pub)
     assert res["failed"] == [] and res["swapped"][0].startswith("matted/")

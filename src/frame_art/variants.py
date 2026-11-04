@@ -14,10 +14,11 @@ from pathlib import Path
 
 from PIL import Image
 
-from frame_art import imaging, openrouter, pipeline, schedules
+from frame_art import imaging, pipeline, schedules
 from frame_art.catalogue import Catalogue, Slot, Variant, VariantState
 from frame_art.model import Work
 from frame_art.net import Http
+from frame_art.providers import ImageProvider, OpenRouterProvider
 from frame_art.publish import Publisher, find_work
 from frame_art.settings import Settings
 
@@ -172,7 +173,7 @@ def generate(
     cat: Catalogue,
     http: Http,
     data: Path,
-    api_key: str,
+    provider: ImageProvider,
     pub: Publisher,
     key: str,
     type: str,
@@ -196,15 +197,11 @@ def generate(
         # A work that fills the screen gets a screen-shaped variant: the
         # nearest edit shape may need more crop than the crop level allows.
         fills = imaging.plan_for(*src.size, prefs.max_crop).mode == "crop"
-        edit = openrouter.edit_image(
-            http, api_key, src, prompt, aspect="16:9" if fills else None
-        )
+        edit = provider.paint(src, prompt, aspect="16:9" if fills else None)
         n = cat.next_variant_n(key, type)
         path = variant_path(data, w, type, n)
         _save(edit.image, path)
-        v = cat.add_variant(
-            key, type, n, prompt, openrouter.MODEL, edit.cost, str(path)
-        )
+        v = cat.add_variant(key, type, n, prompt, provider.model, edit.cost, str(path))
     except Exception:
         cat.note_variant_failure(key, type)
         raise
@@ -313,9 +310,10 @@ def nightly(
     if todo and api_key is None:
         log.info("variants: no OpenRouter key, so no new variants tonight")
         todo = []
+    provider = OpenRouterProvider(http, api_key) if api_key else None
     for key, vtype in todo:
         try:
-            v = generate(cat, http, data, api_key, pub, key, vtype)
+            v = generate(cat, http, data, provider, pub, key, vtype)
         except Exception as ex:  # noqa: BLE001 - one bad work must not stop the rest
             log.warning(
                 "%s: could not make a %s variant: %s: %s",
