@@ -1472,3 +1472,24 @@ def test_paintings_stay_off_the_museum_pages(client):
     for page in ("/", "/catalogue", "/pool", "/collection", "/variants", "/history"):
         text = c.get(page).text
         assert "Mary Cassatt" not in text and painting.path not in text, page
+
+
+def test_schedule_with_a_portraits_share(client):
+    from frame_art import variants
+
+    c, svc = client
+    variants.seed_types(svc.catalogue())
+    editor = c.get("/variants?edit=new").text
+    assert '<option value="portraits">Portraits</option>' in editor
+    r = c.post(
+        "/variants/schedules", data=_schedule_form(halloween="50", portraits="20")
+    )
+    assert r.status_code == 200 and "Saved" in r.text
+    [s] = svc.settings().schedules
+    assert s.shares == {"halloween": 50, "portraits": 20}
+    page = c.get("/variants").text
+    items = page.split('<ul class="schedule-list">')[1].split("</ul>")[0]
+    assert "Portraits 20%" in items
+    editor = c.get(f"/variants?edit={s.id}").text
+    assert "Portraits (saved Studio paintings)" in editor
+    assert 'name="share-portraits" min="0" max="100" step="1" value="20"' in editor

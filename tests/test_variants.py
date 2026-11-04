@@ -487,3 +487,49 @@ def test_nightly_reports_failed_swaps(vsetup4, monkeypatch, caplog):
     out = variants.nightly(cat, None, data, pub, settings, "k", TODAY)
     assert out["swap_failed"] == ["s0:3", "s1:4"] and out["swapped"] == []
     assert "s1:4: could not swap versions: OSError: disk full" in caplog.text
+
+
+# -- the Portraits share ------------------------------------------------------------
+
+
+def test_share_types_add_portraits_last(vsetup4):
+    cat, *_ = vsetup4
+    assert variants.share_types(cat) == {"halloween": "Halloween",
+                                         "portraits": "Portraits"}  # fmt: skip
+
+
+def test_portraits_take_their_share_of_the_whole_screen():
+    layer = [everyday({"portraits": 20, "halloween": 50})]
+    live = 100
+    ready = {"halloween": 100}
+    # Half of everything on screen (100 works + 25 portraits) is Halloween.
+    assert variants.museum_target(layer, live, ready, portraits=25) == {"halloween": 62}
+    # No portraits: the same as a schedule without the Portraits share.
+    plain = [everyday({"halloween": 50})]
+    assert variants.museum_target(layer, live, ready, portraits=0) == (
+        variants.museum_target(plain, live, ready, portraits=0)) == {"halloween": 50}  # fmt: skip
+
+
+def test_nightly_without_portraits_is_unchanged(vsetup4):
+    cat, data, pub, settings = vsetup4
+    s = dataclasses.replace(
+        settings, schedules=[everyday({"halloween": 50, "portraits": 20})]
+    )
+    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
+    assert out["slots"] == {"halloween": 2}
+    assert "portraits" not in {sl.type for sl in cat.slots().values()}
+    assert all(t != "portraits" for _, t in cat.variant_states())
+
+
+def test_nightly_counts_live_portraits_in_the_screen(vsetup4):
+    cat, data, pub, settings = vsetup4
+    for key in ("s1:1", "s2:2", "s0:3", "s1:4"):
+        variants.generate(
+            cat, None, data, OpenRouterProvider(None, "k"), pub, key, "halloween"
+        )
+    s = dataclasses.replace(
+        settings, schedules=[everyday({"halloween": 50, "portraits": 50})]
+    )
+    # 4 works + 4 portraits: Halloween gets half of 8, so all four works.
+    out = variants.nightly(cat, None, data, pub, s, "k", TODAY, portraits=4)
+    assert out["slots"] == {"halloween": 4}

@@ -252,14 +252,43 @@ def apply_versions(
     return {"swapped": swapped, "failed": failed}
 
 
+def share_types(cat: Catalogue) -> dict[str, str]:
+    """Every type a schedule can give a share to: slug -> name, Portraits last."""
+    return {
+        **{t.slug: t.name for t in cat.variant_types()},
+        schedules.PORTRAITS: "Portraits",
+    }
+
+
+def museum_target(
+    layers: list[schedules.Schedule],
+    live: int,
+    ready: dict[str, int] | None,
+    portraits: int = 0,
+) -> dict[str, int]:
+    """Works per variant type, when ``portraits`` paintings share the screen.
+
+    Shares are of everything on the TV, so the cascade runs on the museum works
+    plus the live portraits; Portraits takes no more than are live, and the
+    rest of its share falls to the next layer down.
+    """
+    if ready is not None:
+        ready = {**ready, schedules.PORTRAITS: portraits}
+    target = schedules.allocate(layers, live + portraits, ready)
+    target.pop(schedules.PORTRAITS, None)
+    return target
+
+
 def _plan(
     live: list[str],
     layers: list[schedules.Schedule],
     current: dict[str, Slot],
     usable: set[tuple[str, str]],
+    portraits: int = 0,
 ) -> dict[str, Slot]:
     """Slots for the schedules' full shares, whether or not versions are ready."""
-    return assign_slots(live, schedules.allocate(layers, len(live)), current, usable)
+    target = museum_target(layers, len(live), None, portraits)
+    return assign_slots(live, target, current, usable)
 
 
 def _live(cat: Catalogue) -> list[str]:
@@ -275,16 +304,17 @@ def nightly(
     settings: Settings,
     api_key: str | None,
     today: date,
+    portraits: int = 0,
 ) -> dict:
     """The nightly variant step: make what the schedules need, then swap.
 
     Versions are made for today's schedules and for those starting within a
     week, narrowest schedule first, up to the nightly limit. The TV shows only
     versions that are ready; a schedule's unfilled share falls to the next one
-    down (see schedules.allocate).
+    down (see schedules.allocate). ``portraits`` is how many saved paintings
+    are live; they count toward the screen the shares divide.
     """
-    types = {t.slug for t in cat.variant_types()}
-    sch = schedules.known(settings.schedules, types)
+    sch = schedules.known(settings.schedules, set(share_types(cat)))
     live = _live(cat)
     usable = set(cat.usable_variants())
     running = schedules.layers(sch, today)
@@ -292,8 +322,11 @@ def nightly(
     # Upcoming plans start from today's slots too, so a narrow schedule's
     # versions land on the works a wider one will give up when it starts.
     current = cat.slots()
-    plans = [_plan(live, running, current, usable)]
-    plans += [_plan(live, schedules.layers(sch, d), current, usable) for d, _ in ahead]
+    plans = [_plan(live, running, current, usable, portraits)]
+    plans += [
+        _plan(live, schedules.layers(sch, d), current, usable, portraits)
+        for d, _ in ahead
+    ]
     states = cat.variant_states()
     pairs = list(dict.fromkeys(p for plan in plans for p in needed(plan, states, live)))
     ranked = schedules.order(running + [s for _, s in ahead])
@@ -328,7 +361,7 @@ def nightly(
     ready = Counter(t for k, t in usable if k in live)
     slots = assign_slots(
         live,
-        schedules.allocate(running, len(live), ready),
+        museum_target(running, len(live), ready, portraits),
         cat.slots(),
         usable,
         ready_only=True,

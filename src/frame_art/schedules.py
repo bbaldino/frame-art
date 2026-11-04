@@ -75,6 +75,11 @@ def layers(schedules: list[Schedule], day: date) -> list[Schedule]:
     return [s for s in order(schedules) if covers(s, day)]
 
 
+# Saved Studio paintings: a share like a variant type's, but filled by the
+# paintings themselves rather than by versions of museum works.
+PORTRAITS = "portraits"
+
+
 def known(schedules: list[Schedule], types: set[str]) -> list[Schedule]:
     return [
         replace(s, shares={t: p for t, p in s.shares.items() if t in types})

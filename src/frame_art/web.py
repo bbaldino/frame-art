@@ -613,6 +613,11 @@ def create_app(svc: Service) -> Starlette:
         for slug, value in s.shares.items():
             if slug not in types:
                 continue
+            if slug == schedules.PORTRAITS:
+                # Saved paintings need no versions made, so no "ready" meter.
+                rows.append({"slug": slug, "name": "Portraits (saved Studio paintings)",
+                             "value": value})  # fmt: skip
+                continue
             m = upto.get(slug, 0) - above.get(slug, 0)
             n = min(m, max(0, ready.get(slug, 0) - above.get(slug, 0)))
             rows.append(
@@ -1099,7 +1104,7 @@ def create_app(svc: Service) -> Starlette:
         s = svc.settings()
         today = svc.today()
         vtypes = cat.variant_types()
-        types = {t.slug: t.name for t in vtypes}
+        types = variants.share_types(cat)
         color = {t.slug: i % 6 for i, t in enumerate(vtypes)}
         sch = schedules.known(s.schedules, set(types))
         usable = set(cat.usable_variants())
@@ -1241,7 +1246,7 @@ def create_app(svc: Service) -> Starlette:
 
     def schedule_from_form(form, sid: str) -> tuple[Schedule, list[str]]:
         """The schedule a form describes, with what was typed kept for a re-render."""
-        types = {t.slug: t.name for t in svc.catalogue().variant_types()}
+        types = variants.share_types(svc.catalogue())
         errors = []
 
         def mmdd(month: str, day: str) -> str:
