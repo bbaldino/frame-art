@@ -29,7 +29,7 @@ def test_add_get_and_dedupe(tmp_path):
     p = st.add("upload", "a.jpg", jpeg(), "a.jpg")
     assert p and (p.width, p.height, p.kind) == (40, 30, None)
     assert Path(p.path).is_file() and Path(p.path).parent == tmp_path / "photos"
-    assert "a.jpg" not in Path(p.path).name  # the user's name is never a path
+    assert Path(p.path).name == f"{p.id}.jpg"  # the user's name is never a path
     assert st.add("upload", "a.jpg", jpeg("blue"), "a.jpg") is None  # same source id
     assert st.add("google-photos", "g1", jpeg(), "IMG_1.jpg") is None  # same bytes
     assert [x.id for x in st.all()] == [p.id]
