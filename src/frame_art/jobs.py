@@ -9,11 +9,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import imaging, keys, notability, pipeline, report, variants
+from . import imaging, keys, notability, pipeline, portraits, report, variants
 from .catalogue import Catalogue
 from .classify import current_season
 from .net import Http
 from .publish import Publisher, PublishResult, diversify
+from .schedules import PORTRAITS
 from .settings import Settings
 from .sources import all_sources
 from .studio import StudioStore
@@ -101,6 +102,24 @@ def publish(
     return result
 
 
+def sync_portraits(
+    cat: Catalogue,
+    store: StudioStore,
+    dest: Path,
+    settings: Settings,
+    today: datetime.date,
+) -> dict:
+    """Put today's Portraits share of saved paintings on the TV."""
+    shares = settings.today_shares(today, set(variants.share_types(cat)))
+    want = portraits.target(
+        shares.get(PORTRAITS, 0),
+        len(cat.published(active=True)),
+        len(store.paintings()),
+    )
+    pub = publisher(cat, None, dest, settings)
+    return portraits.sync(cat, store, pub, dest, want, today.toordinal())
+
+
 def nightly(
     cat: Catalogue,
     http: Http,
@@ -128,9 +147,15 @@ def nightly(
         failed=res.failed,
         live=len(cat.published(active=True)),
     )
-    summary["tries_pruned"] = StudioStore(data / "frame-art.db", data / "studio").prune(
-        time.time()
-    )
+    studio = StudioStore(data / "frame-art.db", data / "studio")
+    summary["tries_pruned"] = studio.prune(time.time())
+    try:
+        summary["portraits"] = sync_portraits(cat, studio, dest, settings, today)
+    except Exception as ex:  # noqa: BLE001 - keep what publishing did
+        log.exception("portraits: the portraits step failed")
+        summary["portraits"] = {"error": type(ex).__name__, "live": 0}
+        summary["failed"] = [*summary["failed"], "portraits"]
+    summary["failed"] = [*summary["failed"], *summary["portraits"].get("failed", [])]
     try:
         # Edits take a minute or more each, so their client waits longer.
         v = variants.nightly(
@@ -141,6 +166,7 @@ def nightly(
             settings,
             keys.read_key("openrouter"),
             today,
+            portraits=summary["portraits"]["live"],
         )
     except Exception as ex:  # noqa: BLE001 - keep what publishing did
         log.exception("variants: the seasonal step failed")

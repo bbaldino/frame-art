@@ -321,7 +321,7 @@ class Publisher:
 def pending(cat: Catalogue, dest: Path) -> dict:
     """What HA still has to do: live files not yet uploaded, TV ids to delete."""
     sidecars = {f: read_sidecar(dest / f) for f in FOLDERS}
-    live = cat.published(active=True)
+    live = cat.published(active=True, portraits=True)
     to_upload = [
         f"{p.folder}/{p.filename}"
         for p in live
@@ -330,7 +330,7 @@ def pending(cat: Catalogue, dest: Path) -> dict:
     cutoff = time.time() - RETIRE_WINDOW
     deleted = cat.deleted_ids()
     retire = []
-    for p in cat.published(active=False):
+    for p in cat.published(active=False, portraits=True):
         if not p.retired_at or p.retired_at < cutoff:
             continue
         content_id = p.content_id or sidecars.get(p.folder, {}).get(p.filename)
@@ -354,7 +354,7 @@ def content_index(cat: Catalogue, dest: Path) -> dict[str, Published]:
     """
     sidecars = {f: read_sidecar(dest / f) for f in FOLDERS}
     index: dict[str, Published] = {}
-    for p in cat.published():
+    for p in cat.published(portraits=True):
         for cid in (p.content_id, sidecars.get(p.folder, {}).get(p.filename)):
             if cid:
                 index.setdefault(cid, p)

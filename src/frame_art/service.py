@@ -27,6 +27,7 @@ from . import (
     jobs,
     keys,
     photo_kind,
+    portraits,
     providers,
     studio,
     variants,
@@ -48,6 +49,7 @@ JOB_KINDS = {
     "publish": "Publish new works now",
     "compare": "Make crop comparison sheets",
     "sync": "Apply bans",
+    "portraits": "Update portraits on the TV",
 }
 # Jobs that take arguments, so the web UI queues them from forms, not /jobs/{kind}.
 ARG_JOBS = {
@@ -277,6 +279,8 @@ class Service:
             return {"sheets": [p.name for p in sheets]}
         if kind == "sync":
             return {"retired": jobs.publisher(cat, http, self.dest, s).sync()}
+        if kind == "portraits":
+            return jobs.sync_portraits(cat, self.studio(), self.dest, s, self.today())
         if kind == "generate":
             return self._generate(cat, s, **job.args)
         if kind == "versions":
@@ -551,6 +555,11 @@ class Service:
             "ours": False,
         }
         p = find_content(cat, self.dest, cid) if cid else None
+        if p is not None and portraits.is_portrait(p.key):
+            # A saved Studio painting: nothing about it beyond what it is.
+            info.update(ours=True, kind="portrait", title="Portrait",
+                        file=f"{p.folder}/{p.filename}")  # fmt: skip
+            return info
         w = next((w for w in cat.works() if p and w.key == p.key), None)
         if p is None or w is None:
             return info

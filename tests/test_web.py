@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 from starlette.testclient import TestClient
 
-from frame_art import studio
+from frame_art import publish, studio
 from frame_art.catalogue import Catalogue
 from frame_art.model import Work
 from frame_art.schedules import everyday
@@ -492,8 +492,9 @@ def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "publish", lambda *a, **k: PublishResult(["x"], [], []))
     calls = []
 
-    def fake_nightly(cat, http, data, pub, settings, api_key, today):
+    def fake_nightly(cat, http, data, pub, settings, api_key, today, portraits=None):
         calls.append(api_key)
+        assert portraits == 0  # no Portraits share, so none live
         assert today == svc.today()
         return {
             "slots": {},
@@ -512,6 +513,7 @@ def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
     assert run["summary"]["added"] == ["x"]
     assert run["summary"]["failed"] == ["nga:1", "nga:2"]
     assert run["summary"]["variants"]["gen_failed"] == ["nga:1"]
+    assert run["summary"]["portraits"] == {"live": 0, "added": [], "retired": []}
 
 
 def test_nightly_keeps_the_publish_summary_when_variants_break(
@@ -1493,3 +1495,52 @@ def test_schedule_with_a_portraits_share(client):
     editor = c.get(f"/variants?edit={s.id}").text
     assert "Portraits (saved Studio paintings)" in editor
     assert 'name="share-portraits" min="0" max="100" step="1" value="20"' in editor
+
+
+def _live_portrait(svc, content_id="MY_F0042"):
+    from frame_art import portraits
+
+    p = _photo_in_studio(svc)
+    painting = svc.studio().save(_done_try(svc, p, "hopper").id)
+    cat = svc.catalogue()
+    pub = publish.Publisher(cat, None, svc.dest, "blur")
+    portraits.sync(cat, svc.studio(), pub, svc.dest, want=1, seed=1)
+    name = f"portrait-{painting.id}.jpg"
+    (svc.dest / "full" / publish.SIDECAR).write_text(
+        json.dumps({name: {"content_id": content_id, "modified": 1.0}})
+    )
+    return painting, name
+
+
+def test_now_showing_a_portrait_says_only_portrait(client):
+    c, svc = client
+    painting, name = _live_portrait(svc)
+    cat = svc.catalogue()
+    cat.put("tv_current", {"content_id": "MY_F0042", "at": time.time()})
+    info = svc.now_showing(cat)
+    assert info == {**info, "ours": True, "kind": "portrait", "title": "Portrait",
+                    "file": f"full/{name}"}  # fmt: skip
+    assert "Edward Hopper" not in json.dumps(info) and "kid.jpg" not in json.dumps(info)
+
+
+def test_history_lists_a_portrait_as_portrait(client):
+    c, svc = client
+    _live_portrait(svc)
+    cat = svc.catalogue()
+    cat.note_shown("MY_F0042", None, True)
+    page = c.get("/history").text
+    assert (
+        '<div class="title">Portrait</div>' in page and "Not from frame-art" not in page
+    )
+    assert "Edward Hopper" not in page
+
+
+def test_removing_a_portrait_updates_the_tv(client, monkeypatch):
+    c, svc = client
+    painting, _ = _live_portrait(svc)
+    submitted = []
+    monkeypatch.setattr(
+        svc, "submit", lambda kind, args=None: submitted.append((kind, args))
+    )
+    c.post(f"/portraits/{painting.id}/remove")
+    assert submitted == [("portraits", None)]

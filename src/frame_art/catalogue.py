@@ -135,6 +135,10 @@ create table if not exists published_variants (
 """
 
 
+# The key a saved Studio portrait is published under: "portrait:<painting id>".
+PORTRAIT_PREFIX = "portrait:"
+
+
 @dataclass
 class Published:
     filename: str
@@ -557,12 +561,24 @@ class Catalogue:
                 (content_id, filename),
             )
 
-    def published(self, active: bool | None = None) -> list[Published]:
-        q = "select * from published"
+    def published(
+        self, active: bool | None = None, portraits: bool = False
+    ) -> list[Published]:
+        """Published files, oldest first.
+
+        Saved Studio portraits share the folders but are not museum works, so
+        they are left out unless ``portraits`` (see portraits.py).
+        """
+        where = []
         if active is True:
-            q += " where retired_at is null"
+            where.append("retired_at is null")
         elif active is False:
-            q += " where retired_at is not null"
+            where.append("retired_at is not null")
+        if not portraits:
+            where.append(f"key not like '{PORTRAIT_PREFIX}%'")
+        q = "select * from published"
+        if where:
+            q += " where " + " and ".join(where)
         rows = self.db.execute(q + " order by published_at, filename")
         return [
             Published(f, folder, k, int(h, 16), pub, ret, cid)
