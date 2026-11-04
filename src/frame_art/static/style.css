@@ -342,3 +342,13 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 .signin-steps li { margin: 0 0 0.9rem; }
 .signin-paste { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .signin-paste input { flex: 1 1 22rem; min-width: 0; }
+
+/* Studio */
+.studio { display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+.studio-photo img { width: 100%; border-radius: 6px; }
+.studio-form .row { align-items: center; }
+.tries { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 1rem; }
+.try-card { background: var(--panel); border-radius: 8px; padding: 0.6rem; }
+.try-card img { width: 100%; border-radius: 4px; display: block; }
+.try-card p { margin: 0.4rem 0; }
+@media (max-width: 720px) { .studio { grid-template-columns: 1fr; } }

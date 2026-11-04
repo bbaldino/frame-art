@@ -1245,3 +1245,75 @@ def test_painters_page_add_edit_delete(client):
     assert svc.studio().painter("mary-cassatt") is None
     r = c.post("/studio/painters", data={"name": "", "manner": "x"})
     assert r.status_code == 400 and "name" in r.text
+
+
+def _photo_in_studio(svc, kind=None):
+    p = svc.photos().add("upload", "studio-1", _jpeg(), "kid.jpg")
+    if kind:
+        svc.photos().set_kind(p.id, kind, None, False)
+    return p
+
+
+def test_paint_queues_one_job_and_redirects(client, monkeypatch):
+    c, svc = client
+    p = _photo_in_studio(svc, "portrait")
+    submitted = []
+    monkeypatch.setattr(
+        svc, "submit", lambda kind, args=None: submitted.append((kind, args))
+    )
+    r = c.post(f"/studio/{p.id}/paint", follow_redirects=False,
+               data={"painter": "hopper", "setting": "keep", "shape": "fill",
+                     "nudge": ["warmer light"], "nudge_text": "less desert"})  # fmt: skip
+    assert r.status_code == 303 and r.headers["location"] == f"/studio/{p.id}"
+    (t,) = svc.studio().tries(p.id)
+    assert submitted == [("paint", {"try": t.id})]
+    assert t.nudges == ["warmer light", "less desert"] and t.painter == "Edward Hopper"
+    page = c.get(f"/studio/{p.id}").text
+    assert 'http-equiv="refresh"' in page and "Edward Hopper" in page
+
+
+def test_studio_shows_a_failed_paint_plainly(client, tmp_path, monkeypatch):
+    c, svc = client
+    keys = tmp_path / "keys"
+    (keys / "openrouter").mkdir(parents=True)
+    (keys / "openrouter" / "key").write_text("sk-SEKRIT")
+    monkeypatch.setenv("FRAME_ART_KEYS", str(keys))
+    p = _photo_in_studio(svc)
+    st = svc.studio()
+    t = st.start_try(p.id, st.painter("monet"), "keep", "fill", [], None)
+    st.fail_try(t.id, "OpenRouter: balance too low")
+    page = c.get(f"/studio/{p.id}").text
+    assert "OpenRouter: balance too low" in page and 'http-equiv="refresh"' not in page
+    assert "SEKRIT" not in page
+
+
+def test_studio_defaults_follow_the_kind(client):
+    c, svc = client
+    p = _photo_in_studio(svc, "scene")
+    page = c.get(f"/studio/{p.id}").text
+    assert 'value="reinvent" checked' in page and 'value="fill" checked' in page
+    assert page.index("Claude Monet") < page.index("Edward Hopper")
+    assert c.get("/studio/nope").status_code == 404
+    assert f"/studio/{p.id}" in c.get("/studio").text
+
+
+def test_nightly_prunes_old_studio_tries(client, tmp_path, monkeypatch):
+    from frame_art import jobs, variants
+    from frame_art.publish import PublishResult
+    from frame_art.service import Job
+
+    _, svc = client
+    monkeypatch.setenv("FRAME_ART_KEYS", str(tmp_path / "no-keys"))
+    monkeypatch.setattr(jobs, "crawl", lambda *a, **k: {})
+    monkeypatch.setattr(jobs, "publish", lambda *a, **k: PublishResult([], [], []))
+    monkeypatch.setattr(variants, "nightly", lambda *a, **k: {
+        "slots": {}, "generated": [], "gen_failed": [], "swapped": [],
+        "swap_failed": [], "cost": 0.0})  # fmt: skip
+    p = _photo_in_studio(svc)
+    st = svc.studio()
+    t = st.start_try(p.id, st.painter("monet"), "keep", "fill", [], None)
+    st.db.execute("update tries set made_at = 0 where id = ?", (t.id,))
+    st.db.commit()
+    svc._run(Job("nightly"))
+    assert svc.studio().get_try(t.id) is None
+    assert svc.catalogue().runs(1)[0]["summary"]["tries_pruned"] == 1

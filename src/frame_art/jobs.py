@@ -16,6 +16,7 @@ from .net import Http
 from .publish import Publisher, PublishResult, diversify
 from .settings import Settings
 from .sources import all_sources
+from .studio import StudioStore
 
 log = logging.getLogger("frame_art")
 
@@ -126,6 +127,9 @@ def nightly(
         retired=res.retired,
         failed=res.failed,
         live=len(cat.published(active=True)),
+    )
+    summary["tries_pruned"] = StudioStore(data / "frame-art.db", data / "studio").prune(
+        time.time()
     )
     try:
         # Edits take a minute or more each, so their client waits longer.

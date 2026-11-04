@@ -9,12 +9,21 @@ every prompt (see the portrait studio design).
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from .photos import KINDS
+from PIL import Image
+
+from .openrouter import nearest_aspect
+from .photos import KINDS, PhotoStore, open_image
 from .pipeline import slug as make_slug
+from .providers import ImageProvider, PaintFailed, plain_error
+
+log = logging.getLogger(__name__)
 
 SETTINGS = ("keep", "reinvent")
 SHAPES = ("fill", "keep")
@@ -85,7 +94,29 @@ create table if not exists painters (
   suits text not null
 );
 create table if not exists studio_kv (key text primary key, value text);
+create table if not exists tries (
+  id integer primary key autoincrement,
+  photo_id text not null,
+  painter text not null,
+  setting text not null,
+  shape text not null,
+  nudges text not null,
+  from_try integer,
+  prompt text not null,
+  status text not null,
+  error text,
+  path text,
+  cost real,
+  made_at real not null
+);
 """
+
+# Unsaved tries are deleted after this long.
+KEEP_TRIES = 14 * 24 * 3600
+TRY_COLUMNS = (
+    "id, photo_id, painter, setting, shape, nudges, from_try, prompt, status, "
+    "error, path, cost, made_at"
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +125,28 @@ class Painter:
     name: str
     manner: str
     suits: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Try:
+    id: int
+    photo_id: str
+    painter: str
+    setting: str
+    shape: str
+    nudges: list[str]
+    from_try: int | None
+    prompt: str
+    status: str  # "painting", "done" or "failed"
+    error: str | None
+    path: str | None
+    cost: float | None
+    made_at: float
+
+
+def _try(row) -> Try:
+    id, photo_id, painter, setting, shape, nudges, *rest = row
+    return Try(id, photo_id, painter, setting, shape, json.loads(nudges), *rest)
 
 
 def _also(nudges: list[str]) -> str:
@@ -192,3 +245,114 @@ class StudioStore:
     def remove_painter(self, slug: str) -> None:
         with self.db:
             self.db.execute("delete from painters where slug = ?", (slug,))
+
+    # -- tries -----------------------------------------------------------------
+
+    def start_try(
+        self,
+        photo_id: str,
+        painter: Painter,
+        setting: str,
+        shape: str,
+        nudges: list[str],
+        from_try: int | None,
+    ) -> Try:
+        """A new try, waiting to be painted (see ``paint``)."""
+        if setting not in SETTINGS or shape not in SHAPES:
+            raise ValueError("unknown setting or shape")
+        if from_try is not None:
+            prompt = retouch_prompt(nudges)
+        else:
+            prompt = build_prompt(painter.name, painter.manner, setting, shape, nudges)
+        with self.db:
+            cur = self.db.execute(
+                "insert into tries (photo_id, painter, setting, shape, nudges, "
+                "from_try, prompt, status, made_at) values (?,?,?,?,?,?,?,?,?)",
+                (photo_id, painter.name, setting, shape, json.dumps(nudges), from_try,
+                 prompt, "painting", time.time()),
+            )  # fmt: skip
+        return self.get_try(cur.lastrowid)
+
+    def get_try(self, id: int) -> Try | None:
+        row = self.db.execute(
+            f"select {TRY_COLUMNS} from tries where id = ?", (id,)
+        ).fetchone()
+        return _try(row) if row else None
+
+    def tries(self, photo_id: str) -> list[Try]:
+        rows = self.db.execute(
+            f"select {TRY_COLUMNS} from tries where photo_id = ? order by id desc",
+            (photo_id,),
+        )
+        return [_try(r) for r in rows]
+
+    def finish_try(self, id: int, im: Image.Image, cost: float | None) -> None:
+        path = self.dir / "tries" / f"{id}.jpg"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        im.convert("RGB").save(tmp, "JPEG", quality=95)
+        tmp.replace(path)
+        with self.db:
+            self.db.execute(
+                "update tries set status = 'done', path = ?, cost = ? where id = ?",
+                (str(path), cost, id),
+            )
+
+    def fail_try(self, id: int, error: str) -> None:
+        with self.db:
+            self.db.execute(
+                "update tries set status = 'failed', error = ? where id = ?",
+                (error, id),
+            )
+
+    def spent(self, photo_id: str) -> float:
+        (total,) = self.db.execute(
+            "select coalesce(sum(cost), 0) from tries where photo_id = ?", (photo_id,)
+        ).fetchone()
+        return total
+
+    def _kept_tries(self) -> set[int]:
+        """Tries that must outlive pruning (saved ones, from Task 4 on)."""
+        return set()
+
+    def prune(self, now: float) -> int:
+        """Delete unsaved tries older than KEEP_TRIES, files included."""
+        kept = self._kept_tries()
+        rows = self.db.execute(
+            "select id, path from tries where made_at < ?", (now - KEEP_TRIES,)
+        ).fetchall()
+        doomed = [(id, path) for id, path in rows if id not in kept]
+        with self.db:
+            for id, path in doomed:
+                self.db.execute("delete from tries where id = ?", (id,))
+        for _, path in doomed:
+            if path:
+                Path(path).unlink(missing_ok=True)
+        return len(doomed)
+
+
+def paint(
+    store: StudioStore, photos: PhotoStore, provider: ImageProvider, try_id: int
+) -> Try:
+    """Paint a started try. A model failure fails the try; it never raises."""
+    t = store.get_try(try_id)
+    p = photos.get(t.photo_id)
+    try:
+        if p is None:
+            raise LookupError("the photo is gone")
+        if t.from_try is not None:
+            earlier = store.get_try(t.from_try)
+            if earlier is None or earlier.path is None:
+                raise LookupError("the earlier try is gone")
+            src = Image.open(earlier.path)
+        else:
+            src = open_image(p)
+        aspect = "16:9" if t.shape == "fill" else nearest_aspect(p.width, p.height)
+        out = provider.paint(src, t.prompt, aspect=aspect, size="4K")
+    except (PaintFailed, LookupError, OSError) as e:
+        log.warning("try %s failed: %s", try_id, plain_error(e))
+        store.fail_try(try_id, plain_error(e))
+    else:
+        store.finish_try(try_id, out.image, out.cost)
+        log.info("try %s painted (cost %s)", try_id, out.cost)
+    return store.get_try(try_id)

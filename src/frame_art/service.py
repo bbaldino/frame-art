@@ -21,7 +21,16 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image
 
-from . import google_photos, imaging, jobs, keys, photo_kind, providers, variants
+from . import (
+    google_photos,
+    imaging,
+    jobs,
+    keys,
+    photo_kind,
+    providers,
+    studio,
+    variants,
+)
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
@@ -46,6 +55,7 @@ ARG_JOBS = {
     "versions": "Update seasonal versions on the TV",
     "classify-photos": "Suggest portrait or scene for new photos",
     "import-google": "Add photos picked in Google Photos",
+    "paint": "Paint a Studio try",
 }
 # Requests the web UI can send HA for the TV (see halink).
 TV_ACTIONS = {
@@ -279,9 +289,23 @@ class Service:
             if not api_key:
                 return {"classified": 0, "note": "no OpenRouter key"}
             return photo_kind.classify_new(self.photos(), http, api_key)
+        if kind == "paint":
+            return self._paint(job.args["try"])
         if kind == "import-google":
             return self._import_google(http, job.args["session"])
         raise ValueError(kind)
+
+    def _paint(self, try_id: int) -> dict:
+        st = self.studio()
+        provider = providers.image_provider(Http(timeout=300))  # a paint takes ~1 min
+        if provider is None:
+            st.fail_try(try_id, "No OpenRouter key")
+            return {"try": try_id, "failed": ["No OpenRouter key"]}
+        t = studio.paint(st, self.photos(), provider, try_id)
+        out = {"try": try_id, "status": t.status, "cost": t.cost}
+        if t.status == "failed":
+            out["failed"] = [t.error]
+        return out
 
     def _import_google(self, http: Http, session: str) -> dict:
         client = google_photos.load_client()

@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Studio · Frame Art{% endblock %}
+{% block head %}{% if painting %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+{% block body %}
+<h1>Studio</h1>
+<p class="muted"><a href="/studio">All photos</a> · <a href="/studio/painters">Painters</a> · Spent on this photo: ${{ "%.2f" | format(spent) }}</p>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{% if errors %}<div class="error"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
+
+<div class="studio">
+  <div class="studio-photo">
+    <img src="/photos/{{ photo.id }}/thumb" alt="">
+    <p class="muted small">{{ photo.filename }} · {{ photo.kind or "kind not set" }}</p>
+  </div>
+
+  <form method="post" action="/studio/{{ photo.id }}/paint" class="settings studio-form" id="paint">
+    {% if from_try %}
+    <input type="hidden" name="from_try" value="{{ from_try.id }}">
+    <p class="notice">Starting from try #{{ from_try.id }} ({{ from_try.painter }}): the nudges below change that painting. <a href="/studio/{{ photo.id }}#paint">Start from the photo instead</a></p>
+    {% else %}
+    <label class="stack">Painter
+      <select name="painter">
+        {% for p in painters %}<option value="{{ p.slug }}"{% if loop.first %} selected{% endif %}>{{ p.name }}{% if photo.kind in p.suits %} (suits {{ photo.kind }}s){% endif %}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="stack">or any painter <input type="text" name="painter_name" placeholder="Mary Cassatt"></label>
+    <div class="row">Setting
+      <label class="radio"><input type="radio" name="setting" value="keep"{% if setting == "keep" %} checked{% endif %}> Keep the place</label>
+      <label class="radio"><input type="radio" name="setting" value="reinvent"{% if setting == "reinvent" %} checked{% endif %}> Reinvent it</label>
+    </div>
+    <div class="row">Shape
+      <label class="radio"><input type="radio" name="shape" value="fill" checked> Fill the screen</label>
+      <label class="radio"><input type="radio" name="shape" value="keep"> Keep the photo's shape</label>
+    </div>
+    {% endif %}
+    <div class="row">Nudges
+      {% for n in nudges %}<label class="check"><input type="checkbox" name="nudge" value="{{ n }}"> {{ n }}</label>{% endfor %}
+    </div>
+    <label class="stack">Your own nudge <input type="text" name="nudge_text" placeholder="less desert, more beach"></label>
+    <div class="form-actions"><button type="submit" class="primary">Paint</button> <span class="muted small">About 12¢ and a minute.</span></div>
+  </form>
+</div>
+
+<h2>Tries</h2>
+{% if tries %}
+<ul class="tries">
+  {% for t in tries %}
+  <li class="try-card">
+    {% if t.status == "done" %}
+    <a href="/studio/tries/{{ t.id }}.jpg" target="_blank"><img src="/studio/tries/{{ t.id }}/thumb" alt="" loading="lazy"></a>
+    {% elif t.status == "failed" %}
+    <p class="error">{{ t.error }}</p>
+    {% elif stuck(t) %}
+    <p class="error">This try never finished.</p>
+    {% else %}
+    <p class="muted">Painting…</p>
+    {% endif %}
+    <p class="small"><b>#{{ t.id }} {{ t.painter }}</b>{% if t.from_try %} · from #{{ t.from_try }}{% else %} · {{ "keep the place" if t.setting == "keep" else "reinvent" }} · {{ "fill" if t.shape == "fill" else "photo's shape" }}{% endif %}{% if t.nudges %} · {{ t.nudges | join("; ") }}{% endif %}{% if t.cost %} · ${{ "%.2f" | format(t.cost) }}{% endif %}</p>
+    {% if t.status == "done" %}
+    <div class="form-actions"><a class="button" href="/studio/{{ photo.id }}?from={{ t.id }}#paint">Try again from this</a></div>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No tries yet.</p>
+{% endif %}
+{% endblock %}

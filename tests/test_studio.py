@@ -57,3 +57,100 @@ def test_painter_edits_are_checked(tmp_path):
                 ("Someone", "x", ("landscape",))]:  # fmt: skip
         with pytest.raises(ValueError):
             st.add_painter(*bad)
+
+
+# -- tries -----------------------------------------------------------------------
+
+import io  # noqa: E402
+import time  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from PIL import Image  # noqa: E402
+
+from frame_art.photos import PhotoStore  # noqa: E402
+from frame_art.providers import Painted, PaintFailed  # noqa: E402
+
+
+class FakeProvider:
+    name, model = "fake", "fake-model"
+
+    def __init__(self, fail=None):
+        self.calls, self.fail = [], fail
+
+    def paint(self, im, prompt, aspect=None, size="4K"):
+        self.calls.append(
+            {"size": size, "aspect": aspect, "prompt": prompt, "im": im.size}
+        )
+        if self.fail:
+            raise PaintFailed(self.fail)
+        return Painted(Image.new("RGB", (64, 36), "orange"), 0.12, "gen")
+
+
+def photo(tmp_path, size=(40, 30)):
+    buf = io.BytesIO()
+    Image.new("RGB", size, "red").save(buf, "JPEG")
+    ps = PhotoStore(tmp_path / "frame-art.db", tmp_path / "photos")
+    return ps, ps.add("upload", f"x{size}", buf.getvalue(), "p.jpg")
+
+
+HOPPER = studio.Painter("hopper", "Edward Hopper", "Flat planes.", ("portrait",))
+
+
+def test_paint_fill_and_keep_shapes(tmp_path):
+    ps, p = photo(tmp_path, (30, 40))
+    st, prov = store(tmp_path), FakeProvider()
+    t = st.start_try(p.id, HOPPER, "keep", "fill", ["warmer light"], None)
+    assert t.status == "painting" and t.prompt.endswith("Also: warmer light.")
+    done = studio.paint(st, ps, prov, t.id)
+    assert prov.calls[0]["size"] == "4K" and prov.calls[0]["aspect"] == "16:9"
+    assert done.status == "done" and done.cost == 0.12 and Path(done.path).is_file()
+    k = st.start_try(p.id, HOPPER, "keep", "keep", [], None)
+    studio.paint(st, ps, prov, k.id)
+    assert prov.calls[1]["aspect"] == "3:4"
+    assert st.spent(p.id) == pytest.approx(0.24)
+    assert [x.id for x in st.tries(p.id)] == [k.id, t.id]
+
+
+def test_paint_again_from_a_try(tmp_path):
+    ps, p = photo(tmp_path)
+    st, prov = store(tmp_path), FakeProvider()
+    first = studio.paint(
+        st, ps, prov, st.start_try(p.id, HOPPER, "keep", "fill", [], None).id
+    )
+    again = st.start_try(p.id, HOPPER, "keep", "fill", ["simpler background"], first.id)
+    studio.paint(st, ps, prov, again.id)
+    assert prov.calls[1]["im"] == (64, 36)  # the earlier try, not the photo
+    assert prov.calls[1]["prompt"].startswith(studio.RETOUCH)
+
+
+def test_a_failed_paint_says_why_and_costs_nothing(tmp_path):
+    ps, p = photo(tmp_path)
+    st = store(tmp_path)
+    prov = FakeProvider("OpenRouter returned 402: requires at least $1.00")
+    t = studio.paint(
+        st, ps, prov, st.start_try(p.id, HOPPER, "keep", "fill", [], None).id
+    )
+    assert (t.status, t.error, t.cost, t.path) == (
+        "failed", "OpenRouter: balance too low", None, None)  # fmt: skip
+    assert st.spent(p.id) == 0
+
+
+def test_old_unsaved_tries_are_pruned(tmp_path):
+    ps, p = photo(tmp_path)
+    st, prov = store(tmp_path), FakeProvider()
+    old = studio.paint(
+        st, ps, prov, st.start_try(p.id, HOPPER, "keep", "fill", [], None).id
+    )
+    new = studio.paint(
+        st, ps, prov, st.start_try(p.id, HOPPER, "keep", "fill", [], None).id
+    )
+    st.db.execute(
+        "update tries set made_at = ? where id = ?", (time.time() - 15 * 86400, old.id)
+    )
+    st.db.execute(
+        "update tries set made_at = ? where id = ?", (time.time() - 13 * 86400, new.id)
+    )
+    st.db.commit()
+    assert st.prune(time.time()) == 1
+    assert st.get_try(old.id) is None and not Path(old.path).exists()
+    assert st.get_try(new.id) is not None

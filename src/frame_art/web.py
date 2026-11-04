@@ -37,7 +37,16 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from . import google_photos, imaging, keys, photos, pipeline, schedules, variants
+from . import (
+    google_photos,
+    imaging,
+    keys,
+    photos,
+    pipeline,
+    schedules,
+    studio,
+    variants,
+)
 from .catalogue import Variant
 from .classify import current_season
 from .net import Http
@@ -828,6 +837,111 @@ def create_app(svc: Service) -> Starlette:
         google_token.unlink(missing_ok=True)
         return photos_view(request, notice="Signed out of Google Photos.")
 
+    # -- Studio ------------------------------------------------------------------
+
+    # A try still "painting" after this long was lost (a restart mid-paint, say).
+    STUCK = 15 * 60
+
+    def is_stuck(t) -> bool:
+        return t.status == "painting" and time.time() - t.made_at > STUCK
+
+    async def studio_index(request: Request):
+        return render(request, "studio_index.html", page="studio",
+                      photos=svc.photos().all())  # fmt: skip
+
+    def studio_view(request: Request, photo, notice="", errors=(), status=200):
+        st = svc.studio()
+        tries = st.tries(photo.id)
+        from_try = None
+        raw = request.query_params.get("from")
+        if raw and raw.isdecimal():
+            from_try = next((t for t in tries if t.id == int(raw) and t.path), None)
+        resp = render(
+            request,
+            "studio.html",
+            page="studio",
+            photo=photo,
+            painters=studio.suggested(st.painters(), photo.kind),
+            setting="reinvent" if photo.kind == "scene" else "keep",
+            nudges=studio.NUDGES,
+            tries=tries,
+            from_try=from_try,
+            spent=st.spent(photo.id),
+            painting=any(t.status == "painting" and not is_stuck(t) for t in tries),
+            stuck=is_stuck,
+            notice=notice,
+            errors=list(errors),
+        )
+        resp.status_code = status
+        return resp
+
+    async def studio_page(request: Request):
+        p = svc.photos().get(request.path_params["photo_id"])
+        if p is None:
+            return PlainTextResponse("unknown photo", 404)
+        return studio_view(request, p)
+
+    async def studio_paint(request: Request):
+        p = svc.photos().get(request.path_params["photo_id"])
+        if p is None:
+            return PlainTextResponse("unknown photo", 404)
+        st, form = svc.studio(), await request.form()
+        nudges = [n for n in form.getlist("nudge") if n in studio.NUDGES]
+        if text := (form.get("nudge_text") or "").strip():
+            nudges.append(text)
+        raw = form.get("from_try") or ""
+        from_try = st.get_try(int(raw)) if raw.isdecimal() else None
+        if from_try is not None:
+            if from_try.photo_id != p.id or from_try.path is None:
+                return studio_view(
+                    request, p, errors=["That try can't be used."], status=400
+                )
+            painter = studio.Painter("", from_try.painter, "", ())
+            setting, shape = from_try.setting, from_try.shape
+            if not nudges:
+                return studio_view(
+                    request, p, errors=["Say what to change."], status=400
+                )
+        else:
+            name = (form.get("painter_name") or "").strip()
+            painter = (studio.Painter("", name, "", ()) if name
+                       else st.painter(form.get("painter") or ""))  # fmt: skip
+            setting, shape = form.get("setting"), form.get("shape")
+            if (
+                painter is None
+                or setting not in studio.SETTINGS
+                or shape not in studio.SHAPES
+            ):
+                return studio_view(request, p, errors=["Choose a painter, setting and shape."],
+                                   status=400)  # fmt: skip
+        t = st.start_try(p.id, painter, setting, shape, nudges,
+                         from_try.id if from_try else None)  # fmt: skip
+        svc.submit("paint", {"try": t.id})
+        return RedirectResponse(f"/studio/{p.id}", status_code=303)
+
+    async def try_image(request: Request):
+        t = svc.studio().get_try(request.path_params["id"])
+        if t is None or not t.path or not Path(t.path).is_file():
+            return PlainTextResponse("not found", 404)
+        return FileResponse(t.path, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=86400"})  # fmt: skip
+
+    async def try_thumb(request: Request):
+        t = svc.studio().get_try(request.path_params["id"])
+        if t is None or not t.path or not Path(t.path).is_file():
+            return PlainTextResponse("not found", 404)
+        out = thumbs / "tries" / f"{t.id}.jpg"
+        if not out.exists():
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with Image.open(t.path) as im:
+                im = im.convert("RGB")
+                im.thumbnail((960, 960), Image.LANCZOS)
+                tmp = out.with_suffix(".tmp")
+                im.save(tmp, "JPEG", quality=85)
+                tmp.replace(out)
+        return FileResponse(out, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=86400"})  # fmt: skip
+
     # -- Studio: painters -------------------------------------------------------
 
     def painters_view(request: Request, notice="", errors=(), status=200, draft=None):
@@ -1320,10 +1434,15 @@ def create_app(svc: Service) -> Starlette:
             Route("/photos/{id}/thumb", photo_thumb),
             Route("/photos/{id}/kind", set_photo_kind, methods=["POST"]),
             Route("/photos/{id}/delete", delete_photo, methods=["POST"]),
+            Route("/studio", studio_index),
+            Route("/studio/tries/{id:int}.jpg", try_image),
+            Route("/studio/tries/{id:int}/thumb", try_thumb),
             Route("/studio/painters", painters_page),
             Route("/studio/painters", add_painter, methods=["POST"]),
             Route("/studio/painters/{slug}", edit_painter, methods=["POST"]),
             Route("/studio/painters/{slug}/delete", delete_painter, methods=["POST"]),
+            Route("/studio/{photo_id}", studio_page),
+            Route("/studio/{photo_id}/paint", studio_paint, methods=["POST"]),
             Route("/variants", variants_page),
             Route("/variants/types", add_variant_type, methods=["POST"]),
             Route("/variants/types/{slug}", edit_variant_type, methods=["POST"]),

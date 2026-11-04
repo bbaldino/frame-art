@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Studio · Frame Art{% endblock %}
+{% block body %}
+<h1>Studio</h1>
+<p class="muted">Choose a photo to paint. <a href="/photos">Add photos</a> · <a href="/studio/painters">Painters</a></p>
+{% if photos %}
+<ul class="photo-list">
+  {% for p in photos %}
+  <li class="photo-card">
+    <a href="/studio/{{ p.id }}"><img src="/photos/{{ p.id }}/thumb" alt="" loading="lazy"></a>
+    <div class="photo-info"><a href="/studio/{{ p.id }}"><b>{{ p.filename }}</b></a><span class="muted small">{{ p.kind or "kind not set" }}</span></div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No photos yet. <a href="/photos">Add some</a>.</p>
+{% endif %}
+{% endblock %}
