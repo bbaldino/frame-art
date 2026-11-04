@@ -10,6 +10,7 @@ see them. Only HA's to-do list, the TV-id lookup and the history read them.
 from __future__ import annotations
 
 import logging
+import math
 import random
 from pathlib import Path
 
@@ -19,6 +20,10 @@ from .publish import Publisher
 from .studio import Painting, StudioStore
 
 log = logging.getLogger(__name__)
+
+# A nightly sync swaps about this share of the live portraits for waiting ones,
+# so the whole collection comes round over a week or so.
+ROTATE_DAYS = 7
 
 PREFIX = PORTRAIT_PREFIX
 
@@ -45,9 +50,10 @@ def _publish(cat: Catalogue, pub: Publisher, dest: Path, p: Painting) -> str:
     """Render a painting for the panel and put it where HA uploads from."""
     im = imaging.load(Path(p.path).read_bytes())
     plan = imaging.plan_for(*im.size)
-    # A painting in the photo's own shape goes up matted, never blurred out.
-    style = pub.pad_style if plan.mode == "crop" else "matte"
-    folder = pipeline.folder_for(plan, style)
+    # HA uploads only full/, so a painting in the photo's own shape is padded
+    # to the panel like a tall museum work (a "matte" pad style still pads).
+    style = "blur" if pub.pad_style == "matte" else pub.pad_style
+    folder = "full"
     path = dest / folder / cat.unused_filename(f"portrait-{p.id}.jpg")
     path.parent.mkdir(parents=True, exist_ok=True)
     pipeline.write_atomic(imaging.render(im, plan, style), path, dest / ".staging")
@@ -63,11 +69,14 @@ def sync(
     dest: Path,
     want: int,
     seed: int,
+    rotate: bool = False,
 ) -> dict:
     """Keep ``want`` saved paintings on the TV.
 
     Files of removed paintings go first, then the longest-live beyond ``want``;
-    the paintings shown least recently (never, first) fill the gap.
+    the paintings shown least recently (never, first) fill the gap. With
+    ``rotate`` (the nightly run), a few of the longest-live also make way for
+    paintings that are waiting.
     """
     paintings = {key_for(p.id): p for p in store.paintings()}
     history = [p for p in cat.published(portraits=True) if is_portrait(p.key)]
@@ -75,6 +84,10 @@ def sync(
     gone = [p for p in live if p.key not in paintings]
     kept = [p for p in live if p.key in paintings]
     excess = kept[: max(0, len(kept) - want)]
+    waiting_n = len(paintings) - len(kept)  # saved, not on the TV
+    if rotate and want and waiting_n:
+        n = min(waiting_n, math.ceil(want / ROTATE_DAYS))
+        excess = kept[: len(excess) + n]
     retired = pub._retire_files(gone + excess)
     showing = {p.key for p in kept[len(excess) :]}
 

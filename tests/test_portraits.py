@@ -72,12 +72,40 @@ def test_sync_publishes_up_to_want(setup):
     assert portraits.sync(cat, st, pub, dest, want=2, seed=1)["added"] == []
 
 
-def test_a_photo_shaped_painting_is_matted(setup):
+def test_a_photo_shaped_painting_is_padded_into_full(setup):
+    # HA uploads only full/, so a painting in the photo's shape is padded to the
+    # panel like a tall museum work, never left in matted/.
     cat, st, pub, dest = setup
     p = saved(st, size=(180, 240))
     out = portraits.sync(cat, st, pub, dest, want=1, seed=1)
-    assert out["added"] == [f"matted/portrait-{p.id}.jpg"]
-    assert (dest / "matted" / f"portrait-{p.id}.jpg").is_file()
+    assert out["added"] == [f"full/portrait-{p.id}.jpg"]
+    with Image.open(dest / "full" / f"portrait-{p.id}.jpg") as im:
+        assert im.size == imaging.PANEL
+    assert not (dest / "matted").exists()
+
+
+def test_nightly_rotation_swaps_some_portraits(setup):
+    cat, st, pub, dest = setup
+    for c in ("red", "green", "blue", "white"):
+        saved(st, color=c)
+    portraits.sync(cat, st, pub, dest, want=2, seed=1)
+    before = {p.key for p in live_portraits(cat)}
+    # A hand sync (removing a painting, say) leaves the rest alone...
+    assert portraits.sync(cat, st, pub, dest, want=2, seed=1)["retired"] == []
+    # ...the nightly one rotates the longest-live out for one waiting.
+    out = portraits.sync(cat, st, pub, dest, want=2, seed=2, rotate=True)
+    after = {p.key for p in live_portraits(cat)}
+    assert len(out["retired"]) == 1 and len(after) == 2 and after != before
+    assert len(after - before) == 1
+
+
+def test_rotation_with_nothing_waiting_keeps_everything(setup):
+    cat, st, pub, dest = setup
+    saved(st, color="red"), saved(st, color="blue")
+    portraits.sync(cat, st, pub, dest, want=2, seed=1)
+    assert (
+        portraits.sync(cat, st, pub, dest, want=2, seed=2, rotate=True)["retired"] == []
+    )
 
 
 def test_shrinking_want_retires_the_longest_live(setup):
@@ -164,5 +192,17 @@ def test_sync_portraits_uses_todays_share(setup):
     s = Settings(schedules=[everyday({"portraits": 50})])
     out = jobs.sync_portraits(cat, st, dest, s, date(2026, 11, 4))
     assert out["live"] == 2  # half the screen: 2 museum works, 2 portraits
+    before = {p.key for p in live_portraits(cat)}
+    out = jobs.sync_portraits(cat, st, dest, s, date(2026, 11, 5), rotate=True)
+    assert len(out["retired"]) == 1 and {p.key for p in live_portraits(cat)} != before
     s = Settings(schedules=[])
     assert jobs.sync_portraits(cat, st, dest, s, date(2026, 11, 4))["live"] == 0
+
+
+def test_rotation_does_not_count_paintings_retired_for_excess(setup):
+    cat, st, pub, dest = setup
+    for c in ("red", "green", "blue"):
+        saved(st, color=c)
+    portraits.sync(cat, st, pub, dest, want=3, seed=1)
+    out = portraits.sync(cat, st, pub, dest, want=2, seed=2, rotate=True)
+    assert len(out["retired"]) == 1 and out["added"] == [] and out["live"] == 2

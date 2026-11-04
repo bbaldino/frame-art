@@ -108,8 +108,12 @@ def sync_portraits(
     dest: Path,
     settings: Settings,
     today: datetime.date,
+    rotate: bool = False,
 ) -> dict:
-    """Put today's Portraits share of saved paintings on the TV."""
+    """Put today's Portraits share of saved paintings on the TV.
+
+    The nightly run rotates (see portraits.sync); a hand run only catches up.
+    """
     shares = settings.today_shares(today, set(variants.share_types(cat)))
     want = portraits.target(
         shares.get(PORTRAITS, 0),
@@ -117,7 +121,7 @@ def sync_portraits(
         len(store.paintings()),
     )
     pub = publisher(cat, None, dest, settings)
-    return portraits.sync(cat, store, pub, dest, want, today.toordinal())
+    return portraits.sync(cat, store, pub, dest, want, today.toordinal(), rotate)
 
 
 def nightly(
@@ -150,7 +154,9 @@ def nightly(
     studio = StudioStore(data / "frame-art.db", data / "studio")
     summary["tries_pruned"] = studio.prune(time.time())
     try:
-        summary["portraits"] = sync_portraits(cat, studio, dest, settings, today)
+        summary["portraits"] = sync_portraits(
+            cat, studio, dest, settings, today, rotate=True
+        )
     except Exception as ex:  # noqa: BLE001 - keep what publishing did
         log.exception("portraits: the portraits step failed")
         summary["portraits"] = {"error": type(ex).__name__, "live": 0}

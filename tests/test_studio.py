@@ -100,7 +100,7 @@ def test_paint_fill_and_keep_shapes(tmp_path):
     ps, p = photo(tmp_path, (30, 40))
     st, prov = store(tmp_path), FakeProvider()
     t = st.start_try(p.id, HOPPER, "keep", "fill", ["warmer light"], None)
-    assert t.status == "painting" and t.prompt.endswith("Also: warmer light.")
+    assert t.status == "queued" and t.prompt.endswith("Also: warmer light.")
     done = studio.paint(st, ps, prov, t.id)
     assert prov.calls[0]["size"] == "4K" and prov.calls[0]["aspect"] == "16:9"
     assert done.status == "done" and done.cost == 0.12 and Path(done.path).is_file()
@@ -243,3 +243,34 @@ def test_counts_per_photo(tmp_path):
     st.save(t.id)
     assert st.counts() == {p.id: (2, 1)}
     assert [x.id for x in st.paintings(p.id)] == [st.paintings()[0].id]
+
+
+def test_a_try_waits_in_the_queue_before_painting(tmp_path):
+    ps, p = photo(tmp_path)
+    st = store(tmp_path)
+    t = st.start_try(p.id, HOPPER, "keep", "fill", [], None)
+    assert t.status == "queued" and t.started_at is None
+
+    class Watching(FakeProvider):
+        def paint(self, im, prompt, aspect=None, size="4K"):
+            mid = st.get_try(t.id)
+            self.seen = (mid.status, mid.started_at is not None)
+            return super().paint(im, prompt, aspect, size)
+
+    prov = Watching()
+    studio.paint(st, ps, prov, t.id)
+    assert prov.seen == ("painting", True)
+
+
+def test_a_try_deleted_mid_paint_leaves_no_file(tmp_path):
+    ps, p = photo(tmp_path)
+    st = store(tmp_path)
+    t = st.start_try(p.id, HOPPER, "keep", "fill", [], None)
+
+    class Deleting(FakeProvider):
+        def paint(self, im, prompt, aspect=None, size="4K"):
+            st.delete_try(t.id)
+            return super().paint(im, prompt, aspect, size)
+
+    assert studio.paint(st, ps, Deleting(), t.id) is None
+    assert list((tmp_path / "studio" / "tries").glob("*")) == []

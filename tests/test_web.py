@@ -1262,10 +1262,9 @@ def _photo_in_studio(svc, kind=None):
 def test_paint_queues_one_job_and_redirects(client, monkeypatch):
     c, svc = client
     p = _photo_in_studio(svc, "portrait")
-    submitted = []
-    monkeypatch.setattr(
-        svc, "submit", lambda kind, args=None: submitted.append((kind, args))
-    )
+    submitted, real = [], svc.submit
+    monkeypatch.setattr(svc, "submit", lambda kind, args=None: submitted.append(
+        (kind, args)) or real(kind, args))  # fmt: skip
     r = c.post(f"/studio/{p.id}/paint", follow_redirects=False,
                data={"painter": "hopper", "setting": "keep", "shape": "fill",
                      "nudge": ["warmer light"], "nudge_text": "less desert"})  # fmt: skip
@@ -1274,7 +1273,8 @@ def test_paint_queues_one_job_and_redirects(client, monkeypatch):
     assert submitted == [("paint", {"try": t.id})]
     assert t.nudges == ["warmer light", "less desert"] and t.painter == "Edward Hopper"
     page = c.get(f"/studio/{p.id}").text
-    assert 'http-equiv="refresh"' in page and "Edward Hopper" in page
+    assert "data-poll" in page and "Edward Hopper" in page
+    assert "Waiting for other jobs" in page
 
 
 def test_studio_form_keeps_the_last_choices(client, monkeypatch):
@@ -1417,6 +1417,7 @@ def test_a_try_still_painting_has_no_delete(client):
     p = _photo_in_studio(svc)
     st = svc.studio()
     t = st.start_try(p.id, st.painter("monet"), "keep", "fill", [], None)
+    st.begin_try(t.id)
     assert f"/studio/tries/{t.id}/delete" not in c.get(f"/studio/{p.id}").text
     assert c.post(f"/studio/tries/{t.id}/delete").status_code == 400
 
@@ -1544,3 +1545,49 @@ def test_removing_a_portrait_updates_the_tv(client, monkeypatch):
     )
     c.post(f"/portraits/{painting.id}/remove")
     assert submitted == [("portraits", None)]
+
+
+def test_studio_polls_the_tries_without_reloading_the_form(client, monkeypatch):
+    c, svc = client
+    p = _photo_in_studio(svc, "portrait")
+    c.post(f"/studio/{p.id}/paint",
+           data={"painter": "hopper", "setting": "keep", "shape": "fill"})  # fmt: skip
+    page = c.get(f"/studio/{p.id}").text
+    assert 'http-equiv="refresh"' not in page
+    results = page.split('id="studio-results"')[1]
+    assert 'id="paint"' not in results and "data-poll" in page
+    # A refused paint while another paints: no reload onto the POST-only URL.
+    r = c.post(f"/studio/{p.id}/paint", data={"painter": "hopper"})
+    assert r.status_code == 400 and 'http-equiv="refresh"' not in r.text
+
+
+def test_a_queued_try_is_not_stuck_however_long_it_waits(client):
+    c, svc = client
+    p = _photo_in_studio(svc)
+    st = svc.studio()
+    t = st.start_try(p.id, st.painter("monet"), "keep", "fill", [], None)
+    svc.submit("paint", {"try": t.id})
+    st.db.execute(
+        "update tries set made_at = ? where id = ?", (time.time() - 3600, t.id)
+    )
+    st.db.commit()
+    page = c.get(f"/studio/{p.id}").text
+    assert "never finished" not in page and "Waiting for other jobs" in page
+    # Deleting a queued try cancels it: the job then finds nothing to paint.
+    assert f"/studio/tries/{t.id}/delete" in page
+    painting = st.start_try(p.id, st.painter("monet"), "keep", "fill", [], None)
+    st.begin_try(painting.id)
+    st.db.execute("update tries set started_at = ? where id = ?",
+                  (time.time() - 3600, painting.id))  # fmt: skip
+    st.db.commit()
+    assert "This try never finished." in c.get(f"/studio/{p.id}").text
+
+
+def test_a_queued_try_whose_job_was_lost_never_started(client):
+    c, svc = client
+    p = _photo_in_studio(svc)
+    st = svc.studio()
+    t = st.start_try(p.id, st.painter("monet"), "keep", "fill", [], None)
+    page = c.get(f"/studio/{p.id}").text  # no job: the service restarted
+    assert "This try never started." in page and "data-poll" not in page
+    assert f"/studio/tries/{t.id}/delete" in page

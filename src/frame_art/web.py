@@ -847,13 +847,23 @@ def create_app(svc: Service) -> Starlette:
 
     # -- Studio ------------------------------------------------------------------
 
-    # A try still "painting" after this long was lost (a restart mid-paint, say).
+    # A try still "painting" this long after the model was called was lost
+    # (a restart mid-paint, say).
     STUCK = 15 * 60
 
     DONE = {"saved": "Saved to Portraits.", "deleted": "Try deleted."}
 
-    def is_stuck(t) -> bool:
-        return t.status == "painting" and time.time() - t.made_at > STUCK
+    def waiting_tries() -> set[int]:
+        """Tries whose paint job is still queued or running."""
+        return {j.args["try"] for j in [*svc.queued(), svc.current]
+                if j and j.kind == "paint"}  # fmt: skip
+
+    def is_stuck(t, waiting: set[int]) -> bool:
+        """A try that will never finish: its job is gone, or it hung painting."""
+        if t.status == "queued":
+            return t.id not in waiting  # the queue is lost on a restart
+        started = t.started_at or t.made_at
+        return t.status == "painting" and time.time() - started > STUCK
 
     async def studio_index(request: Request):
         return render(request, "studio_index.html", page="studio",
@@ -880,6 +890,11 @@ def create_app(svc: Service) -> Starlette:
     def studio_view(
         request: Request, photo, notice="", errors=(), status=200, form=None
     ):
+        waiting = waiting_tries()
+
+        def stuck(t) -> bool:
+            return is_stuck(t, waiting)
+
         st = svc.studio()
         tries = st.tries(photo.id)
         painters = studio.suggested(st.painters(), photo.kind)
@@ -911,8 +926,10 @@ def create_app(svc: Service) -> Starlette:
             spent=st.spent(photo.id),
             saved=st.saved_try_ids(),
             paintings=st.paintings(photo.id),
-            painting=any(t.status == "painting" and not is_stuck(t) for t in tries),
-            stuck=is_stuck,
+            painting=any(
+                t.status in ("queued", "painting") and not stuck(t) for t in tries
+            ),  # fmt: skip
+            stuck=stuck,
             notice=notice,
             errors=list(errors),
         )
@@ -1002,7 +1019,7 @@ def create_app(svc: Service) -> Starlette:
         t = st.get_try(request.path_params["id"])
         if t is None:
             return PlainTextResponse("unknown try", 404)
-        if t.status == "painting" and not is_stuck(t):
+        if t.status == "painting" and not is_stuck(t, waiting_tries()):
             return PlainTextResponse("that try is still painting", 400)
         try:
             st.delete_try(t.id)

@@ -1,9 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Studio · Frame Art{% endblock %}
-{% block head %}{% if painting %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
 {% block body %}
 <h1>Studio</h1>
-<p class="muted"><a href="/studio">All photos</a> · <a href="/studio/painters">Painters</a> · Spent on this photo: ${{ "%.2f" | format(spent) }}</p>
+<p class="muted"><a href="/studio">All photos</a> · <a href="/studio/painters">Painters</a> · Spent on this photo: <span id="spent">${{ "%.2f" | format(spent) }}</span></p>
 {% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
 {% if errors %}<div class="error"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
 
@@ -41,6 +40,7 @@
   </form>
 </div>
 
+<div id="studio-results">
 {% if paintings %}
 <h2>Portraits from this photo</h2>
 <ul class="tries">
@@ -63,7 +63,9 @@
     {% elif t.status == "failed" %}
     <p class="error">{{ t.error }}</p>
     {% elif stuck(t) %}
-    <p class="error">This try never finished.</p>
+    <p class="error">{% if t.status == "queued" %}This try never started.{% else %}This try never finished.{% endif %}</p>
+    {% elif t.status == "queued" %}
+    <p class="muted">Waiting for other jobs…</p>
     {% else %}
     <p class="muted">Painting…</p>
     {% endif %}
@@ -83,5 +85,27 @@
 </ul>
 {% else %}
 <p class="muted">No tries yet.</p>
+{% endif %}
+</div>
+{% if painting %}
+<script data-poll>
+(() => {
+  // Refresh only the tries while one paints, so the form above keeps what is
+  // being typed into it.
+  const tick = async () => {
+    try {
+      const r = await fetch('/studio/{{ photo.id }}', { cache: 'no-store' })
+      const doc = new DOMParser().parseFromString(await r.text(), 'text/html')
+      for (const id of ['studio-results', 'spent']) {
+        const fresh = doc.getElementById(id)
+        if (fresh) document.getElementById(id).replaceWith(fresh)
+      }
+      if (!doc.querySelector('script[data-poll]')) return
+    } catch (e) {}
+    setTimeout(tick, 5000)
+  }
+  setTimeout(tick, 5000)
+})()
+</script>
 {% endif %}
 {% endblock %}

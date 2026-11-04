@@ -108,7 +108,8 @@ create table if not exists tries (
   error text,
   path text,
   cost real,
-  made_at real not null
+  made_at real not null,
+  started_at real
 );
 create table if not exists paintings (
   id integer primary key autoincrement,
@@ -126,7 +127,7 @@ create table if not exists paintings (
 KEEP_TRIES = 14 * 24 * 3600
 TRY_COLUMNS = (
     "id, photo_id, painter, setting, shape, nudges, from_try, prompt, status, "
-    "error, path, cost, made_at"
+    "error, path, cost, made_at, started_at"
 )
 PAINTING_COLUMNS = "id, try_id, photo_id, painter, prompt, path, cost, saved_at"
 
@@ -149,11 +150,12 @@ class Try:
     nudges: list[str]
     from_try: int | None
     prompt: str
-    status: str  # "painting", "done" or "failed"
+    status: str  # "queued", "painting", "done" or "failed"
     error: str | None
     path: str | None
     cost: float | None
     made_at: float
+    started_at: float | None  # when the model was called
 
 
 @dataclass(frozen=True)
@@ -213,6 +215,9 @@ class StudioStore:
         self.db = sqlite3.connect(db_path, timeout=30)
         self.db.execute("pragma journal_mode=wal")
         self.db.executescript(SCHEMA)
+        cols = {r[1] for r in self.db.execute("pragma table_info(tries)")}
+        if "started_at" not in cols:  # tries made before tries could queue
+            self.db.execute("alter table tries add column started_at real")
         self.dir = files_dir
         self._seed()
 
@@ -293,7 +298,7 @@ class StudioStore:
                 "insert into tries (photo_id, painter, setting, shape, nudges, "
                 "from_try, prompt, status, made_at) values (?,?,?,?,?,?,?,?,?)",
                 (photo_id, painter.name, setting, shape, json.dumps(nudges), from_try,
-                 prompt, "painting", time.time()),
+                 prompt, "queued", time.time()),
             )  # fmt: skip
         return self.get_try(cur.lastrowid)
 
@@ -310,6 +315,15 @@ class StudioStore:
         )
         return [_try(r) for r in rows]
 
+    def begin_try(self, id: int) -> bool:
+        """Mark a queued try as painting now; False when it was deleted."""
+        with self.db:
+            cur = self.db.execute(
+                "update tries set status = 'painting', started_at = ? where id = ?",
+                (time.time(), id),
+            )
+        return cur.rowcount == 1
+
     def finish_try(self, id: int, im: Image.Image, cost: float | None) -> None:
         path = self.dir / "tries" / f"{id}.jpg"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -317,10 +331,12 @@ class StudioStore:
         im.convert("RGB").save(tmp, "JPEG", quality=95)
         tmp.replace(path)
         with self.db:
-            self.db.execute(
+            cur = self.db.execute(
                 "update tries set status = 'done', path = ?, cost = ? where id = ?",
                 (str(path), cost, id),
             )
+        if cur.rowcount == 0:  # deleted (or its photo was) while painting
+            path.unlink(missing_ok=True)
 
     def fail_try(self, id: int, error: str) -> None:
         with self.db:
@@ -450,7 +466,7 @@ def paint(
     None when the try was deleted before its turn came.
     """
     t = store.get_try(try_id)
-    if t is None:
+    if t is None or not store.begin_try(try_id):
         return None
     p = photos.get(t.photo_id)
     try:
@@ -471,4 +487,4 @@ def paint(
     else:
         store.finish_try(try_id, out.image, out.cost)
         log.info("try %s painted (cost %s)", try_id, out.cost)
-    return store.get_try(try_id)
+    return store.get_try(try_id)  # None if deleted while painting
