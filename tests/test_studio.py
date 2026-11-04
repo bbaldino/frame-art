@@ -154,3 +154,92 @@ def test_old_unsaved_tries_are_pruned(tmp_path):
     assert st.prune(time.time()) == 1
     assert st.get_try(old.id) is None and not Path(old.path).exists()
     assert st.get_try(new.id) is not None
+
+
+# -- saving -----------------------------------------------------------------------
+
+
+def done_try(st, ps, p, prov=None):
+    t = st.start_try(p.id, HOPPER, "keep", "fill", [], None)
+    return studio.paint(st, ps, prov or FakeProvider(), t.id)
+
+
+def test_save_copies_the_try_without_painting(tmp_path):
+    ps, p = photo(tmp_path)
+    st, prov = store(tmp_path), FakeProvider()
+    t = done_try(st, ps, p, prov)
+    calls = len(prov.calls)
+    saved = st.save(t.id)
+    assert len(prov.calls) == calls
+    assert Path(saved.path).read_bytes() == Path(t.path).read_bytes()
+    assert Path(saved.path).parent.name == "paintings"
+    assert (saved.try_id, saved.photo_id, saved.painter, saved.cost) == (
+        t.id, p.id, "Edward Hopper", 0.12)  # fmt: skip
+    assert st.save(t.id).id == saved.id and len(st.paintings()) == 1
+    assert st.get_painting(saved.id) == saved and st.saved_try_ids() == {t.id}
+    failed = st.start_try(p.id, HOPPER, "keep", "fill", [], None)
+    st.fail_try(failed.id, "nope")
+    with pytest.raises(ValueError):
+        st.save(failed.id)
+
+
+def test_saved_tries_survive_pruning(tmp_path):
+    ps, p = photo(tmp_path)
+    st = store(tmp_path)
+    t = done_try(st, ps, p)
+    saved = st.save(t.id)
+    st.db.execute("update tries set made_at = ? where id = ?",
+                  (time.time() - 15 * 86400, t.id))  # fmt: skip
+    st.db.commit()
+    assert st.prune(time.time()) == 0
+    assert Path(t.path).exists() and Path(saved.path).exists()
+
+
+def test_remove_painting_deletes_row_and_file(tmp_path):
+    ps, p = photo(tmp_path)
+    st = store(tmp_path)
+    saved = st.save(done_try(st, ps, p).id)
+    assert st.remove_painting(saved.id) is True
+    assert st.get_painting(saved.id) is None and not Path(saved.path).exists()
+    assert st.remove_painting(saved.id) is False
+
+
+def test_delete_try_refuses_a_saved_one(tmp_path):
+    ps, p = photo(tmp_path)
+    st = store(tmp_path)
+    keep, drop = done_try(st, ps, p), done_try(st, ps, p)
+    st.save(keep.id)
+    assert st.delete_try(drop.id) is True
+    assert st.get_try(drop.id) is None and not Path(drop.path).exists()
+    with pytest.raises(ValueError):
+        st.delete_try(keep.id)
+    assert st.delete_try(drop.id) is False
+
+
+def test_paint_of_a_deleted_try_does_nothing(tmp_path):
+    ps, p = photo(tmp_path)
+    st, prov = store(tmp_path), FakeProvider()
+    t = st.start_try(p.id, HOPPER, "keep", "fill", [], None)
+    st.delete_try(t.id)
+    assert studio.paint(st, ps, prov, t.id) is None and prov.calls == []
+
+
+def test_forget_photo_keeps_its_paintings(tmp_path):
+    ps, p = photo(tmp_path)
+    st = store(tmp_path)
+    t, other = done_try(st, ps, p), done_try(st, ps, p)
+    saved = st.save(t.id)
+    st.forget_photo(p.id)
+    assert st.tries(p.id) == [] and not Path(other.path).exists()
+    kept = st.get_painting(saved.id)
+    assert kept.photo_id is None and Path(kept.path).exists()
+
+
+def test_counts_per_photo(tmp_path):
+    ps, p = photo(tmp_path)
+    st = store(tmp_path)
+    t = done_try(st, ps, p)
+    done_try(st, ps, p)
+    st.save(t.id)
+    assert st.counts() == {p.id: (2, 1)}
+    assert [x.id for x in st.paintings(p.id)] == [st.paintings()[0].id]

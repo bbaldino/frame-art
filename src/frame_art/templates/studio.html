@@ -41,6 +41,18 @@
   </form>
 </div>
 
+{% if paintings %}
+<h2>Portraits from this photo</h2>
+<ul class="tries">
+  {% for pt in paintings %}
+  <li class="try-card">
+    <a href="/portraits/{{ pt.id }}.jpg" target="_blank"><img src="/portraits/{{ pt.id }}/thumb" alt="" loading="lazy"></a>
+    <p class="small"><b>{{ pt.painter }}</b> · from try #{{ pt.try_id }} · <a href="/portraits">Portraits</a></p>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
 <h2>Tries</h2>
 {% if tries %}
 <ul class="tries">
@@ -56,9 +68,16 @@
     <p class="muted">Painting…</p>
     {% endif %}
     <p class="small"><b>#{{ t.id }} {{ t.painter }}</b>{% if t.from_try %} · from #{{ t.from_try }}{% else %} · {{ "keep the place" if t.setting == "keep" else "reinvent" }} · {{ "fill" if t.shape == "fill" else "photo's shape" }}{% endif %}{% if t.nudges %} · {{ t.nudges | join("; ") }}{% endif %}{% if t.cost %} · ${{ "%.2f" | format(t.cost) }}{% endif %}</p>
-    {% if t.status == "done" %}
-    <div class="form-actions"><a class="button" href="/studio/{{ photo.id }}?from={{ t.id }}#paint">Try again from this</a></div>
-    {% endif %}
+    <div class="form-actions">
+      {% if t.status == "done" %}
+      <a class="button" href="/studio/{{ photo.id }}?from={{ t.id }}#paint">Try again from this</a>
+      {% if t.id in saved %}<span class="badge">Saved</span>
+      {% else %}<form method="post" action="/studio/tries/{{ t.id }}/save" class="inline-form"><button type="submit" class="primary">Save to Portraits</button></form>{% endif %}
+      {% endif %}
+      {% if t.id not in saved and (t.status != "painting" or stuck(t)) %}
+      <form method="post" action="/studio/tries/{{ t.id }}/delete" class="inline-form"><button type="submit" class="danger">Delete</button></form>
+      {% endif %}
+    </div>
   </li>
   {% endfor %}
 </ul>

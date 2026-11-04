@@ -651,6 +651,7 @@ def create_app(svc: Service) -> Starlette:
             "photos.html",
             page="photos",
             photos=svc.photos().all(),
+            counts=svc.studio().counts(),
             label=lambda s: info(s).label,
             notice=notice,
             errors=list(errors),
@@ -842,6 +843,8 @@ def create_app(svc: Service) -> Starlette:
     # A try still "painting" after this long was lost (a restart mid-paint, say).
     STUCK = 15 * 60
 
+    DONE = {"saved": "Saved to Portraits.", "deleted": "Try deleted."}
+
     def is_stuck(t) -> bool:
         return t.status == "painting" and time.time() - t.made_at > STUCK
 
@@ -874,6 +877,7 @@ def create_app(svc: Service) -> Starlette:
         tries = st.tries(photo.id)
         painters = studio.suggested(st.painters(), photo.kind)
         chosen = last_choices(photo, tries, painters)
+        notice = notice or DONE.get(request.query_params.get("done", ""), "")
         if form is not None:
             name = (form.get("painter_name") or "").strip()
             chosen.update(
@@ -898,6 +902,8 @@ def create_app(svc: Service) -> Starlette:
             tries=tries,
             from_try=from_try,
             spent=st.spent(photo.id),
+            saved=st.saved_try_ids(),
+            paintings=st.paintings(photo.id),
             painting=any(t.status == "painting" and not is_stuck(t) for t in tries),
             stuck=is_stuck,
             notice=notice,
@@ -959,10 +965,12 @@ def create_app(svc: Service) -> Starlette:
         t = svc.studio().get_try(request.path_params["id"])
         if t is None or not t.path or not Path(t.path).is_file():
             return PlainTextResponse("not found", 404)
-        out = thumbs / "tries" / f"{t.id}.jpg"
+        return thumb_of(Path(t.path), thumbs / "tries" / f"{t.id}.jpg")
+
+    def thumb_of(src: Path, out: Path) -> FileResponse:
         if not out.exists():
             out.parent.mkdir(parents=True, exist_ok=True)
-            with Image.open(t.path) as im:
+            with Image.open(src) as im:
                 im = im.convert("RGB")
                 im.thumbnail((960, 960), Image.LANCZOS)
                 tmp = out.with_suffix(".tmp")
@@ -970,6 +978,66 @@ def create_app(svc: Service) -> Starlette:
                 tmp.replace(out)
         return FileResponse(out, media_type="image/jpeg",
                             headers={"Cache-Control": "private, max-age=86400"})  # fmt: skip
+
+    async def save_try(request: Request):
+        st = svc.studio()
+        t = st.get_try(request.path_params["id"])
+        if t is None:
+            return PlainTextResponse("unknown try", 404)
+        try:
+            st.save(t.id)
+        except ValueError as e:
+            return PlainTextResponse(str(e), 400)
+        return RedirectResponse(f"/studio/{t.photo_id}?done=saved", status_code=303)
+
+    async def delete_try(request: Request):
+        st = svc.studio()
+        t = st.get_try(request.path_params["id"])
+        if t is None:
+            return PlainTextResponse("unknown try", 404)
+        if t.status == "painting" and not is_stuck(t):
+            return PlainTextResponse("that try is still painting", 400)
+        try:
+            st.delete_try(t.id)
+        except ValueError as e:
+            return PlainTextResponse(str(e), 400)
+        (thumbs / "tries" / f"{t.id}.jpg").unlink(missing_ok=True)
+        return RedirectResponse(f"/studio/{t.photo_id}?done=deleted", status_code=303)
+
+    # -- Portraits --------------------------------------------------------------
+
+    def portraits_view(request: Request, notice=""):
+        ps = svc.photos()
+        return render(request, "paintings.html", page="portraits",
+                      paintings=svc.studio().paintings(), notice=notice,
+                      photo=lambda pid: ps.get(pid) if pid else None)  # fmt: skip
+
+    async def portraits_page(request: Request):
+        return portraits_view(request)
+
+    def painting_file(request: Request):
+        p = svc.studio().get_painting(request.path_params["id"])
+        return p if p is not None and Path(p.path).is_file() else None
+
+    async def painting_image(request: Request):
+        p = painting_file(request)
+        if p is None:
+            return PlainTextResponse("not found", 404)
+        return FileResponse(p.path, media_type="image/jpeg",
+                            headers={"Cache-Control": "private, max-age=86400"})  # fmt: skip
+
+    async def painting_thumb(request: Request):
+        p = painting_file(request)
+        if p is None:
+            return PlainTextResponse("not found", 404)
+        return thumb_of(Path(p.path), thumbs / "paintings" / f"{p.id}.jpg")
+
+    async def remove_painting(request: Request):
+        pid = request.path_params["id"]
+        if not svc.studio().remove_painting(pid):
+            return PlainTextResponse("unknown portrait", 404)
+        (thumbs / "paintings" / f"{pid}.jpg").unlink(missing_ok=True)
+        return portraits_view(request, notice="Removed from Portraits.")
 
     # -- Studio: painters -------------------------------------------------------
 
@@ -1022,6 +1090,7 @@ def create_app(svc: Service) -> Starlette:
         if p is None:
             return PlainTextResponse("unknown photo", 404)
         store.remove(pid)
+        svc.studio().forget_photo(pid)
         (thumbs / "photos" / f"{pid}.jpg").unlink(missing_ok=True)
         return photos_view(request, notice=f"Removed {p.filename}.")
 
@@ -1466,6 +1535,12 @@ def create_app(svc: Service) -> Starlette:
             Route("/studio", studio_index),
             Route("/studio/tries/{id:int}.jpg", try_image),
             Route("/studio/tries/{id:int}/thumb", try_thumb),
+            Route("/studio/tries/{id:int}/save", save_try, methods=["POST"]),
+            Route("/studio/tries/{id:int}/delete", delete_try, methods=["POST"]),
+            Route("/portraits", portraits_page),
+            Route("/portraits/{id:int}.jpg", painting_image),
+            Route("/portraits/{id:int}/thumb", painting_thumb),
+            Route("/portraits/{id:int}/remove", remove_painting, methods=["POST"]),
             Route("/studio/painters", painters_page),
             Route("/studio/painters", add_painter, methods=["POST"]),
             Route("/studio/painters/{slug}", edit_painter, methods=["POST"]),

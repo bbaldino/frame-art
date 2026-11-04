@@ -54,6 +54,7 @@
         {% if p.kind is none %}<span class="muted small">Choose a kind</span>
         {% elif p.kind_auto and p.kind_reason %}<span class="muted small">suggested: {{ p.kind_reason }}</span>{% endif %}
       </form>
+      {% set n = counts.get(p.id) %}{% if n %}<span class="muted small">{{ n[0] }} {{ "try" if n[0] == 1 else "tries" }} · {{ n[1] }} {{ "portrait" if n[1] == 1 else "portraits" }}</span>{% endif %}
       <a class="button" href="/studio/{{ p.id }}">Paint in the Studio</a>
       <form method="post" action="/photos/{{ p.id }}/delete" class="inline-form">
         <button type="submit" class="danger">Delete</button>

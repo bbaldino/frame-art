@@ -2,10 +2,13 @@ import dataclasses
 import html
 import json
 import time
+from pathlib import Path
 
 import pytest
+from PIL import Image
 from starlette.testclient import TestClient
 
+from frame_art import studio
 from frame_art.catalogue import Catalogue
 from frame_art.model import Work
 from frame_art.schedules import everyday
@@ -1348,3 +1351,124 @@ def test_nightly_prunes_old_studio_tries(client, tmp_path, monkeypatch):
     svc._run(Job("nightly"))
     assert svc.studio().get_try(t.id) is None
     assert svc.catalogue().runs(1)[0]["summary"]["tries_pruned"] == 1
+
+
+def test_paint_job_for_a_deleted_try_is_quiet(client, tmp_path, monkeypatch):
+    c, svc = client
+    keys = tmp_path / "keys"
+    (keys / "openrouter").mkdir(parents=True)
+    (keys / "openrouter" / "key").write_text("sk-test")
+    monkeypatch.setenv("FRAME_ART_KEYS", str(keys))
+    p = _photo_in_studio(svc)
+    st = svc.studio()
+    t = st.start_try(p.id, st.painter("monet"), "keep", "fill", [], None)
+    st.delete_try(t.id)
+    assert svc._paint(t.id) == {"try": t.id, "status": "deleted"}
+
+
+def _done_try(svc, p, painter="monet"):
+    st = svc.studio()
+    t = st.start_try(p.id, st.painter(painter), "keep", "fill", [], None)
+    st.finish_try(t.id, Image.new("RGB", (64, 36), "orange"), 0.12)
+    return st.get_try(t.id)
+
+
+def test_save_a_try_to_portraits(client):
+    c, svc = client
+    p = _photo_in_studio(svc, "portrait")
+    t = _done_try(svc, p)
+    page = c.get(f"/studio/{p.id}").text
+    assert f'action="/studio/tries/{t.id}/save"' in page
+    r = c.post(f"/studio/tries/{t.id}/save", follow_redirects=False)
+    assert (
+        r.status_code == 303 and r.headers["location"] == f"/studio/{p.id}?done=saved"
+    )
+    page = c.get(r.headers["location"]).text
+    assert "Saved to Portraits." in page
+    assert f'action="/studio/tries/{t.id}/save"' not in page
+    assert f'action="/studio/tries/{t.id}/delete"' not in page
+    (painting,) = svc.studio().paintings()
+    assert (
+        "Portraits from this photo" in page
+        and f"/portraits/{painting.id}/thumb" in page
+    )
+    assert c.post("/studio/tries/999/save").status_code == 404
+
+
+def test_delete_a_try(client):
+    c, svc = client
+    p = _photo_in_studio(svc)
+    t = _done_try(svc, p)
+    page = c.get(f"/studio/{p.id}").text
+    assert f'action="/studio/tries/{t.id}/delete"' in page
+    r = c.post(f"/studio/tries/{t.id}/delete", follow_redirects=False)
+    assert r.headers["location"] == f"/studio/{p.id}?done=deleted"
+    assert "Try deleted." in c.get(r.headers["location"]).text
+    assert svc.studio().get_try(t.id) is None and not Path(t.path).exists()
+    kept = _done_try(svc, p)
+    svc.studio().save(kept.id)
+    assert c.post(f"/studio/tries/{kept.id}/delete").status_code == 400
+
+
+def test_a_try_still_painting_has_no_delete(client):
+    c, svc = client
+    p = _photo_in_studio(svc)
+    st = svc.studio()
+    t = st.start_try(p.id, st.painter("monet"), "keep", "fill", [], None)
+    assert f"/studio/tries/{t.id}/delete" not in c.get(f"/studio/{p.id}").text
+    assert c.post(f"/studio/tries/{t.id}/delete").status_code == 400
+
+
+def test_deleting_a_photo_keeps_its_portraits(client):
+    c, svc = client
+    p = _photo_in_studio(svc)
+    t, other = _done_try(svc, p), _done_try(svc, p)
+    painting = svc.studio().save(t.id)
+    c.post(f"/photos/{p.id}/delete")
+    assert svc.studio().tries(p.id) == [] and not Path(other.path).exists()
+    assert svc.studio().get_painting(painting.id).photo_id is None
+    assert c.get(f"/studio/{p.id}").status_code == 404
+    page = c.get("/portraits").text
+    assert f"/portraits/{painting.id}/thumb" in page and "photo deleted" in page
+
+
+def test_portraits_page_links_and_removes(client):
+    c, svc = client
+    p = _photo_in_studio(svc, "portrait")
+    painting = svc.studio().save(_done_try(svc, p, "hopper").id)
+    page = c.get("/portraits").text
+    assert "Edward Hopper" in page and "$0.12" in page
+    assert f'href="/studio/{p.id}"' in page and f"/photos/{p.id}/thumb" in page
+    assert 'href="/portraits"' in c.get("/").text
+    assert (
+        c.get(f"/portraits/{painting.id}.jpg").content
+        == Path(painting.path).read_bytes()
+    )
+    assert c.get(f"/portraits/{painting.id}/thumb").status_code == 200
+    r = c.post(f"/portraits/{painting.id}/remove")
+    assert r.status_code == 200 and "Removed" in r.text
+    assert svc.studio().get_painting(painting.id) is None
+    assert not Path(painting.path).exists()
+    assert c.get(f"/portraits/{painting.id}.jpg").status_code == 404
+    assert c.post(f"/portraits/{painting.id}/remove").status_code == 404
+
+
+def test_photos_page_counts_tries_and_portraits(client):
+    c, svc = client
+    p = _photo_in_studio(svc)
+    svc.studio().save(_done_try(svc, p).id)
+    _done_try(svc, p)
+    assert "2 tries · 1 portrait" in c.get("/photos").text
+
+
+def test_paintings_stay_off_the_museum_pages(client):
+    c, svc = client
+    p = _photo_in_studio(svc)
+    st = svc.studio()
+    t = st.start_try(p.id, studio.Painter("", "Mary Cassatt", "", ()), "keep",
+                     "fill", [], None)  # fmt: skip
+    st.finish_try(t.id, Image.new("RGB", (64, 36), "orange"), 0.12)
+    painting = st.save(t.id)
+    for page in ("/", "/catalogue", "/pool", "/collection", "/variants", "/history"):
+        text = c.get(page).text
+        assert "Mary Cassatt" not in text and painting.path not in text, page

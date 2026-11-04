@@ -302,6 +302,8 @@ class Service:
             st.fail_try(try_id, "No OpenRouter key")
             return {"try": try_id, "failed": ["No OpenRouter key"]}
         t = studio.paint(st, self.photos(), provider, try_id)
+        if t is None:
+            return {"try": try_id, "status": "deleted"}
         out = {"try": try_id, "status": t.status, "cost": t.cost}
         if t.status == "failed":
             out["failed"] = [t.error]

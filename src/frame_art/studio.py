@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -109,6 +110,16 @@ create table if not exists tries (
   cost real,
   made_at real not null
 );
+create table if not exists paintings (
+  id integer primary key autoincrement,
+  try_id integer not null unique,
+  photo_id text,
+  painter text not null,
+  prompt text not null,
+  path text not null,
+  cost real,
+  saved_at real not null
+);
 """
 
 # Unsaved tries are deleted after this long.
@@ -117,6 +128,7 @@ TRY_COLUMNS = (
     "id, photo_id, painter, setting, shape, nudges, from_try, prompt, status, "
     "error, path, cost, made_at"
 )
+PAINTING_COLUMNS = "id, try_id, photo_id, painter, prompt, path, cost, saved_at"
 
 
 @dataclass(frozen=True)
@@ -142,6 +154,18 @@ class Try:
     path: str | None
     cost: float | None
     made_at: float
+
+
+@dataclass(frozen=True)
+class Painting:
+    id: int
+    try_id: int
+    photo_id: str | None  # None once the photo is deleted
+    painter: str
+    prompt: str
+    path: str
+    cost: float | None
+    saved_at: float
 
 
 def _try(row) -> Try:
@@ -311,13 +335,25 @@ class StudioStore:
         ).fetchone()
         return total
 
-    def _kept_tries(self) -> set[int]:
-        """Tries that must outlive pruning (saved ones, from Task 4 on)."""
-        return set()
+    def saved_try_ids(self) -> set[int]:
+        return {r[0] for r in self.db.execute("select try_id from paintings")}
+
+    def delete_try(self, id: int) -> bool:
+        """Delete an unsaved try and its file; False when it is already gone."""
+        t = self.get_try(id)
+        if t is None:
+            return False
+        if id in self.saved_try_ids():
+            raise ValueError("that try is saved; remove it from Portraits instead")
+        with self.db:
+            self.db.execute("delete from tries where id = ?", (id,))
+        if t.path:
+            Path(t.path).unlink(missing_ok=True)
+        return True
 
     def prune(self, now: float) -> int:
         """Delete unsaved tries older than KEEP_TRIES, files included."""
-        kept = self._kept_tries()
+        kept = self.saved_try_ids()
         rows = self.db.execute(
             "select id, path from tries where made_at < ?", (now - KEEP_TRIES,)
         ).fetchall()
@@ -330,12 +366,92 @@ class StudioStore:
                 Path(path).unlink(missing_ok=True)
         return len(doomed)
 
+    # -- paintings --------------------------------------------------------------
+
+    def save(self, try_id: int) -> Painting:
+        """Keep a finished try as a painting: a copy of its file, no model call."""
+        existing = self.db.execute(
+            f"select {PAINTING_COLUMNS} from paintings where try_id = ?", (try_id,)
+        ).fetchone()
+        if existing:
+            return Painting(*existing)
+        t = self.get_try(try_id)
+        if t is None or t.status != "done" or not t.path:
+            raise ValueError("only a finished try can be saved")
+        with self.db:
+            cur = self.db.execute(
+                "insert into paintings (try_id, photo_id, painter, prompt, path, "
+                "cost, saved_at) values (?,?,?,?,?,?,?)",
+                (t.id, t.photo_id, t.painter, t.prompt, "", t.cost, time.time()),
+            )
+            path = self.dir / "paintings" / f"{cur.lastrowid}.jpg"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(t.path, path)
+            self.db.execute("update paintings set path = ? where id = ?",
+                            (str(path), cur.lastrowid))  # fmt: skip
+        return self.get_painting(cur.lastrowid)
+
+    def get_painting(self, id: int) -> Painting | None:
+        row = self.db.execute(
+            f"select {PAINTING_COLUMNS} from paintings where id = ?", (id,)
+        ).fetchone()
+        return Painting(*row) if row else None
+
+    def paintings(self, photo_id: str | None = None) -> list[Painting]:
+        """Saved paintings, newest first; only one photo's when given."""
+        where, args = ("where photo_id = ?", (photo_id,)) if photo_id else ("", ())
+        rows = self.db.execute(
+            f"select {PAINTING_COLUMNS} from paintings {where} order by id desc", args
+        )
+        return [Painting(*r) for r in rows]
+
+    def remove_painting(self, id: int) -> bool:
+        p = self.get_painting(id)
+        if p is None:
+            return False
+        with self.db:
+            self.db.execute("delete from paintings where id = ?", (id,))
+        Path(p.path).unlink(missing_ok=True)
+        return True
+
+    def forget_photo(self, photo_id: str) -> None:
+        """The photo is gone: drop its tries, keep its paintings unlinked."""
+        rows = self.db.execute(
+            "select path from tries where photo_id = ?", (photo_id,)
+        ).fetchall()
+        with self.db:
+            self.db.execute("delete from tries where photo_id = ?", (photo_id,))
+            self.db.execute("update paintings set photo_id = null where photo_id = ?",
+                            (photo_id,))  # fmt: skip
+        for (path,) in rows:
+            if path:
+                Path(path).unlink(missing_ok=True)
+
+    def counts(self) -> dict[str, tuple[int, int]]:
+        """photo id -> (tries, saved paintings), for photos that have either."""
+        out: dict[str, list[int]] = {}
+        for pid, n in self.db.execute(
+            "select photo_id, count(*) from tries group by photo_id"
+        ):
+            out.setdefault(pid, [0, 0])[0] = n
+        for pid, n in self.db.execute(
+            "select photo_id, count(*) from paintings where photo_id is not null "
+            "group by photo_id"
+        ):
+            out.setdefault(pid, [0, 0])[1] = n
+        return {k: tuple(v) for k, v in out.items()}
+
 
 def paint(
     store: StudioStore, photos: PhotoStore, provider: ImageProvider, try_id: int
-) -> Try:
-    """Paint a started try. A model failure fails the try; it never raises."""
+) -> Try | None:
+    """Paint a started try. A model failure fails the try; it never raises.
+
+    None when the try was deleted before its turn came.
+    """
     t = store.get_try(try_id)
+    if t is None:
+        return None
     p = photos.get(t.photo_id)
     try:
         if p is None:

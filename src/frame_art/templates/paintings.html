@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Portraits · Frame Art{% endblock %}
+{% block body %}
+<h1>Portraits</h1>
+<p class="muted">Paintings you saved in the <a href="/studio">Studio</a>.</p>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{% if paintings %}
+<ul class="tries">
+  {% for pt in paintings %}
+  {% set src = photo(pt.photo_id) %}
+  <li class="try-card">
+    <a href="/portraits/{{ pt.id }}.jpg" target="_blank"><img src="/portraits/{{ pt.id }}/thumb" alt="" loading="lazy"></a>
+    <div class="portrait-info">
+      {% if src %}<a href="/studio/{{ src.id }}" class="portrait-source" title="{{ src.filename }}"><img src="/photos/{{ src.id }}/thumb" alt=""></a>{% endif %}
+      <p class="small"><b>{{ pt.painter }}</b>{% if pt.cost %} · ${{ "%.2f" | format(pt.cost) }}{% endif %} · <span class="muted">{{ when(pt.saved_at) }}</span><br>
+      {% if src %}<a href="/studio/{{ src.id }}">From {{ src.filename }}</a>{% else %}<span class="muted">photo deleted</span>{% endif %}</p>
+    </div>
+    <form method="post" action="/portraits/{{ pt.id }}/remove" class="inline-form"><button type="submit" class="danger">Remove</button></form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No portraits yet. Save a try in the Studio to keep it here.</p>
+{% endif %}
+{% endblock %}
