@@ -17,6 +17,7 @@ import logging
 import os
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -224,7 +225,8 @@ def create_session(http: Http, token: str) -> PickSession:
 
 def session_done(http: Http, token: str, id: str) -> bool:
     """True once Brian has pressed Done in the picker."""
-    d = _picker(http, token, "GET", f"{PICKER}/sessions/{id}").json()
+    # Asked on every page load, so never retried: the next load asks again.
+    d = _picker(http, token, "GET", f"{PICKER}/sessions/{id}", retries=0).json()
     return bool(d.get("mediaItemsSet"))
 
 
@@ -255,19 +257,29 @@ def delete_session(http: Http, token: str, id: str) -> None:
         log.warning("couldn't close picker session: %s", e)
 
 
-def import_picked(store: PhotoStore, http: Http, token: str, id: str) -> dict:
-    """Copy the photos picked in session ``id`` into ``store``, then close it."""
+def import_picked(
+    store: PhotoStore, http: Http, token: Callable[[], str], id: str
+) -> dict:
+    """Copy the photos picked in session ``id`` into ``store``, then close it.
+
+    ``token()`` gives a current access token; it is asked before each call, so a
+    long import outlives the hour a token lasts. An ended sign-in stops the
+    import, and the result still counts what came in before it.
+    """
     added, skipped, failed = 0, 0, []
     known = {p.source_id for p in store.all() if p.source == "google-photos"}
-    for item in picked_items(http, token, id):
+    for item in picked_items(http, token(), id):
         name = item["mediaFile"].get("filename") or item["id"]
         if item["id"] in known:
             skipped += 1
             continue
         try:
-            p = store.add(
-                "google-photos", item["id"], download(http, token, item), name
-            )
+            data = download(http, token(), item)
+            p = store.add("google-photos", item["id"], data, name)
+        except SignInNeeded:
+            failed.append({"filename": name,
+                           "error": "Google sign-in ended; sign in again and pick the rest"})  # fmt: skip
+            break
         except (ConnectionError, ValueError) as e:
             log.warning("%s: not added: %s", name, e)
             failed.append({"filename": name, "error": str(e)})
@@ -276,5 +288,8 @@ def import_picked(store: PhotoStore, http: Http, token: str, id: str) -> dict:
             skipped += 1
         else:
             added += 1
-    delete_session(http, token, id)
+    try:
+        delete_session(http, token(), id)
+    except SignInNeeded:
+        pass  # Google drops the session by itself
     return {"added": added, "skipped": skipped, "failed": failed}

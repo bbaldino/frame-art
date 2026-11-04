@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import hashlib
 import logging
 import math
 import re
 import secrets
+import threading
 import time
 from collections import Counter
 from dataclasses import fields
@@ -23,6 +25,7 @@ from urllib.parse import urlencode
 import uvicorn
 from PIL import Image
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import (
     FileResponse,
@@ -651,10 +654,26 @@ def create_app(svc: Service) -> Starlette:
         resp.status_code = status
         return resp
 
-    async def photos_page(request: Request):
+    # Google calls block, so the handlers that make them are plain functions,
+    # which Starlette runs in its thread pool. Two quick reloads must not both
+    # queue the import: only one load checks a pending pick at a time.
+    pick_check = threading.Lock()
+
+    def photos_page(request: Request):
         # A pending Google pick is checked once per load; the page reloads itself.
         cat, notice, expired = svc.catalogue(), "", False
-        pick, client = cat.get("google_pick"), google_photos.load_client()
+        if not pick_check.acquire(blocking=False):
+            return photos_view(request)
+        try:
+            pick, client = cat.get("google_pick"), google_photos.load_client()
+            notice, expired = check_pick(cat, pick, client)
+        finally:
+            pick_check.release()
+        return photos_view(request, notice, google_expired=expired)
+
+    def check_pick(cat, pick, client) -> tuple[str, bool]:
+        """(notice, sign-in ended) after looking at the pending pick once."""
+        notice, expired = "", False
         if pick and client is None:
             cat.put("google_pick", None)
         elif pick:
@@ -673,7 +692,7 @@ def create_app(svc: Service) -> Starlette:
                 expired = True
             except ConnectionError as e:
                 notice = f"{e}; trying again in a moment."
-        return photos_view(request, notice, google_expired=expired)
+        return notice, expired
 
     async def upload_photos(request: Request):
         form = await request.form()
@@ -686,7 +705,9 @@ def create_app(svc: Service) -> Starlette:
                 errors.append(f"{f.filename}: too large")
                 continue
             try:
-                p = store.add("upload", f.filename, data, f.filename)
+                # Keyed by content: phones reuse names like IMG_0001.jpg.
+                sha = hashlib.sha256(data).hexdigest()
+                p = store.add("upload", sha, data, f.filename)
             except ValueError:
                 errors.append(f"{f.filename}: not a photo")
                 continue
@@ -762,7 +783,7 @@ def create_app(svc: Service) -> Starlette:
                 400,
             )
         try:
-            google_photos.exchange(Http(timeout=30), client, pasted,
+            await run_in_threadpool(google_photos.exchange, Http(timeout=30), client, pasted,
                                    started["verifier"], started["state"], google_token)  # fmt: skip
         except ValueError as e:
             msg = ("That sign-in didn't match. Start again with this new link."
@@ -770,7 +791,7 @@ def create_app(svc: Service) -> Starlette:
             return google_signin_view(request, msg, 400)
         return photos_view(request, notice="Signed in to Google Photos.")
 
-    async def google_pick(request: Request):
+    def google_pick(request: Request):
         client, cat = google_photos.load_client(), svc.catalogue()
         if client is None:
             return photos_view(
@@ -790,7 +811,7 @@ def create_app(svc: Service) -> Starlette:
             )
         return RedirectResponse("/photos", status_code=303)
 
-    async def google_cancel(request: Request):
+    def google_cancel(request: Request):
         client, cat = google_photos.load_client(), svc.catalogue()
         pick = cat.get("google_pick")
         cat.put("google_pick", None)

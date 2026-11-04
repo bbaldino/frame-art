@@ -18,8 +18,9 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 KINDS = ("portrait", "scene")
-# Pillow's format name -> the extension a stored file gets.
-FORMATS = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}
+# Pillow's format name -> the extension a stored file gets. MPO is a JPEG
+# with extra pictures (Samsung portrait shots, many cameras).
+FORMATS = {"JPEG": "jpg", "MPO": "jpg", "PNG": "png", "WEBP": "webp"}
 
 SCHEMA = """
 create table if not exists photos (
@@ -137,6 +138,18 @@ class PhotoStore:
                 "update photos set kind = ?, kind_reason = ?, kind_auto = ? where id = ?",
                 (kind, reason, int(auto), id),
             )
+
+    def suggest_kind(self, id: str, kind: str, reason: str) -> bool:
+        """Set a suggested kind, unless one was chosen meanwhile. True if set."""
+        if kind not in KINDS:
+            raise ValueError(f"unknown kind {kind!r}")
+        with self.db:
+            cur = self.db.execute(
+                "update photos set kind = ?, kind_reason = ?, kind_auto = 1 "
+                "where id = ? and kind is null",
+                (kind, reason, id),
+            )
+        return cur.rowcount == 1
 
     def remove(self, id: str) -> bool:
         p = self.get(id)

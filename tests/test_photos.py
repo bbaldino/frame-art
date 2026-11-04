@@ -75,3 +75,13 @@ def test_exif_orientation_is_applied(tmp_path):
 def test_not_an_image_is_refused(tmp_path):
     with pytest.raises(ValueError):
         store(tmp_path).add("upload", "x", b"not a picture", "x.jpg")
+
+
+def test_multi_picture_jpeg_is_a_photo(tmp_path):
+    # Samsung portrait shots and many cameras save MPO (a JPEG with a second image).
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), "red").save(
+        buf, "MPO", save_all=True, append_images=[Image.new("RGB", (40, 30), "blue")]
+    )
+    p = store(tmp_path).add("upload", "m", buf.getvalue(), "m.jpg")
+    assert p is not None and p.path.endswith(".jpg")

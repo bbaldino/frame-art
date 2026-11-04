@@ -98,9 +98,12 @@ def describe(http: Http, api_key: str, im: Image.Image, prompt: str, model: str)
     }
     data = _post(http, api_key, body)
     try:
-        return data["choices"][0]["message"]["content"]
+        text = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
-        raise EditFailed("OpenRouter returned no text") from None
+        text = None
+    if not isinstance(text, str):
+        raise EditFailed("OpenRouter returned no text")
+    return text
 
 
 def edit_image(

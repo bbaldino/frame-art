@@ -1,11 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Your photos · Frame Art{% endblock %}
-{% block head %}{% if (pick and google_signed_in) or adding %}<meta http-equiv="refresh" content="5;url=/photos">{% endif %}{% endblock %}
+{% block head %}{% if (pick and google_signed_in) or (adding and not errors) %}<meta http-equiv="refresh" content="5;url=/photos">{% endif %}{% endblock %}
 {% block body %}
 <h1>Your photos</h1>
 <p class="muted">Your own photos, for painting in the Studio. They stay on this server and on this page: never in the catalogue, the crawls or the public pages.</p>
 {% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
-{% if adding %}<p class="notice">Adding your photos and suggesting a kind for each; this page updates by itself.</p>{% endif %}
+{% if adding and errors %}<p class="notice">Suggesting a kind for each new photo; reload to see them.</p>
+{% elif adding %}<p class="notice">Adding your photos and suggesting a kind for each; this page updates by itself.</p>{% endif %}
 {% if errors %}<div class="error"><strong>Not added:</strong><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
 
 <form method="post" action="/photos/upload" enctype="multipart/form-data" class="settings photo-upload">

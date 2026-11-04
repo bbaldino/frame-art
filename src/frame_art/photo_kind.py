@@ -55,6 +55,6 @@ def classify_new(store: PhotoStore, http: Http, api_key: str) -> dict:
             log.warning("%s: no kind suggested: %s", p.id, e)
             failed.append({"id": p.id, "error": str(e)})
             continue
-        store.set_kind(p.id, kind, reason, True)
-        done += 1
+        if store.suggest_kind(p.id, kind, reason):
+            done += 1
     return {"classified": done, "failed": failed}

@@ -1181,3 +1181,51 @@ def test_ended_sign_in_during_a_pick_asks_to_sign_in_again(
     r = c.get("/photos")
     assert r.status_code == 200 and "Sign in again" in r.text
     assert submitted == [] and not svc.catalogue().get("google_pick")
+
+
+def test_uploads_with_the_same_name_are_different_photos(client):
+    c, svc = client
+    c.post(
+        "/photos/upload",
+        files=[("files", ("IMG_0001.jpg", _jpeg("red"), "image/jpeg"))],
+    )
+    r = c.post("/photos/upload",
+               files=[("files", ("IMG_0001.jpg", _jpeg("blue"), "image/jpeg"))])  # fmt: skip
+    assert "Added 1." in r.text and len(svc.photos().all()) == 2
+
+
+def test_upload_refusals_stay_on_screen(client, monkeypatch):
+    from frame_art.service import Job
+
+    c, svc = client
+    monkeypatch.setattr(svc, "queued", lambda: [Job("classify-photos", None)])
+    files = [("files", ("ok.jpg", _jpeg(), "image/jpeg")),
+             ("files", ("clip.mov", b"not a picture", "video/quicktime"))]  # fmt: skip
+    r = c.post("/photos/upload", files=files)
+    assert "clip.mov: not a photo" in r.text and 'http-equiv="refresh"' not in r.text
+
+
+def test_google_calls_stay_off_the_event_loop(client, tmp_path, monkeypatch):
+    import asyncio
+
+    c, svc, gp, submitted = _signed_in_with_pick(client, tmp_path, monkeypatch)
+    on_loop = []
+
+    def done(http, token, id):
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return False
+
+    monkeypatch.setattr(gp, "session_done", done)
+    monkeypatch.setattr(gp, "create_session", lambda http, token: done(http, token, "")
+                        or gp.PickSession("s2", "https://x", time.time() + 60))  # fmt: skip
+    monkeypatch.setattr(
+        gp, "delete_session", lambda http, token, id: done(http, token, id)
+    )
+    c.get("/photos")
+    c.post("/photos/google/cancel")
+    c.post("/photos/google/pick")
+    assert on_loop and not any(on_loop)  # the pick redirects to /photos: 4 calls

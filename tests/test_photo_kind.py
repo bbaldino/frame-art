@@ -57,3 +57,35 @@ def test_classify_new(tmp_path, monkeypatch):
     assert (st.get(a.id).kind, st.get(a.id).kind_auto) == ("scene", True)
     assert st.get(b.id).kind is None
     assert (st.get(c.id).kind, st.get(c.id).kind_auto) == ("portrait", False)
+
+
+@pytest.mark.parametrize("content", [None, [{"type": "text", "text": "x"}]])
+def test_a_reply_without_text_fails_one_photo_not_the_batch(
+    tmp_path, monkeypatch, content
+):
+    store = PhotoStore(tmp_path / "db", tmp_path / "photos")
+    a = store.add("upload", "a", jpeg("red"), "a.jpg")
+    b = store.add("upload", "b", jpeg("blue"), "b.jpg")
+    replies = iter([content, '{"kind": "scene", "reason": "x"}'])
+
+    def post(http, key, body):
+        return {"choices": [{"message": {"content": next(replies)}}]}
+
+    monkeypatch.setattr(openrouter, "_post", post)
+    out = photo_kind.classify_new(store, None, "k")
+    assert out["classified"] == 1 and len(out["failed"]) == 1
+    assert {store.get(a.id).kind, store.get(b.id).kind} == {None, "scene"}
+
+
+def test_suggestion_never_overwrites_a_kind_set_meanwhile(tmp_path, monkeypatch):
+    store = PhotoStore(tmp_path / "db", tmp_path / "photos")
+    p = store.add("upload", "a", jpeg("red"), "a.jpg")
+
+    def slow_reply(*a, **k):
+        store.set_kind(p.id, "scene", None, False)  # Brian clicks while the job runs
+        return '{"kind": "portrait", "reason": "close portrait"}'
+
+    monkeypatch.setattr(openrouter, "describe", slow_reply)
+    photo_kind.classify_new(store, None, "k")
+    got = store.get(p.id)
+    assert (got.kind, got.kind_auto) == ("scene", False)

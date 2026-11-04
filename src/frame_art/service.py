@@ -282,8 +282,11 @@ class Service:
         client = google_photos.load_client()
         if client is None:
             return {"added": 0, "failed": [{"error": "Google Photos isn't set up"}]}
+
+        def token() -> str:
+            return google_photos.access_token(http, client, self.google_token)
+
         try:
-            token = google_photos.access_token(http, client, self.google_token)
             out = google_photos.import_picked(self.photos(), http, token, session)
         except google_photos.SignInNeeded:
             return {

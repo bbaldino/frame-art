@@ -211,9 +211,35 @@ def test_import_adds_new_photos_skips_known_and_names_failures(tmp_path):
         ("GET", "https://lh3.example/b4=d"): (200, {}, _jpeg("blue")),
         ("DELETE", f"{gp.PICKER}/sessions/s1"): (200, {}),
     })  # fmt: skip
-    out = gp.import_picked(store, http, "TOK", "s1")
+    out = gp.import_picked(store, http, lambda: "TOK", "s1")
     assert (out["added"], out["skipped"]) == (2, 1)
     assert [f["filename"] for f in out["failed"]] == ["IMG_3.jpg"]
     assert sorted(p.source_id for p in store.all()) == ["g1", "g2", "g4"]
     assert http.calls[-1]["method"] == "DELETE"
     assert not any(c["url"] == "https://lh3.example/b1=d" for c in http.calls)
+
+
+def test_page_checks_never_retry():
+    # The Your photos page asks on every load; a retry would hold the page up.
+    http = RouteHttp(
+        {("GET", f"{gp.PICKER}/sessions/s1"): (200, {"mediaItemsSet": False})}
+    )
+    gp.session_done(http, "TOK", "s1")
+    assert http.calls[0]["retries"] == 0
+
+
+def test_import_cut_short_by_an_ended_sign_in_reports_what_it_added(tmp_path):
+    from frame_art.photos import PhotoStore
+
+    store = PhotoStore(tmp_path / "frame-art.db", tmp_path / "photos")
+    http = RouteHttp({
+        ("GET", f"{gp.PICKER}/mediaItems"):
+            (200, {"mediaItems": [_item(1), _item(2), _item(3)]}),
+        ("GET", "https://lh3.example/b1=d"): (200, {}, _jpeg("white")),
+        ("GET", "https://lh3.example/b2=d"): (401, {}),
+        ("DELETE", f"{gp.PICKER}/sessions/s1"): (200, {}),
+    })  # fmt: skip
+    out = gp.import_picked(store, http, lambda: "TOK", "s1")
+    assert out["added"] == 1 and len(store.all()) == 1
+    assert out["failed"] and "sign in again" in out["failed"][-1]["error"].lower()
+    assert not any(c["url"] == "https://lh3.example/b3=d" for c in http.calls)
