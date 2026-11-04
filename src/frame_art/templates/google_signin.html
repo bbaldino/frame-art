@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Sign in to Google Photos · Frame Art{% endblock %}
+{% block body %}
+<h1>Sign in to Google Photos</h1>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<ol class="signin-steps">
+  <li><a class="button primary" href="{{ url }}" target="_blank" rel="noopener">Open Google sign-in</a>
+    and approve access. If Google warns the app is unverified, choose <b>Advanced</b>, then continue.</li>
+  <li>Google then sends you to a page starting <code>http://127.0.0.1:8765/</code> that
+    <b>fails to load. That is expected.</b></li>
+  <li>Copy that page's whole address from the address bar and paste it here:
+    <form method="post" action="/photos/google/signin" class="settings signin-paste">
+      <input type="text" name="pasted" placeholder="http://127.0.0.1:8765/?state=…&amp;code=…" autocomplete="off" required>
+      <button type="submit" class="primary">Finish signing in</button>
+    </form>
+  </li>
+</ol>
+<p class="muted small">This link works once and for 15 minutes. While the Google project is in Testing, Google ends the sign-in after 7 days; sign in again then.</p>
+<p><a href="/photos">Back to Your photos</a></p>
+{% endblock %}

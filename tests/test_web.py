@@ -1038,3 +1038,57 @@ def test_photos_stay_off_public_pages(client):
     for page in ("/", "/catalogue", "/pool", "/collection", "/variants"):
         assert "secret-name" not in c.get(page).text
     assert not svc.dest.exists() or not any(svc.dest.rglob("*"))
+
+
+def _google_client(tmp_path, monkeypatch):
+    keys = tmp_path / "keys"
+    monkeypatch.setenv("FRAME_ART_KEYS", str(keys))
+    (keys / "google-photos").mkdir(parents=True)
+    (keys / "google-photos" / "client.json").write_text(
+        '{"installed": {"client_id": "cid", "client_secret": "SEKRIT",'
+        ' "auth_uri": "https://accounts.google.com/o/oauth2/auth",'
+        ' "token_uri": "https://oauth2.googleapis.com/token"}}'
+    )
+
+
+def test_google_box_without_a_client_asks_for_setup(client, tmp_path, monkeypatch):
+    c, _ = client
+    monkeypatch.setenv("FRAME_ART_KEYS", str(tmp_path / "no-keys"))
+    assert "Set up Google Photos" in c.get("/photos").text
+
+
+def test_google_sign_in_never_shows_the_secret(client, tmp_path, monkeypatch):
+    c, svc = client
+    _google_client(tmp_path, monkeypatch)
+    page = c.get("/photos").text
+    assert "Sign in" in page and "SEKRIT" not in page
+    r = c.get("/photos/google/signin")
+    assert r.status_code == 200 and "code_challenge" in r.text
+    assert "SEKRIT" not in r.text
+    assert svc.catalogue().get("google_signin")["verifier"] not in r.text
+    r = c.post("/photos/google/signin",
+               data={"pasted": "http://127.0.0.1:8765/?state=WRONG&code=C"})  # fmt: skip
+    assert r.status_code == 400 and "didn't match" in html.unescape(r.text)
+    assert "SEKRIT" not in r.text
+
+
+def test_google_sign_in_that_has_expired(client, tmp_path, monkeypatch):
+    c, svc = client
+    _google_client(tmp_path, monkeypatch)
+    c.get("/photos/google/signin")
+    started = svc.catalogue().get("google_signin")
+    svc.catalogue().put("google_signin", {**started, "at": started["at"] - 16 * 60})
+    r = c.post("/photos/google/signin",
+               data={"pasted": f"http://127.0.0.1:8765/?state={started['state']}&code=C"})  # fmt: skip
+    assert r.status_code == 400 and "Start again" in r.text
+
+
+def test_google_sign_out_forgets_the_token(client, tmp_path, monkeypatch):
+    c, svc = client
+    _google_client(tmp_path, monkeypatch)
+    token = svc.data / "google-photos" / "token.json"
+    token.parent.mkdir(parents=True)
+    token.write_text('{"access_token": "A", "refresh_token": "R", "expires_at": 0}')
+    assert "Signed in to Google Photos" in c.get("/photos").text
+    r = c.post("/photos/google/signout")
+    assert r.status_code == 200 and not token.exists() and "Sign in" in r.text

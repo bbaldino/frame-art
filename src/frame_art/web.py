@@ -12,6 +12,7 @@ import datetime
 import logging
 import math
 import re
+import secrets
 import time
 from collections import Counter
 from dataclasses import fields
@@ -33,9 +34,10 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
-from . import imaging, keys, photos, pipeline, schedules, variants
+from . import google_photos, imaging, keys, photos, pipeline, schedules, variants
 from .catalogue import Variant
 from .classify import current_season
+from .net import Http
 from .publish import content_index, find_work, read_sidecar
 from .schedules import Schedule
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
@@ -620,6 +622,10 @@ def create_app(svc: Service) -> Starlette:
 
     # -- Your photos: private, never on a public page --------------------------
 
+    google_token = svc.data / "google-photos" / "token.json"
+    # How long a started Google sign-in may wait for its pasted address.
+    SIGNIN_TTL = 15 * 60
+
     def photos_view(request: Request, notice="", errors=(), status=200):
         resp = render(
             request,
@@ -629,6 +635,8 @@ def create_app(svc: Service) -> Starlette:
             label=lambda s: info(s).label,
             notice=notice,
             errors=list(errors),
+            google_client=google_photos.has_client(),
+            google_signed_in=google_photos.signed_in(google_token),
         )
         resp.status_code = status
         return resp
@@ -688,6 +696,52 @@ def create_app(svc: Service) -> Starlette:
             return photos_view(request, errors=["choose portrait or scene"], status=400)
         store.set_kind(pid, kind, None, False)
         return photos_view(request, notice=f"{p.filename}: {kind}.")
+
+    def google_signin_view(request: Request, error="", status=200):
+        client = google_photos.load_client()
+        if client is None:
+            return photos_view(
+                request, errors=["Set up Google Photos first."], status=400
+            )
+        verifier, challenge = google_photos.new_pkce()
+        state = secrets.token_urlsafe(16)
+        svc.catalogue().put("google_signin",
+                            {"verifier": verifier, "state": state, "at": time.time()})  # fmt: skip
+        resp = render(request, "google_signin.html", page="photos", error=error,
+                      url=google_photos.auth_url(client, state, challenge))  # fmt: skip
+        resp.status_code = status
+        return resp
+
+    async def google_signin(request: Request):
+        if request.method == "GET":
+            return google_signin_view(request)
+        client = google_photos.load_client()
+        if client is None:
+            return photos_view(
+                request, errors=["Set up Google Photos first."], status=400
+            )
+        pasted = str((await request.form()).get("pasted") or "")
+        cat = svc.catalogue()
+        started = cat.get("google_signin")
+        cat.put("google_signin", None)  # one try per sign-in link
+        if not started or time.time() - started["at"] > SIGNIN_TTL:
+            return google_signin_view(
+                request,
+                "That sign-in took too long. Start again with this new link.",
+                400,
+            )
+        try:
+            google_photos.exchange(Http(timeout=30), client, pasted,
+                                   started["verifier"], started["state"], google_token)  # fmt: skip
+        except ValueError as e:
+            msg = ("That sign-in didn't match. Start again with this new link."
+                   if "didn't match" in str(e) else f"{e}. Start again with this new link.")  # fmt: skip
+            return google_signin_view(request, msg, 400)
+        return photos_view(request, notice="Signed in to Google Photos.")
+
+    async def google_signout(request: Request):
+        google_token.unlink(missing_ok=True)
+        return photos_view(request, notice="Signed out of Google Photos.")
 
     async def delete_photo(request: Request):
         store, pid = svc.photos(), request.path_params["id"]
@@ -1129,6 +1183,8 @@ def create_app(svc: Service) -> Starlette:
             Route("/settings", settings_page, methods=["GET", "POST"]),
             Route("/photos", photos_page),
             Route("/photos/upload", upload_photos, methods=["POST"]),
+            Route("/photos/google/signin", google_signin, methods=["GET", "POST"]),
+            Route("/photos/google/signout", google_signout, methods=["POST"]),
             Route("/photos/{id}/thumb", photo_thumb),
             Route("/photos/{id}/kind", set_photo_kind, methods=["POST"]),
             Route("/photos/{id}/delete", delete_photo, methods=["POST"]),
