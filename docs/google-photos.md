@@ -47,3 +47,7 @@ breaks.
 Click **+ Add from Google Photos**, then **Open Google Photos**. Choose photos,
 press **Done**, and come back to frame-art's tab: the photos arrive within a
 minute and get a suggested kind (portrait or scene).
+
+The picker selects single photos only: you can browse into an album, but not
+pick the whole album at once (checked by hand, November 2026). Select the photos
+you want inside it instead.
