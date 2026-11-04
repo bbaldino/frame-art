@@ -828,6 +828,51 @@ def create_app(svc: Service) -> Starlette:
         google_token.unlink(missing_ok=True)
         return photos_view(request, notice="Signed out of Google Photos.")
 
+    # -- Studio: painters -------------------------------------------------------
+
+    def painters_view(request: Request, notice="", errors=(), status=200, draft=None):
+        resp = render(request, "painters.html", page="studio",
+                      painters=svc.studio().painters(), kinds=photos.KINDS,
+                      notice=notice, errors=list(errors), draft=draft)  # fmt: skip
+        resp.status_code = status
+        return resp
+
+    async def painters_page(request: Request):
+        return painters_view(request)
+
+    async def painter_form(request: Request) -> tuple[str, str, tuple[str, ...]]:
+        form = await request.form()
+        suits = tuple(s for s in form.getlist("suits") if s in photos.KINDS)
+        return (form.get("name") or "").strip(), form.get("manner") or "", suits
+
+    async def add_painter(request: Request):
+        name, manner, suits = await painter_form(request)
+        try:
+            svc.studio().add_painter(name, manner, suits)
+        except ValueError as e:
+            draft = {"name": name, "manner": manner}
+            return painters_view(request, errors=[str(e)], status=400, draft=draft)
+        return painters_view(request, notice=f"Added {name}.")
+
+    async def edit_painter(request: Request):
+        st, slug = svc.studio(), request.path_params["slug"]
+        if st.painter(slug) is None:
+            return PlainTextResponse("unknown painter", 404)
+        name, manner, suits = await painter_form(request)
+        try:
+            st.update_painter(slug, name, manner, suits)
+        except ValueError as e:
+            return painters_view(request, errors=[str(e)], status=400)
+        return painters_view(request, notice=f"Saved {name}.")
+
+    async def delete_painter(request: Request):
+        st, slug = svc.studio(), request.path_params["slug"]
+        p = st.painter(slug)
+        if p is None:
+            return PlainTextResponse("unknown painter", 404)
+        st.remove_painter(slug)
+        return painters_view(request, notice=f"Removed {p.name}.")
+
     async def delete_photo(request: Request):
         store, pid = svc.photos(), request.path_params["id"]
         p = store.get(pid)
@@ -1275,6 +1320,10 @@ def create_app(svc: Service) -> Starlette:
             Route("/photos/{id}/thumb", photo_thumb),
             Route("/photos/{id}/kind", set_photo_kind, methods=["POST"]),
             Route("/photos/{id}/delete", delete_photo, methods=["POST"]),
+            Route("/studio/painters", painters_page),
+            Route("/studio/painters", add_painter, methods=["POST"]),
+            Route("/studio/painters/{slug}", edit_painter, methods=["POST"]),
+            Route("/studio/painters/{slug}/delete", delete_painter, methods=["POST"]),
             Route("/variants", variants_page),
             Route("/variants/types", add_variant_type, methods=["POST"]),
             Route("/variants/types/{slug}", edit_variant_type, methods=["POST"]),

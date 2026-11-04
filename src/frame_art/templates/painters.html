@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Painters · Frame Art{% endblock %}
+{% block body %}
+<h1>Painters</h1>
+<p class="muted">The painters the Studio offers. A painter's manner is only how they paint: palette, light, handling, and anything of their own. The Studio adds the rest of the prompt (keep or reinvent the setting, no props or costumes, the shape, your nudges). "Suits" decides which painters are suggested first for a portrait or a scene; none is ever hidden.</p>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{% if errors %}<div class="error"><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
+{% for p in painters %}
+<form method="post" action="/studio/painters/{{ p.slug }}" class="settings">
+  <fieldset>
+    <legend>{{ p.name }}</legend>
+    <label class="stack">Name <input type="text" name="name" value="{{ p.name }}"></label>
+    <label class="stack">Manner <textarea name="manner" rows="3">{{ p.manner }}</textarea></label>
+    <div class="row">Suits
+      {% for k in kinds %}<label class="check"><input type="checkbox" name="suits" value="{{ k }}"{% if k in p.suits %} checked{% endif %}> {{ k }}s</label>{% endfor %}
+    </div>
+    <div class="form-actions">
+      <button type="submit">Save {{ p.name }}</button>
+      <button type="submit" class="danger" formaction="/studio/painters/{{ p.slug }}/delete">Remove</button>
+    </div>
+  </fieldset>
+</form>
+{% endfor %}
+<form method="post" action="/studio/painters" class="settings">
+  <fieldset>
+    <legend>Add a painter</legend>
+    <label class="stack">Name <input type="text" name="name" placeholder="Mary Cassatt" value="{{ draft.name if draft else '' }}"></label>
+    <label class="stack">Manner <textarea name="manner" rows="3" placeholder="Palette, light and handling, in a sentence or two">{{ draft.manner if draft else '' }}</textarea></label>
+    <div class="row">Suits
+      {% for k in kinds %}<label class="check"><input type="checkbox" name="suits" value="{{ k }}"> {{ k }}s</label>{% endfor %}
+    </div>
+    <div class="form-actions"><button type="submit">Add painter</button></div>
+  </fieldset>
+</form>
+{% endblock %}

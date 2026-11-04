@@ -28,6 +28,7 @@ from .net import Http
 from .photos import PhotoStore
 from .publish import find_content, pending
 from .settings import PHOTO_SOURCES, SOURCE_NAMES, Settings
+from .studio import StudioStore
 
 log = logging.getLogger(__name__)
 
@@ -150,6 +151,10 @@ class Service:
     def photos(self) -> PhotoStore:
         """Brian's own photos, for the calling thread."""
         return PhotoStore(self.data / "frame-art.db", self.data / "photos")
+
+    def studio(self) -> StudioStore:
+        """Painters, tries and saved paintings, for the calling thread."""
+        return StudioStore(self.data / "frame-art.db", self.data / "studio")
 
     @property
     def google_token(self) -> Path:

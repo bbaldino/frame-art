@@ -1229,3 +1229,19 @@ def test_google_calls_stay_off_the_event_loop(client, tmp_path, monkeypatch):
     c.post("/photos/google/cancel")
     c.post("/photos/google/pick")
     assert on_loop and not any(on_loop)  # the pick redirects to /photos: 4 calls
+
+
+def test_painters_page_add_edit_delete(client):
+    c, svc = client
+    page = c.get("/studio/painters").text
+    assert "John Singer Sargent" in page and "Salvador Dal" in page
+    r = c.post("/studio/painters",
+               data={"name": "Mary Cassatt", "manner": "Soft pastel light.", "suits": "portrait"})  # fmt: skip
+    assert r.status_code == 200 and "Mary Cassatt" in r.text
+    r = c.post("/studio/painters/mary-cassatt",
+               data={"name": "Mary Cassatt", "manner": "Pastel.", "suits": ["portrait", "scene"]})  # fmt: skip
+    assert svc.studio().painter("mary-cassatt").suits == ("portrait", "scene")
+    r = c.post("/studio/painters/mary-cassatt/delete")
+    assert svc.studio().painter("mary-cassatt") is None
+    r = c.post("/studio/painters", data={"name": "", "manner": "x"})
+    assert r.status_code == 400 and "name" in r.text
