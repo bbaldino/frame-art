@@ -622,11 +622,13 @@ def create_app(svc: Service) -> Starlette:
 
     # -- Your photos: private, never on a public page --------------------------
 
-    google_token = svc.data / "google-photos" / "token.json"
+    google_token = svc.google_token
     # How long a started Google sign-in may wait for its pasted address.
     SIGNIN_TTL = 15 * 60
 
-    def photos_view(request: Request, notice="", errors=(), status=200):
+    def photos_view(
+        request: Request, notice="", errors=(), status=200, google_expired=False
+    ):
         resp = render(
             request,
             "photos.html",
@@ -637,12 +639,38 @@ def create_app(svc: Service) -> Starlette:
             errors=list(errors),
             google_client=google_photos.has_client(),
             google_signed_in=google_photos.signed_in(google_token),
+            google_expired=google_expired,
+            pick=svc.catalogue().get("google_pick"),
         )
         resp.status_code = status
         return resp
 
     async def photos_page(request: Request):
-        return photos_view(request)
+        # A pending Google pick is checked once per load; the page reloads itself.
+        cat, notice, expired = svc.catalogue(), "", False
+        pick, client = cat.get("google_pick"), google_photos.load_client()
+        if pick and client is None:
+            cat.put("google_pick", None)
+        elif pick:
+            http = Http(timeout=30)
+            try:
+                token = google_photos.access_token(http, client, google_token)
+                if time.time() > pick["expires"]:
+                    google_photos.delete_session(http, token, pick["id"])
+                    cat.put("google_pick", None)
+                    notice = "The Google Photos pick timed out; nothing was added."
+                elif google_photos.session_done(http, token, pick["id"]):
+                    svc.submit("import-google", {"session": pick["id"]})
+                    cat.put("google_pick", None)
+                    notice = (
+                        "Adding your picked photos; they appear here within a minute."
+                    )
+            except google_photos.SignInNeeded:
+                cat.put("google_pick", None)
+                expired = True
+            except ConnectionError as e:
+                notice = f"{e}; trying again in a moment."
+        return photos_view(request, notice, google_expired=expired)
 
     async def upload_photos(request: Request):
         form = await request.form()
@@ -738,6 +766,39 @@ def create_app(svc: Service) -> Starlette:
                    if "didn't match" in str(e) else f"{e}. Start again with this new link.")  # fmt: skip
             return google_signin_view(request, msg, 400)
         return photos_view(request, notice="Signed in to Google Photos.")
+
+    async def google_pick(request: Request):
+        client, cat = google_photos.load_client(), svc.catalogue()
+        if client is None:
+            return photos_view(
+                request, errors=["Set up Google Photos first."], status=400
+            )
+        if not cat.get("google_pick"):
+            http = Http(timeout=30)
+            try:
+                token = google_photos.access_token(http, client, google_token)
+                s = google_photos.create_session(http, token)
+            except google_photos.SignInNeeded:
+                return photos_view(request, google_expired=True)
+            except ConnectionError as e:
+                return photos_view(request, errors=[str(e)], status=502)
+            cat.put(
+                "google_pick", {"id": s.id, "uri": s.picker_uri, "expires": s.expires}
+            )
+        return RedirectResponse("/photos", status_code=303)
+
+    async def google_cancel(request: Request):
+        client, cat = google_photos.load_client(), svc.catalogue()
+        pick = cat.get("google_pick")
+        cat.put("google_pick", None)
+        if pick and client:
+            http = Http(timeout=30)
+            try:
+                token = google_photos.access_token(http, client, google_token)
+                google_photos.delete_session(http, token, pick["id"])
+            except (google_photos.SignInNeeded, ConnectionError):
+                pass  # Google drops an abandoned session by itself
+        return photos_view(request, notice="Cancelled; nothing was added.")
 
     async def google_signout(request: Request):
         google_token.unlink(missing_ok=True)
@@ -1185,6 +1246,8 @@ def create_app(svc: Service) -> Starlette:
             Route("/photos/upload", upload_photos, methods=["POST"]),
             Route("/photos/google/signin", google_signin, methods=["GET", "POST"]),
             Route("/photos/google/signout", google_signout, methods=["POST"]),
+            Route("/photos/google/pick", google_pick, methods=["POST"]),
+            Route("/photos/google/cancel", google_cancel, methods=["POST"]),
             Route("/photos/{id}/thumb", photo_thumb),
             Route("/photos/{id}/kind", set_photo_kind, methods=["POST"]),
             Route("/photos/{id}/delete", delete_photo, methods=["POST"]),

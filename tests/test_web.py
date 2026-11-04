@@ -1092,3 +1092,78 @@ def test_google_sign_out_forgets_the_token(client, tmp_path, monkeypatch):
     assert "Signed in to Google Photos" in c.get("/photos").text
     r = c.post("/photos/google/signout")
     assert r.status_code == 200 and not token.exists() and "Sign in" in r.text
+
+
+def _signed_in_with_pick(client, tmp_path, monkeypatch, expires_in=600):
+    c, svc = client
+    _google_client(tmp_path, monkeypatch)
+    from frame_art import google_photos as gp
+
+    monkeypatch.setattr(gp, "access_token", lambda http, client, path: "TOK")
+    svc.google_token.parent.mkdir(parents=True, exist_ok=True)
+    svc.google_token.write_text(
+        '{"access_token": "A", "refresh_token": "R", "expires_at": 0}'
+    )
+    svc.catalogue().put("google_pick", {"id": "s1", "uri": "https://photos.google.com/picker/x",
+                                        "expires": time.time() + expires_in})  # fmt: skip
+    submitted = []
+    monkeypatch.setattr(
+        svc, "submit", lambda kind, args=None: submitted.append((kind, args))
+    )
+    return c, svc, gp, submitted
+
+
+def test_pending_pick_offers_the_picker_and_refreshes(client, tmp_path, monkeypatch):
+    c, svc, gp, submitted = _signed_in_with_pick(client, tmp_path, monkeypatch)
+    monkeypatch.setattr(gp, "session_done", lambda http, token, id: False)
+    page = c.get("/photos").text
+    assert "Open Google Photos" in page and "https://photos.google.com/picker/x" in page
+    assert 'http-equiv="refresh"' in page and "Cancel" in page
+    assert submitted == [] and svc.catalogue().get("google_pick")
+
+
+def test_finished_pick_queues_the_import(client, tmp_path, monkeypatch):
+    c, svc, gp, submitted = _signed_in_with_pick(client, tmp_path, monkeypatch)
+    monkeypatch.setattr(gp, "session_done", lambda http, token, id: True)
+    page = c.get("/photos").text
+    assert submitted == [("import-google", {"session": "s1"})]
+    assert not svc.catalogue().get("google_pick") and 'http-equiv="refresh"' not in page
+
+
+def test_expired_pick_is_dropped_without_an_import(client, tmp_path, monkeypatch):
+    c, svc, gp, submitted = _signed_in_with_pick(client, tmp_path, monkeypatch, -1)
+    deleted = []
+    monkeypatch.setattr(gp, "session_done", lambda http, token, id: True)
+    monkeypatch.setattr(
+        gp, "delete_session", lambda http, token, id: deleted.append(id)
+    )
+    c.get("/photos")
+    assert (
+        submitted == [] and deleted == ["s1"] and not svc.catalogue().get("google_pick")
+    )
+
+
+def test_cancelled_pick_is_dropped(client, tmp_path, monkeypatch):
+    c, svc, gp, submitted = _signed_in_with_pick(client, tmp_path, monkeypatch)
+    deleted = []
+    monkeypatch.setattr(
+        gp, "delete_session", lambda http, token, id: deleted.append(id)
+    )
+    r = c.post("/photos/google/cancel")
+    assert r.status_code == 200 and deleted == ["s1"] and submitted == []
+    assert not svc.catalogue().get("google_pick")
+
+
+def test_ended_sign_in_during_a_pick_asks_to_sign_in_again(
+    client, tmp_path, monkeypatch
+):
+    c, svc, gp, submitted = _signed_in_with_pick(client, tmp_path, monkeypatch)
+
+    def ended(http, client, path):
+        path.unlink()  # as the real one does on invalid_grant
+        raise gp.SignInNeeded("invalid_grant")
+
+    monkeypatch.setattr(gp, "access_token", ended)
+    r = c.get("/photos")
+    assert r.status_code == 200 and "Sign in again" in r.text
+    assert submitted == [] and not svc.catalogue().get("google_pick")

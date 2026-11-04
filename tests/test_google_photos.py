@@ -125,3 +125,95 @@ def test_client_file(tmp_path, monkeypatch):
     gp.client_path().parent.mkdir()
     gp.client_path().write_text(json.dumps({"installed": CLIENT}))
     assert gp.has_client() and gp.load_client() == CLIENT
+
+
+class RouteHttp:
+    """Answers by (method, url prefix); records every call."""
+
+    def __init__(self, routes):
+        self.routes = routes
+        self.calls = []
+
+    def request(self, method, url, **kw):
+        self.calls.append({"method": method, "url": url, **kw})
+        for (m, prefix), reply in self.routes.items():
+            if m == method and url.startswith(prefix):
+                r = FakeResponse(*reply[:2])
+                r.content = reply[2] if len(reply) > 2 else b""
+                return r
+        raise AssertionError(f"unexpected {method} {url}")
+
+
+def _item(i, kind="PHOTO"):
+    return {"id": f"g{i}", "type": kind,
+            "mediaFile": {"baseUrl": f"https://lh3.example/b{i}", "mimeType": "image/jpeg",
+                          "filename": f"IMG_{i}.jpg"}}  # fmt: skip
+
+
+def test_picked_items_pages_and_keeps_photos():
+    http = RouteHttp({
+        ("GET", f"{gp.PICKER}/mediaItems?sessionId=s1&pageSize=100&pageToken=p2"):
+            (200, {"mediaItems": [_item(3)]}),
+        ("GET", f"{gp.PICKER}/mediaItems"):
+            (200, {"mediaItems": [_item(1), _item(2, "VIDEO")], "nextPageToken": "p2"}),
+    })  # fmt: skip
+    items = gp.picked_items(http, "TOK", "s1")
+    assert [i["id"] for i in items] == ["g1", "g3"]
+    assert all(c["headers"]["Authorization"] == "Bearer TOK" for c in http.calls)
+
+
+def test_download_asks_for_the_original_with_the_token():
+    http = RouteHttp({("GET", "https://lh3.example/b1=d"): (200, {}, b"JPEGDATA")})
+    assert gp.download(http, "TOK", _item(1)) == b"JPEGDATA"
+    assert http.calls[0]["headers"]["Authorization"] == "Bearer TOK"
+
+
+def test_create_session_and_done():
+    http = RouteHttp({
+        ("POST", f"{gp.PICKER}/sessions"): (200, {
+            "id": "s1", "pickerUri": "https://photos.google.com/picker/x",
+            "pollingConfig": {"pollInterval": "5s", "timeoutIn": "1799.9s"}}),
+        ("GET", f"{gp.PICKER}/sessions/s1"): (200, {"id": "s1", "mediaItemsSet": True}),
+    })  # fmt: skip
+    s = gp.create_session(http, "TOK")
+    assert (s.id, s.picker_uri) == ("s1", "https://photos.google.com/picker/x")
+    assert time.time() + 1700 < s.expires < time.time() + 1900
+    assert gp.session_done(http, "TOK", "s1")
+
+
+def test_an_ended_sign_in_during_a_pick():
+    http = RouteHttp({("GET", f"{gp.PICKER}/sessions/s1"): (401, {})})
+    with pytest.raises(gp.SignInNeeded):
+        gp.session_done(http, "TOK", "s1")
+
+
+def _jpeg(color):
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), color).save(buf, "JPEG")
+    return buf.getvalue()
+
+
+def test_import_adds_new_photos_skips_known_and_names_failures(tmp_path):
+    from frame_art.photos import PhotoStore
+
+    store = PhotoStore(tmp_path / "frame-art.db", tmp_path / "photos")
+    store.add("google-photos", "g1", _jpeg("white"), "IMG_1.jpg")
+    http = RouteHttp({
+        ("GET", f"{gp.PICKER}/mediaItems"):
+            (200, {"mediaItems": [_item(1), _item(2), _item(3), _item(4)]}),
+        ("GET", "https://lh3.example/b1=d"): (200, {}, _jpeg("white")),
+        ("GET", "https://lh3.example/b2=d"): (200, {}, _jpeg("red")),
+        ("GET", "https://lh3.example/b3=d"): (500, {}),
+        ("GET", "https://lh3.example/b4=d"): (200, {}, _jpeg("blue")),
+        ("DELETE", f"{gp.PICKER}/sessions/s1"): (200, {}),
+    })  # fmt: skip
+    out = gp.import_picked(store, http, "TOK", "s1")
+    assert (out["added"], out["skipped"]) == (2, 1)
+    assert [f["filename"] for f in out["failed"]] == ["IMG_3.jpg"]
+    assert sorted(p.source_id for p in store.all()) == ["g1", "g2", "g4"]
+    assert http.calls[-1]["method"] == "DELETE"
+    assert not any(c["url"] == "https://lh3.example/b1=d" for c in http.calls)

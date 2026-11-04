@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image
 
-from . import imaging, jobs, keys, photo_kind, variants
+from . import google_photos, imaging, jobs, keys, photo_kind, variants
 from .catalogue import Catalogue
 from .halink import HaLink
 from .net import Http
@@ -44,6 +44,7 @@ ARG_JOBS = {
     "generate": "Generate seasonal variants",
     "versions": "Update seasonal versions on the TV",
     "classify-photos": "Suggest portrait or scene for new photos",
+    "import-google": "Add photos picked in Google Photos",
 }
 # Requests the web UI can send HA for the TV (see halink).
 TV_ACTIONS = {
@@ -149,6 +150,11 @@ class Service:
     def photos(self) -> PhotoStore:
         """Brian's own photos, for the calling thread."""
         return PhotoStore(self.data / "frame-art.db", self.data / "photos")
+
+    @property
+    def google_token(self) -> Path:
+        """The Google Photos sign-in (chmod 600); never shown on a page."""
+        return self.data / "google-photos" / "token.json"
 
     def settings(self) -> Settings:
         return Settings.load(self.settings_path)
@@ -268,7 +274,25 @@ class Service:
             if not api_key:
                 return {"classified": 0, "note": "no OpenRouter key"}
             return photo_kind.classify_new(self.photos(), http, api_key)
+        if kind == "import-google":
+            return self._import_google(http, job.args["session"])
         raise ValueError(kind)
+
+    def _import_google(self, http: Http, session: str) -> dict:
+        client = google_photos.load_client()
+        if client is None:
+            return {"added": 0, "failed": [{"error": "Google Photos isn't set up"}]}
+        try:
+            token = google_photos.access_token(http, client, self.google_token)
+            out = google_photos.import_picked(self.photos(), http, token, session)
+        except google_photos.SignInNeeded:
+            return {
+                "added": 0,
+                "failed": [{"error": "Google sign-in ended; sign in again"}],
+            }
+        if out["added"]:
+            self.submit("classify-photos")
+        return out
 
     def _generate(
         self,

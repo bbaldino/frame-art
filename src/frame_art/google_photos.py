@@ -13,9 +13,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
@@ -23,11 +25,15 @@ import httpx
 
 from .keys import keys_dir
 from .net import Http
+from .photos import PhotoStore
+
+log = logging.getLogger(__name__)
 
 SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
 REDIRECT = "http://127.0.0.1:8765"
 AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
+PICKER = "https://photospicker.googleapis.com/v1"
 # Refresh a little early so a token never expires mid-request.
 EARLY = 60
 
@@ -174,3 +180,101 @@ def access_token(http: Http, client: dict, token_path: Path) -> str:
         token["refresh_token"] = t["refresh_token"]
     _write(token_path, token)
     return token["access_token"]
+
+
+# -- Picking -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PickSession:
+    id: str
+    picker_uri: str
+    expires: float  # when Google stops waiting for the pick
+
+
+def _picker(http: Http, token: str, method: str, url: str, **kw):
+    """One Picker API call. Raises SignInNeeded on 401, ConnectionError otherwise."""
+    try:
+        resp = http.request(method, url, headers={"Authorization": f"Bearer {token}"},
+                            **kw)  # fmt: skip
+    except httpx.HTTPError as ex:
+        raise ConnectionError(
+            f"Google Photos didn't answer: {type(ex).__name__}"
+        ) from None
+    if resp.status_code == 401:
+        raise SignInNeeded("Google Photos refused the sign-in")
+    if not 200 <= resp.status_code < 300:
+        raise ConnectionError(f"Google Photos returned {resp.status_code}")
+    return resp
+
+
+def _seconds(duration: str | None, default: float) -> float:
+    """Google's "1799.96s" durations."""
+    try:
+        return float(str(duration).rstrip("s"))
+    except ValueError:
+        return default
+
+
+def create_session(http: Http, token: str) -> PickSession:
+    d = _picker(http, token, "POST", f"{PICKER}/sessions", json={}, retries=0).json()
+    timeout = _seconds((d.get("pollingConfig") or {}).get("timeoutIn"), 30 * 60)
+    return PickSession(d["id"], d["pickerUri"], time.time() + timeout)
+
+
+def session_done(http: Http, token: str, id: str) -> bool:
+    """True once Brian has pressed Done in the picker."""
+    d = _picker(http, token, "GET", f"{PICKER}/sessions/{id}").json()
+    return bool(d.get("mediaItemsSet"))
+
+
+def picked_items(http: Http, token: str, id: str) -> list[dict]:
+    """Every photo picked in session ``id`` (videos are left out)."""
+    items, page = [], None
+    while True:
+        q = {"sessionId": id, "pageSize": 100}
+        if page:
+            q["pageToken"] = page
+        d = _picker(http, token, "GET", f"{PICKER}/mediaItems?{urlencode(q)}").json()
+        items += [i for i in d.get("mediaItems", []) if i.get("type") == "PHOTO"]
+        page = d.get("nextPageToken")
+        if not page:
+            return items
+
+
+def download(http: Http, token: str, item: dict) -> bytes:
+    """The original file (``=d``) of a picked item."""
+    return _picker(http, token, "GET", item["mediaFile"]["baseUrl"] + "=d").content
+
+
+def delete_session(http: Http, token: str, id: str) -> None:
+    """Close the session; Google drops it on its own later if this fails."""
+    try:
+        _picker(http, token, "DELETE", f"{PICKER}/sessions/{id}", retries=0)
+    except (ConnectionError, SignInNeeded) as e:
+        log.warning("couldn't close picker session: %s", e)
+
+
+def import_picked(store: PhotoStore, http: Http, token: str, id: str) -> dict:
+    """Copy the photos picked in session ``id`` into ``store``, then close it."""
+    added, skipped, failed = 0, 0, []
+    known = {p.source_id for p in store.all() if p.source == "google-photos"}
+    for item in picked_items(http, token, id):
+        name = item["mediaFile"].get("filename") or item["id"]
+        if item["id"] in known:
+            skipped += 1
+            continue
+        try:
+            p = store.add(
+                "google-photos", item["id"], download(http, token, item), name
+            )
+        except (ConnectionError, ValueError) as e:
+            log.warning("%s: not added: %s", name, e)
+            failed.append({"filename": name, "error": str(e)})
+            continue
+        if p is None:
+            skipped += 1
+        else:
+            added += 1
+    delete_session(http, token, id)
+    return {"added": added, "skipped": skipped, "failed": failed}

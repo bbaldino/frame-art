@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Your photos · Frame Art{% endblock %}
+{% block head %}{% if pick and google_signed_in %}<meta http-equiv="refresh" content="5;url=/photos">{% endif %}{% endblock %}
 {% block body %}
 <h1>Your photos</h1>
 <p class="muted">Your own photos, for painting in the Studio. They stay on this server and on this page: never in the catalogue, the crawls or the public pages.</p>
@@ -16,11 +17,21 @@
   <h2>Google Photos</h2>
   {% if not google_client %}
   <p>Set up Google Photos to add photos straight from your library: follow <code>docs/google-photos.md</code>, then save the client file as <code>google-photos/client.json</code> in frame-art's keys folder.</p>
+  {% elif google_signed_in and pick %}
+  <p>Choose photos in Google Photos and press <b>Done</b>, then come back to this tab. It checks every few seconds.</p>
+  <div class="google-actions">
+    <a class="button primary" href="{{ pick.uri }}/autoclose" target="_blank" rel="noopener">Open Google Photos</a>
+    <form method="post" action="/photos/google/cancel" class="inline-form"><button type="submit">Cancel</button></form>
+  </div>
   {% elif google_signed_in %}
-  <p>Signed in to Google Photos.</p>
-  <form method="post" action="/photos/google/signout" class="inline-form">
-    <button type="submit">Sign out</button>
-  </form>
+  <div class="google-actions">
+    <form method="post" action="/photos/google/pick" class="inline-form"><button type="submit" class="primary">+ Add from Google Photos</button></form>
+    <span class="muted small">Signed in to Google Photos.</span>
+    <form method="post" action="/photos/google/signout" class="inline-form"><button type="submit">Sign out</button></form>
+  </div>
+  {% elif google_expired %}
+  <p>Google ended the sign-in (it lasts up to 7 days).</p>
+  <a class="button primary" href="/photos/google/signin">Sign in again</a>
   {% else %}
   <p>Not signed in. Sign-ins last up to 7 days.</p>
   <a class="button primary" href="/photos/google/signin">Sign in with Google</a>

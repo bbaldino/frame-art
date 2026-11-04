@@ -338,6 +338,7 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 /* Google Photos sign-in */
 .google-box { margin: 1rem 0 1.5rem; }
 .google-box h2 { font-size: 1.05rem; margin: 0 0 0.4rem; }
+.google-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
 .signin-steps li { margin: 0 0 0.9rem; }
 .signin-paste { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .signin-paste input { flex: 1 1 22rem; min-width: 0; }
