@@ -849,9 +849,40 @@ def create_app(svc: Service) -> Starlette:
         return render(request, "studio_index.html", page="studio",
                       photos=svc.photos().all())  # fmt: skip
 
-    def studio_view(request: Request, photo, notice="", errors=(), status=200):
+    def last_choices(photo, tries, painters) -> dict:
+        """The form as the last try left it, or the defaults for this photo."""
+        chosen = {"painter": painters[0].slug if painters else "", "painter_name": "",
+                  "setting": "reinvent" if photo.kind == "scene" else "keep",
+                  "shape": "fill", "nudges": [], "nudge_text": ""}  # fmt: skip
+        if tries:
+            t = tries[0]
+            by_name = {p.name: p.slug for p in painters}
+            chosen.update(
+                painter=by_name.get(t.painter, ""),
+                painter_name="" if t.painter in by_name else t.painter,
+                setting=t.setting,
+                shape=t.shape,
+                nudges=[n for n in t.nudges if n in studio.NUDGES],
+                nudge_text="; ".join(n for n in t.nudges if n not in studio.NUDGES),
+            )
+        return chosen
+
+    def studio_view(
+        request: Request, photo, notice="", errors=(), status=200, form=None
+    ):
         st = svc.studio()
         tries = st.tries(photo.id)
+        painters = studio.suggested(st.painters(), photo.kind)
+        chosen = last_choices(photo, tries, painters)
+        if form is not None:
+            name = (form.get("painter_name") or "").strip()
+            chosen.update(
+                painter="" if name else form.get("painter") or "",
+                painter_name=name,
+                nudges=[n for n in form.getlist("nudge") if n in studio.NUDGES],
+                nudge_text=(form.get("nudge_text") or "").strip(),
+            )
+            chosen.update({k: form[k] for k in ("setting", "shape") if form.get(k)})
         from_try = None
         raw = request.query_params.get("from")
         if raw and raw.isdecimal():
@@ -861,8 +892,8 @@ def create_app(svc: Service) -> Starlette:
             "studio.html",
             page="studio",
             photo=photo,
-            painters=studio.suggested(st.painters(), photo.kind),
-            setting="reinvent" if photo.kind == "scene" else "keep",
+            painters=painters,
+            chosen=chosen,
             nudges=studio.NUDGES,
             tries=tries,
             from_try=from_try,
@@ -893,15 +924,13 @@ def create_app(svc: Service) -> Starlette:
         from_try = st.get_try(int(raw)) if raw.isdecimal() else None
         if from_try is not None:
             if from_try.photo_id != p.id or from_try.path is None:
-                return studio_view(
-                    request, p, errors=["That try can't be used."], status=400
-                )
+                return studio_view(request, p, errors=["That try can't be used."],
+                                   status=400, form=form)  # fmt: skip
             painter = studio.Painter("", from_try.painter, "", ())
             setting, shape = from_try.setting, from_try.shape
             if not nudges:
-                return studio_view(
-                    request, p, errors=["Say what to change."], status=400
-                )
+                return studio_view(request, p, errors=["Say what to change."],
+                                   status=400, form=form)  # fmt: skip
         else:
             name = (form.get("painter_name") or "").strip()
             painter = (studio.Painter("", name, "", ()) if name
@@ -913,7 +942,7 @@ def create_app(svc: Service) -> Starlette:
                 or shape not in studio.SHAPES
             ):
                 return studio_view(request, p, errors=["Choose a painter, setting and shape."],
-                                   status=400)  # fmt: skip
+                                   status=400, form=form)  # fmt: skip
         t = st.start_try(p.id, painter, setting, shape, nudges,
                          from_try.id if from_try else None)  # fmt: skip
         svc.submit("paint", {"try": t.id})

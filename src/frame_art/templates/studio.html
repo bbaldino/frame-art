@@ -20,23 +20,23 @@
     {% else %}
     <label class="stack">Painter
       <select name="painter">
-        {% for p in painters %}<option value="{{ p.slug }}"{% if loop.first %} selected{% endif %}>{{ p.name }}{% if photo.kind in p.suits %} (suits {{ photo.kind }}s){% endif %}</option>{% endfor %}
+        {% for p in painters %}<option value="{{ p.slug }}"{% if p.slug == chosen.painter %} selected{% endif %}>{{ p.name }}{% if photo.kind in p.suits %} (suits {{ photo.kind }}s){% endif %}</option>{% endfor %}
       </select>
     </label>
-    <label class="stack">or any painter <input type="text" name="painter_name" placeholder="Mary Cassatt"></label>
+    <label class="stack">or any painter <input type="text" name="painter_name" value="{{ chosen.painter_name }}" placeholder="Mary Cassatt"></label>
     <div class="row">Setting
-      <label class="radio"><input type="radio" name="setting" value="keep"{% if setting == "keep" %} checked{% endif %}> Keep the place</label>
-      <label class="radio"><input type="radio" name="setting" value="reinvent"{% if setting == "reinvent" %} checked{% endif %}> Reinvent it</label>
+      <label class="radio"><input type="radio" name="setting" value="keep"{% if chosen.setting == "keep" %} checked{% endif %}> Keep the place</label>
+      <label class="radio"><input type="radio" name="setting" value="reinvent"{% if chosen.setting == "reinvent" %} checked{% endif %}> Reinvent it</label>
     </div>
     <div class="row">Shape
-      <label class="radio"><input type="radio" name="shape" value="fill" checked> Fill the screen</label>
-      <label class="radio"><input type="radio" name="shape" value="keep"> Keep the photo's shape</label>
+      <label class="radio"><input type="radio" name="shape" value="fill"{% if chosen.shape == "fill" %} checked{% endif %}> Fill the screen</label>
+      <label class="radio"><input type="radio" name="shape" value="keep"{% if chosen.shape == "keep" %} checked{% endif %}> Keep the photo's shape</label>
     </div>
     {% endif %}
     <div class="row">Nudges
-      {% for n in nudges %}<label class="check"><input type="checkbox" name="nudge" value="{{ n }}"> {{ n }}</label>{% endfor %}
+      {% for n in nudges %}<label class="check"><input type="checkbox" name="nudge" value="{{ n }}"{% if n in chosen.nudges %} checked{% endif %}> {{ n }}</label>{% endfor %}
     </div>
-    <label class="stack">Your own nudge <input type="text" name="nudge_text" placeholder="less desert, more beach"></label>
+    <label class="stack">Your own nudge <input type="text" name="nudge_text" value="{{ chosen.nudge_text }}" placeholder="less desert, more beach"></label>
     <div class="form-actions"><button type="submit" class="primary">Paint</button> <span class="muted small">About 12¢ and a minute.</span></div>
   </form>
 </div>

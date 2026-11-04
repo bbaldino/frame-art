@@ -1272,6 +1272,37 @@ def test_paint_queues_one_job_and_redirects(client, monkeypatch):
     assert 'http-equiv="refresh"' in page and "Edward Hopper" in page
 
 
+def test_studio_form_keeps_the_last_choices(client, monkeypatch):
+    c, svc = client
+    p = _photo_in_studio(svc, "portrait")
+    monkeypatch.setattr(svc, "submit", lambda kind, args=None: None)
+    c.post(f"/studio/{p.id}/paint",
+           data={"painter": "hopper", "setting": "reinvent", "shape": "keep",
+                 "nudge": ["warmer light"], "nudge_text": "less desert"})  # fmt: skip
+    page = c.get(f"/studio/{p.id}").text
+    assert '<option value="hopper" selected>' in page
+    assert 'value="reinvent" checked' in page and 'value="keep" checked' in page
+    assert 'value="warmer light" checked' in page
+    assert 'value="more painterly" checked' not in page
+    assert 'name="nudge_text" value="less desert"' in page
+    c.post(f"/studio/{p.id}/paint",
+           data={"painter": "hopper", "painter_name": "Mary Cassatt",
+                 "setting": "keep", "shape": "fill"})  # fmt: skip
+    page = c.get(f"/studio/{p.id}").text
+    assert 'name="painter_name" value="Mary Cassatt"' in page
+    assert "selected>" not in page.split('name="painter"')[1].split("</select>")[0]
+
+
+def test_studio_form_keeps_choices_when_refused(client):
+    c, svc = client
+    p = _photo_in_studio(svc, "portrait")
+    r = c.post(f"/studio/{p.id}/paint",
+               data={"painter": "dali", "shape": "keep", "nudge_text": "beach"})  # fmt: skip
+    assert r.status_code == 400
+    assert '<option value="dali" selected>' in r.text
+    assert 'value="keep" checked' in r.text and 'value="beach"' in r.text
+
+
 def test_studio_shows_a_failed_paint_plainly(client, tmp_path, monkeypatch):
     c, svc = client
     keys = tmp_path / "keys"
