@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Schedule · Frame Art{% endblock %}
+{% block body %}
+<h1>Schedule</h1>
+<p class="muted">What share of the TV each kind of thing gets, through the year. Everything comes from your Library; whatever a share can't fill goes to the rest of the Library.</p>
+{% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
+{% if errors %}<div class="error"><strong>Not saved:</strong><ul>{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul></div>{% endif %}
+
+<div class="timeline">
+  <div class="tl-months" style="grid-template-columns:{% for d in month_days %}{{ d }}fr {% endfor %}">{% for m in months %}<span>{{ m }}</span>{% endfor %}</div>
+  <div class="tl-rows">
+  {% for b in timeline %}
+  <div class="tl-row">
+    {% for left, width in b.pieces %}<a class="bar c{{ b.color }}{% if b.id == editing %} sel{% endif %}" href="/schedule?edit={{ b.id }}#editor" style="left:{{ left }}%;width:{{ width }}%" title="{{ b.label }}">{% if loop.index0 == b.label_at %}{{ b.label }}{% endif %}</a>{% endfor %}
+    {% if b.label_at is none %}<a class="tl-label" href="/schedule?edit={{ b.id }}#editor" style="{% if b.side_left is not none %}left:{{ b.side_left }}%{% else %}right:{{ b.side_right }}%{% endif %}">{{ b.label }}</a>{% endif %}
+  </div>
+  {% else %}
+  <p class="muted tl-empty">No schedules yet, so the TV shows the whole Library all year.</p>
+  {% endfor %}
+  <div class="tl-today" style="left:{{ today_pct }}%" title="Today"></div>
+  </div>
+</div>
+<p class="muted small">Click a schedule to edit it. Where schedules overlap, the shortest one takes its share first; each wider one takes its share of what is left. <a href="/schedule?edit=new#editor">+ Add schedule</a></p>
+
+<h2>Today on the TV <span class="muted small">({{ today_label }})</span></h2>
+<div class="strip" role="img" aria-label="{% for x in strip %}{{ x.name }} {{ x.n }}{% if not loop.last %}, {% endif %}{% endfor %}">{% for x in strip %}{% if x.pct %}<span class="c{{ x.color }}" style="width:{{ x.pct }}%"></span>{% endif %}{% endfor %}</div>
+<ul class="strip-legend">
+  {% for x in strip %}<li><i class="c{{ x.color }}"></i>{{ x.name }} · {{ x.n }}</li>{% endfor %}
+  {% if outside %}<li class="muted"><i class="outside"></i>{{ outside }} not in today's mix <span class="small">(retired at the next run)</span></li>{% endif %}
+</ul>
+{% if library_size < pool %}
+<p class="notice small">Library has {{ library_size }} work{{ "s" if library_size != 1 }}; pool is {{ pool }}, so the TV holds {{ library_size }}.</p>
+{% endif %}
+
+{% for b in timeline %}
+<h2>{{ b.name }} <span class="muted small">{{ b.dates }}, every year{% if b.running %} · running now{% endif %}</span></h2>
+<div class="table-wrap">
+<table class="runs slices">
+  <thead><tr><th>What</th><th class="num">Share</th><th>Available</th><th></th></tr></thead>
+  <tbody>
+  {% for r in b.slices %}
+  <tr>
+    <td><i class="sw c{{ r.color }}"></i>{{ r.label }}{% if r.ai %} <span class="kind">AI version of Library works</span>{% endif %}</td>
+    <td class="num">{{ r.share }}%</td>
+    <td class="{{ 'warn' if r.short else 'ok' }}">{% if r.ai %}{{ r.n }} ready of {{ r.m }} wanted <span class="muted">· made up to a week before{% if r.short %} · about ${{ '%.2f' | format(r.to_make) }} to go{% endif %}</span>{% else %}{{ r.n }} in Library, {{ r.m }} wanted{% if r.short %} <span class="muted">· the gap goes to Rest</span>{% endif %}{% endif %}</td>
+    <td><a href="{{ r.see }}">See them</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No slices: the whole Library, all of it.</td></tr>
+  {% endfor %}
+  <tr><td>Rest of the Library</td><td class="num muted">{{ 100 - b.slices | sum(attribute='share') }}%</td><td class="muted" colspan="2">whatever is left</td></tr>
+  </tbody>
+</table>
+</div>
+<p><a class="button" href="/schedule?edit={{ b.id }}#editor">Edit {{ b.name }}</a></p>
+{% endfor %}
+
+{% if ed %}
+<form method="post" action="{% if ed.new %}/schedule/schedules{% else %}/schedule/schedules/{{ ed.id }}{% endif %}" class="settings schedule-editor" id="editor">
+  <fieldset>
+    <legend>{% if ed.new %}New schedule{% else %}{{ ed.name }}{% endif %}</legend>
+    <label class="stack">Name <input type="text" name="name" value="{{ ed.name }}" placeholder="Halloween"></label>
+    <div class="dates">
+      <label>From
+        <select name="start_month">{% for m in months %}<option value="{{ loop.index }}"{% if ed.start_month == loop.index | string %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        <input type="number" name="start_day" min="1" max="31" value="{{ ed.start_day }}" aria-label="Start day"></label>
+      <label>to
+        <select name="end_month">{% for m in months %}<option value="{{ loop.index }}"{% if ed.end_month == loop.index | string %} selected{% endif %}>{{ m }}</option>{% endfor %}</select>
+        <input type="number" name="end_day" min="1" max="31" value="{{ ed.end_day }}" aria-label="End day"></label>
+      <span class="muted">every year</span>
+    </div>
+    <p class="muted small">Each slice is a list of tags like <code>kind:painting, style:impressionism</code> (a work needs all of them) and a share. Tags are the ones the <a href="/library">Library</a> picker offers; ai-variant:christmas is the Christmas versions. Leave the last row empty, or clear a row, to drop it. The rest goes to the Rest of the Library.</p>
+    <datalist id="slice-tag-hints">{% for t in tag_hints %}<option value="{{ t }}">{% endfor %}</datalist>
+    <div class="slice-rows">
+      {% for r in ed.rows %}
+      <div class="slice-row">
+        <input type="text" name="slice_tags_{{ loop.index0 }}" value="{{ r.tags }}" list="slice-tag-hints" placeholder="group:value, group:value" aria-label="Slice {{ loop.index }} tags" autocomplete="off">
+        <span class="suffix"><input type="number" name="slice_share_{{ loop.index0 }}" min="0" max="100" step="1" value="{{ r.share }}" aria-label="Slice {{ loop.index }} share"> %</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="form-actions"><button type="submit" class="primary">Save</button> <a href="/schedule">Cancel</a></div>
+  </fieldset>
+</form>
+{% if not ed.new %}
+<form method="post" action="/schedule/schedules/{{ ed.id }}/delete" class="delete-schedule" onsubmit="return confirm('Delete this schedule?')">
+  <button type="submit" class="danger">Delete schedule</button>
+</form>
+{% endif %}
+{% endif %}
+<p class="muted small">AI versions are made in <a href="/studio/versions">Version styles</a>, under Studio.</p>
+{% endblock %}

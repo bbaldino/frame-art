@@ -391,3 +391,11 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 .tag-group .chips { margin-top: 0.15rem; }
 .chip-form { display: inline-flex; gap: 0; margin: 0; }
 .chip-form button.chip { padding: 0 0.35rem; cursor: pointer; }
+.slices .sw { display: inline-block; width: 0.75rem; height: 0.75rem; border-radius: 2px; margin-right: 0.4rem; vertical-align: -1px; }
+.slices .kind { font-size: 0.75rem; color: var(--muted); background: var(--line); border-radius: 8px; padding: 0 0.4rem; margin-left: 0.25rem; }
+.slices .warn { color: #a05a00; }
+.strip-legend i.outside { background: var(--line); }
+.slice-rows { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.75rem; max-width: 40rem; }
+.slice-row { display: grid; grid-template-columns: 1fr auto; gap: 0.75rem; align-items: center; }
+.slice-row input[type="number"] { width: 4.5rem; }
+.versions-limit, form.limit { margin: 0.75rem 0; }
