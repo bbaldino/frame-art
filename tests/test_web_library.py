@@ -333,8 +333,10 @@ def test_work_page_for_photo_portrait_version(lib):
 
     page = c.get(f"/works/portrait:{painting.id}").text
     assert "Delete" in page and "Edward Hopper" in page
+    assert "return confirm('Delete this painting for good?')" in page
     page = c.get(f"/works/variant:{v.id}").text
     assert "Delete" in page and "Haystacks" in page and "/works/nga:1" in page
+    assert "return confirm('Delete this version? The file goes for good" in page
 
     # Deleting a version keeps its row, removes its file and takes it out.
     c.post(f"/works/variant:{v.id}/delete")

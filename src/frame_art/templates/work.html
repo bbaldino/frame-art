@@ -19,7 +19,7 @@
 <p><span class="badge state-{{ state }}">{{ states[state] }}</span>{% if on_tv %} <span class="badge live">On the TV</span>{% endif %}{% if rejected %} <span class="warn small">Rejected: {{ rejected }}</span>{% endif %}</p>
 {{ library_buttons(it, state, "/works/" ~ it.key, starred, versions | length) }}
 {% if it.kind in ("portrait", "version") and not file_missing %}
-<form method="post" action="/works/{{ it.key }}/delete" class="buttons">
+<form method="post" action="/works/{{ it.key }}/delete" class="buttons" onsubmit="return confirm('{{ 'Delete this painting for good?' if it.kind == 'portrait' else 'Delete this version? The file goes for good; it stays listed as Removed.' }}')">
   <button class="danger" title="{{ 'Delete the painting for good' if it.kind == 'portrait' else 'Delete the file; the version stays listed as Removed' }}">Delete</button>
 </form>
 {% endif %}
