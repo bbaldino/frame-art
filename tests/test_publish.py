@@ -242,14 +242,14 @@ def test_collection_works_come_back_sooner(setup, monkeypatch):
     assert _live(cat) == {"s1:4"}
 
 
-def test_ban_and_collect_exclude_each_other(tmp_path):
+def test_ban_unstars_but_collect_keeps_the_ban(tmp_path):
     cat = Catalogue(tmp_path / "db.sqlite")
     cat.upsert([make_work(1)])
     cat.collect("s1:1")
     cat.set_override("s1:1", "banned")
     assert cat.collection() == {}
-    cat.collect("s1:1")
-    assert "s1:1" in cat.collection() and cat.overrides() == {}
+    cat.collect("s1:1")  # starring is independent of a ban
+    assert "s1:1" in cat.collection() and cat.overrides() == {"s1:1": "banned"}
 
 
 def test_metadata_kept_out_of_the_works_row(tmp_path):

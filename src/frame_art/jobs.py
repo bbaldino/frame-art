@@ -50,6 +50,7 @@ def crawl(
     with ThreadPoolExecutor(len(adapters)) as pool:
         for src, works in pool.map(one, adapters):
             counts[f"{src.name}/{src.kind}"] = cat.upsert(works)
+            cat.record_crawl(src.name)
             log.info("%s/%s: %d candidates", src.name, src.kind, len(works))
 
     works = cat.works()
@@ -61,6 +62,8 @@ def crawl(
 
 
 def last_crawl(cat: Catalogue) -> float:
+    if crawls := cat.source_crawls():
+        return max(crawls.values())
     return max(
         (t for (t,) in cat.db.execute("select crawled_at from works")), default=0
     )

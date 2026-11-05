@@ -132,6 +132,18 @@ create table if not exists published_variants (
     filename text primary key,
     variant integer not null
 );
+-- 0.12.0: when a work first entered Works; set once, a re-crawl never changes it.
+create table if not exists work_added (key text primary key, added_at real not null);
+-- 0.12.0: when each source was last crawled.
+create table if not exists source_crawls (source text primary key, crawled_at real not null);
+-- 0.12.0: Library membership. A missing row means "not in the Library".
+create table if not exists library (
+    key text primary key,
+    state text not null check (state in ('in', 'removed')),
+    added_at real not null
+);
+-- 0.12.0: Brian's own tags, stored without the "yours:" group.
+create table if not exists user_tags (key text not null, tag text not null, primary key (key, tag));
 """
 
 
@@ -183,6 +195,9 @@ class Slot:
     manual: bool
 
 
+# Keys with these prefixes are not museum works (they have no pre-0.12 override).
+NON_MUSEUM = ("photo:", "portrait:", "variant:")
+
 VARIANT_COLS = "id, key, type, n, prompt, model, cost, path, created_at"
 
 
@@ -204,6 +219,10 @@ class Catalogue:
             rows.append((w.key, w.source, json.dumps(d), now))
             meta.append((w.key, json.dumps(extra)))
         with self.db:
+            self.db.executemany(
+                "insert or ignore into work_added values (?, ?)",
+                [(r[0], now) for r in rows],
+            )
             self.db.executemany(
                 "insert into works values (?, ?, ?, ?) on conflict(key) do update set "
                 "data = excluded.data, crawled_at = excluded.crawled_at",
@@ -275,14 +294,11 @@ class Catalogue:
         return dict(self.db.execute("select key, state from overrides"))
 
     def collect(self, key: str, on: bool = True) -> None:
-        """Add a work to the collection (clearing a ban), or take it out."""
+        """Star a work, or unstar it; independent of Library membership."""
         with self.db:
             if not on:
                 self.db.execute("delete from collection where key = ?", (key,))
                 return
-            self.db.execute(
-                "delete from overrides where key = ? and state = 'banned'", (key,)
-            )
             self.db.execute(
                 "insert or ignore into collection values (?, ?)", (key, time.time())
             )
@@ -290,6 +306,86 @@ class Catalogue:
     def collection(self) -> dict[str, float]:
         """key -> when it was added."""
         return dict(self.db.execute("select key, added_at from collection"))
+
+    def work_added(self) -> dict[str, float]:
+        """key -> when the work first entered Works."""
+        return dict(self.db.execute("select key, added_at from work_added"))
+
+    def record_crawl(self, source: str, at: float | None = None) -> None:
+        with self.db:
+            self.db.execute(
+                "insert or replace into source_crawls values (?, ?)",
+                (source, time.time() if at is None else at),
+            )
+
+    def source_crawls(self) -> dict[str, float]:
+        return dict(self.db.execute("select source, crawled_at from source_crawls"))
+
+    def library(self) -> dict[str, tuple[str, float]]:
+        """key -> (state, when it joined or was put back)."""
+        return {
+            k: (state, at)
+            for k, state, at in self.db.execute(
+                "select key, state, added_at from library"
+            )
+        }
+
+    def set_library(self, keys: Iterable[str], state: str | None) -> None:
+        """Put keys 'in' the Library, mark them 'removed', or forget them (None).
+
+        Museum works are also banned for older releases, which only know overrides.
+        """
+        keys = list(dict.fromkeys(keys))
+        museum = [k for k in keys if not k.startswith(NON_MUSEUM)]
+        now = time.time()
+        with self.db:
+            if state is None:
+                self.db.executemany(
+                    "delete from library where key = ?", [(k,) for k in keys]
+                )
+            elif state == "in":
+                # Already in: keep the date. Anything else joins (or is put back) now.
+                self.db.executemany(
+                    "insert into library values (?, 'in', ?) on conflict(key) do "
+                    "update set state = 'in', added_at = excluded.added_at "
+                    "where library.state != 'in'",
+                    [(k, now) for k in keys],
+                )
+            else:
+                self.db.executemany(
+                    "insert or replace into library values (?, ?, ?)",
+                    [(k, state, now) for k in keys],
+                )
+            if state == "removed":
+                self.db.executemany(
+                    "insert or replace into overrides values (?, 'banned', ?)",
+                    [(k, now) for k in museum],
+                )
+            else:
+                self.db.executemany(
+                    "delete from overrides where key = ? and state = 'banned'",
+                    [(k,) for k in museum],
+                )
+
+    def user_tags(self) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for key, tag in self.db.execute("select key, tag from user_tags"):
+            out.setdefault(key, set()).add(tag)
+        return out
+
+    def set_tag(self, keys: Iterable[str], tag: str, on: bool) -> None:
+        tag = tag.strip().lower()
+        with self.db:
+            if on:
+                self.db.executemany(
+                    "insert or ignore into user_tags values (?, ?)",
+                    [(k, tag) for k in keys],
+                )
+            else:
+                self.db.executemany(
+                    "delete from user_tags where key = ? and tag = ?",
+                    [(k, tag) for k in keys],
+                )
 
     def note_shown(self, content_id: str, key: str | None, showing: bool) -> None:
         """Record what the TV shows now, closing the previous stretch if it ended."""
