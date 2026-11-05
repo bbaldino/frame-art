@@ -6,11 +6,15 @@ from PIL import Image
 from frame_art.catalogue import Catalogue
 from frame_art.library import (
     Item,
+    add,
     display_tag,
     eligible,
     items,
     live,
     matches,
+    put_back,
+    remove,
+    source_image,
     state,
     work_tags,
 )
@@ -187,3 +191,49 @@ def test_matches():
 def test_display_tag():
     assert display_tag("ai-variant:christmas") == "ai-variant-christmas"
     assert display_tag("artist:monet") == "artist:monet"
+
+
+def test_remove_original_removes_versions_by_default(setup):
+    cat, ph, st, *_ = setup
+    cat.set_library(["nga:1"], "in")
+    got = remove(cat, items(cat, ph, st), ["nga:1"])
+    assert sorted(got) == ["nga:1", "variant:1", "variant:2"]
+    lib = cat.library()
+    assert all(state(lib, k) == "removed" for k in got)
+
+
+def test_remove_original_can_keep_versions(setup):
+    cat, ph, st, *_ = setup
+    cat.set_library(["nga:1"], "in")
+    got = remove(cat, items(cat, ph, st), ["nga:1"], with_versions=False)
+    assert got == ["nga:1"]
+    assert state(cat.library(), "variant:1") == "out"
+
+
+def test_put_back_original_leaves_versions_removed(setup):
+    cat, ph, st, *_ = setup
+    cat.set_library(["nga:1"], "in")
+    remove(cat, items(cat, ph, st), ["nga:1"])
+    put_back(cat, ["nga:1"])
+    lib = cat.library()
+    assert state(lib, "nga:1") == "in"
+    assert state(lib, "variant:1") == "removed"
+    put_back(cat, ["variant:1"])
+    assert state(cat.library(), "variant:1") == "out"
+
+
+def test_adding_a_version_puts_it_back(setup):
+    cat, *_ = setup
+    cat.set_library(["variant:1"], "removed")
+    add(cat, ["variant:1", "nga:1"])
+    lib = cat.library()
+    assert state(lib, "variant:1") == "out" and state(lib, "nga:1") == "in"
+
+
+def test_source_image_for_photo_and_portrait(setup, tmp_path):
+    cat, ph, st, photo, _ = setup
+    all_items = items(cat, ph, st)
+    im = source_image(all_items["photo:" + photo.id], None, tmp_path, "strict")
+    assert im.size == (40, 30)
+    portrait = next(i for i in all_items.values() if i.kind == "portrait")
+    assert source_image(portrait, None, tmp_path, "strict").size == (320, 180)

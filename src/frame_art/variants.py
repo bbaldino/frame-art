@@ -12,10 +12,9 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
-from PIL import Image
-
 from frame_art import imaging, pipeline, schedules
 from frame_art.catalogue import Catalogue, Slot, Variant, VariantState
+from frame_art.library import load_source, save_image, source_path  # noqa: F401
 from frame_art.model import Work
 from frame_art.net import Http
 from frame_art.providers import ImageProvider, OpenRouterProvider
@@ -139,34 +138,8 @@ def needed(
     return out
 
 
-def source_path(data: Path, w: Work) -> Path:
-    return data / "sources" / f"{Path(pipeline.filename(w)).stem}.jpg"
-
-
 def variant_path(data: Path, w: Work, type: str, n: int) -> Path:
     return data / "variants" / type / Path(pipeline.filename(w)).stem / f"{n}.jpg"
-
-
-def _save(im: Image.Image, path: Path) -> None:
-    # Via a temp file, so a crash never leaves a half-written cache behind.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    im.convert("RGB").save(tmp, "JPEG", quality=95)
-    tmp.replace(path)
-
-
-def load_source(http: Http, data: Path, w: Work, prefs: pipeline.Prefs) -> Image.Image:
-    """The work's trimmed source image, downloaded once and kept."""
-    path = source_path(data, w)
-    if path.exists():
-        return imaging.load(path.read_bytes())
-    plan = pipeline.exclusion(w, prefs)
-    if isinstance(plan, str):
-        # Left out of new picks now (a setting changed, say), but it's live.
-        plan = imaging.plan_for(w.width, w.height, prefs.max_crop)
-    im = pipeline.load_work(http, pipeline.Candidate(w, plan, 0.0, prefs))
-    _save(im, path)
-    return im
 
 
 def generate(
@@ -200,7 +173,7 @@ def generate(
         edit = provider.paint(src, prompt, aspect="16:9" if fills else None)
         n = cat.next_variant_n(key, type)
         path = variant_path(data, w, type, n)
-        _save(edit.image, path)
+        save_image(edit.image, path)
         v = cat.add_variant(key, type, n, prompt, provider.model, edit.cost, str(path))
     except Exception:
         cat.note_variant_failure(key, type)

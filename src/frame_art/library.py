@@ -9,9 +9,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
+from PIL import Image, ImageOps
+
+from . import imaging, pipeline
 from .catalogue import Catalogue
 from .model import Work
+from .net import Http
 from .photos import PhotoStore
 from .studio import StudioStore
 
@@ -145,3 +150,75 @@ def matches(item: Item, tags: Iterable[str]) -> bool:
 def display_tag(tag: str) -> str:
     """ "ai-variant:christmas" reads as "ai-variant-christmas"; others as they are."""
     return tag.replace(":", "-") if tag.startswith("ai-variant:") else tag
+
+
+def add(cat: Catalogue, keys: Iterable[str]) -> None:
+    """Put works in the Library; a version is put back (eligible) instead."""
+    keys = list(keys)
+    versions = [k for k in keys if k.startswith(VARIANT)]
+    cat.set_library(versions, None)
+    cat.set_library([k for k in keys if not k.startswith(VARIANT)], "in")
+
+
+def remove(
+    cat: Catalogue,
+    all_items: dict[str, Item],
+    keys: Iterable[str],
+    with_versions: bool = True,
+) -> list[str]:
+    """Mark works Removed; returns every key removed (an original's versions too)."""
+    out = list(dict.fromkeys(keys))
+    if with_versions:
+        roots = set(out)
+        out += [
+            k
+            for k, it in all_items.items()
+            if it.kind == "version" and it.root in roots and k not in out
+        ]
+    cat.set_library(out, "removed")
+    return out
+
+
+def put_back(cat: Catalogue, keys: Iterable[str]) -> None:
+    """Removed works go back in; a version's row is deleted. Versions stay as they are."""
+    add(cat, keys)
+
+
+def source_path(data: Path, w: Work) -> Path:
+    return data / "sources" / f"{Path(pipeline.filename(w)).stem}.jpg"
+
+
+def save_image(im: Image.Image, path: Path) -> None:
+    # Via a temp file, so a crash never leaves a half-written cache behind.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    im.convert("RGB").save(tmp, "JPEG", quality=95)
+    tmp.replace(path)
+
+
+def load_source(http: Http, data: Path, w: Work, prefs: pipeline.Prefs) -> Image.Image:
+    """The work's trimmed source image, downloaded once and kept."""
+    path = source_path(data, w)
+    if path.exists():
+        return imaging.load(path.read_bytes())
+    plan = pipeline.exclusion(w, prefs)
+    if isinstance(plan, str):
+        # Left out of new picks now (a setting changed, say), but it's live.
+        plan = imaging.plan_for(w.width, w.height, prefs.max_crop)
+    im = pipeline.load_work(http, pipeline.Candidate(w, plan, 0.0, prefs))
+    save_image(im, path)
+    return im
+
+
+def source_image(item: Item, http: Http, data: Path, crop: str) -> Image.Image:
+    """The full-size source for any item, ready to be fitted to the screen."""
+    if item.kind == "museum":
+        assert item.work is not None
+        prefs = pipeline.Prefs(
+            imaging.CROP_LEVELS[crop], full_screen_only=False, allow_nudes=True
+        )
+        return load_source(http, data, item.work, prefs)
+    assert item.path is not None
+    if item.kind == "photo":
+        return ImageOps.exif_transpose(Image.open(item.path))  # as photos.open_image
+    return imaging.load(Path(item.path).read_bytes())
