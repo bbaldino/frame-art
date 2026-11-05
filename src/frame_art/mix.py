@@ -44,9 +44,9 @@ def spread(count: int, targets: list[int]) -> list[int]:
     total = sum(targets)
     if total <= 0:
         return [0] * len(targets)
-    exact = [count * t / total for t in targets]
-    out = [int(x) for x in exact]
-    by_remainder = sorted(range(len(targets)), key=lambda i: (out[i] - exact[i], i))
+    split = [divmod(count * t, total) for t in targets]
+    out = [q for q, _ in split]
+    by_remainder = sorted(range(len(targets)), key=lambda i: (-split[i][1], i))
     for i in by_remainder[: count - sum(out)]:
         out[i] += 1
     return out
@@ -129,9 +129,9 @@ def plan(
         ]
         unpinned = [f for f in on[i] if f.key not in pinned]
         excess = max(0, len(on[i]) - targets[i])
-        # Rotate only as many as the waiting can replace beyond today's gaps.
+        # Rotate only as many as the waiting roots can replace beyond today's gaps.
         gap = max(0, targets[i] - (len(on[i]) - min(excess, len(unpinned))))
-        r = min(rotate[i], max(0, len(waiting) - gap))
+        r = min(rotate[i], max(0, len({it.root for it in waiting}) - gap))
         retire += [f.filename for f in unpinned[: excess + r]]
         fill.append(_rank(waiting, pinned, favorites, last_shown, now, seed))
     return Plan(slices, targets, retire, fill)

@@ -194,3 +194,14 @@ def test_rotation_never_retires_what_the_waiting_cannot_replace():
     p = run([], paintings[:8] + extra, live, pool=10, count=7)
     assert p.targets == [10]
     assert p.retire == ["m:p0.jpg"]
+
+
+def test_rotation_cap_counts_waiting_roots_not_keys():
+    # Roots a and b, three Christmas versions each; only one of b's can go live.
+    vs = [ver(i, "m:a" if i <= 3 else "m:b", "xmas") for i in range(1, 7)]
+    layers = [everyday([Slice(["ai-variant:xmas"], 100)])]
+    items = [it("m:a"), it("m:b"), *vs]
+    p = run(layers, items, [lv("variant:1", 1.0, root="m:a")], pool=2)
+    assert p.targets == [2, 0]
+    assert p.retire == []
+    assert p.fill[0] == ["variant:4", "variant:5", "variant:6"]
