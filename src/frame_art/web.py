@@ -51,7 +51,7 @@ from . import (
 from .catalogue import Variant
 from .classify import current_season
 from .net import Http
-from .publish import content_index, find_work, read_sidecar
+from .publish import content_index, read_sidecar
 from .schedules import Schedule
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
 from .settings import (
@@ -176,6 +176,86 @@ def suggest_tags(works, tags: list[str], text: str, seasonal=None) -> list[dict]
         (kind, tag), _ = names[key].most_common(1)[0]
         out.append({"tag": tag, "kind": kind, "count": counts[key]})
     return out
+
+
+# -- Library ---------------------------------------------------------------
+
+VIEWS = {
+    "in": "Library",
+    "out": "Not in Library",
+    "removed": "Removed",
+    "favorites": "★ Favorites",
+}
+SORTS = {"added": "Newest first", "title": "Title"}
+# Group of a tag (its prefix) -> how the tag picker heads it, in picker order.
+TAG_GROUPS = {
+    "artist": "Subject and style", "style": "Subject and style",
+    "genre": "Subject and style", "place": "Subject and style",
+    "subject": "Subject and style", "kind": "Kind", "source": "Source",
+    "ai-variant": "AI variant", "yours": "Yours",
+}  # fmt: skip
+OWN_SOURCES = {"photos": "Your photos", "studio": "Studio"}
+# Query parameters that narrow "All works"; one must be set to act on all of it.
+NARROWING = ("q", "source", "kind", "tag", "added_since", "view")
+LIBRARY_TAGS = 20  # suggestions per tags.json answer
+
+
+def norm_tag(tag: str) -> str:
+    """A filter tag as stored: lowercased, "ai-variant-x" read as "ai-variant:x"."""
+    tag = tag.strip().lower()
+    if ":" not in tag and tag.startswith("ai-variant-"):
+        return "ai-variant:" + tag.removeprefix("ai-variant-")
+    return tag
+
+
+def has_tag(item: library.Item, tag: str) -> bool:
+    """``tag`` is group-qualified; a bare word (typed without JavaScript) matches
+    that value in any group but AI variant, so it never means a version."""
+    if ":" in tag:
+        return tag in item.tags
+    return any(
+        t.partition(":")[2] == tag for t in item.tags if not t.startswith("ai-variant:")
+    )
+
+
+def tag_label(tag: str) -> str:
+    group, _, value = tag.partition(":")
+    if group == "source":
+        return OWN_SOURCES.get(value) or SOURCE_NAMES.get(value, value)
+    if group == "ai-variant":
+        return library.display_tag(tag)
+    return value
+
+
+def item_state(lib: dict[str, tuple[str, float]], it: library.Item) -> str:
+    """ "in", "removed" or "out"; a version is in while its original is."""
+    own = library.state(lib, it.key)
+    if it.kind != "version" or own == "removed":
+        return own
+    return "in" if library.state(lib, it.root) == "in" else "out"
+
+
+def describe(it: library.Item) -> tuple[str, str]:
+    """(who, more) for an item's card: the artist line, then source and kind."""
+    kind = next((t.partition(":")[2] for t in it.tags if t.startswith("kind:")), "")
+    if it.kind == "museum":
+        w = it.work
+        who = (w.artist or "Unknown artist") + (f", {w.date}" if w.date else "")
+        return who, f"{SOURCE_NAMES.get(w.source, w.source)} · {w.kind}"
+    if it.kind == "photo":
+        return "Your photo", kind or "not sorted yet"
+    if it.kind == "portrait":
+        return "Studio portrait", "Studio"
+    vtype = next((t for t in it.tags if t.startswith("ai-variant:")), "")
+    return "AI version", library.display_tag(vtype)
+
+
+def item_text(it: library.Item) -> str:
+    """What the Library's search box matches against, lowercased."""
+    words = [it.title, *(t.partition(":")[2] for t in it.tags)]
+    if it.work is not None:
+        words.append(searchable(it.work))
+    return " ".join(words).lower()
 
 
 def _ago(ts: float | None) -> str:
@@ -532,6 +612,368 @@ def create_app(svc: Service) -> Starlette:
         seasonal = {k: list(v) for k, v in seasonal_tags(cat).items()}
         return JSONResponse(suggest_tags(works, wanted_tags(q), text, seasonal))
 
+    # -- Library ---------------------------------------------------------------
+
+    # What the OpenRouter model charges for one 4K edit, roughly.
+    VARIANT_ESTIMATE = 0.12
+
+    def all_items() -> dict[str, library.Item]:
+        return library.items(svc.catalogue(), svc.photos(), svc.studio())
+
+    def short_date(ts: float) -> str:
+        d = datetime.datetime.fromtimestamp(ts, svc.tz)
+        same_year = d.year == datetime.datetime.now(svc.tz).year
+        return d.strftime("%-d %b" if same_year else "%-d %b %Y")
+
+    def lib_filter(q) -> dict:
+        """The Library page's filter, read from a query string."""
+        scope = "all" if q.get("scope") == "all" else "library"
+        view = q.get("view") if q.get("view") in VIEWS else None
+        try:
+            since = datetime.date.fromisoformat(q.get("added_since") or "")
+        except ValueError:
+            since = None
+        return {
+            "scope": scope,
+            "view": view or ("in" if scope == "library" else None),
+            "text": (q.get("q") or "").strip().lower(),
+            "source": q.get("source") or None,
+            "kind": q.get("kind") or None,
+            "tags": list(dict.fromkeys(norm_tag(v) for v in q.getlist("tag") if v.strip())),
+            "sort": q.get("sort") if q.get("sort") in SORTS else "added",
+            "since": since,
+            "versions": q.get("versions") == "1",
+            "hide_nudes": q.get("nudes") == "hide",
+            "full_screen": q.get("full_screen") == "1",
+        }  # fmt: skip
+
+    def narrowed(q) -> bool:
+        """Whether an "all" action is a choice: "All works" needs a filter."""
+        return q.get("scope") != "all" or any(q.get(k) for k in NARROWING)
+
+    def lib_rows(cat, items: dict[str, library.Item], f: dict) -> list[dict]:
+        """The items ``f`` matches, sorted, each version after its original."""
+        s = svc.settings()
+        lib, starred, rejected = cat.library(), cat.collection(), cat.rejected()
+        live = {x.key for x in library.live(cat, items)}
+        max_crop = imaging.CROP_LEVELS[s.crop]
+        strict = pipeline.Prefs(max_crop, f["full_screen"], not f["hide_nudes"])
+        versions = f["versions"] or any(t.startswith("ai-variant:") for t in f["tags"])
+        counts = Counter(it.root for it in items.values() if it.kind == "version")
+        rows = []
+        for it in items.values():
+            if it.kind == "version" and not versions:
+                continue
+            st = item_state(lib, it)
+            view = f["view"]
+            if view in ("in", "out", "removed") and st != view:
+                continue
+            if view == "favorites" and it.key not in starred:
+                continue
+            if f["source"] and f"source:{f['source']}" not in it.tags:
+                continue
+            if f["kind"] and f"kind:{f['kind']}" not in it.tags:
+                continue
+            if not all(has_tag(it, t) for t in f["tags"]):
+                continue
+            if f["text"] and f["text"] not in item_text(it):
+                continue
+            # Today's Settings filters, as the publisher used to apply them.
+            if it.work is not None and (f["hide_nudes"] or f["full_screen"]):
+                why = pipeline.exclusion(it.work, strict)
+                if why == "nude" or (f["full_screen"] and why in (
+                    "not full screen at this crop level", "too tall or too wide"
+                )):  # fmt: skip
+                    continue
+            if f["scope"] == "library" and st == "in" and it.key in lib:
+                at, label = lib[it.key][1], "in Library since"
+            else:
+                at, label = it.added_at, "added"
+            if (
+                f["since"]
+                and datetime.datetime.fromtimestamp(at, svc.tz).date() < f["since"]
+            ):
+                continue
+            warning = None
+            if it.kind == "museum":
+                why = pipeline.exclusion(it.work, s.prefs())
+                if isinstance(why, str):
+                    warning = why
+            rows.append(
+                {"it": it, "state": st, "at": at, "about": describe(it), "date": f"{label} {short_date(at)}",
+                 "starred": it.key in starred, "on_tv": it.key in live,
+                 "rejected": rejected.get(it.key), "warning": warning,
+                 "versions": counts.get(it.key, 0)}
+            )  # fmt: skip
+        if f["sort"] == "title":
+            rows.sort(key=lambda r: (r["it"].title.lower(), r["it"].key))
+        else:
+            rows.sort(key=lambda r: (-r["at"], r["it"].key))
+        # Versions follow their original when it is shown too.
+        shown = {r["it"].key for r in rows}
+        after: dict[str, list[dict]] = {}
+        for r in rows:
+            if r["it"].kind == "version" and r["it"].root in shown:
+                after.setdefault(r["it"].root, []).append(r)
+        out = []
+        for r in rows:
+            if r["it"].kind == "version" and r["it"].root in shown:
+                continue
+            out.append(r)
+            out += after.get(r["it"].key, [])
+        return out
+
+    def pictures(it: library.Item) -> tuple[str | None, str | None]:
+        """(thumbnail, larger picture) URLs for an item's card."""
+        if it.kind == "photo":
+            src = f"/photos/{it.key.removeprefix(library.PHOTO)}/thumb"
+            return src, src
+        if it.kind == "portrait":
+            pid = it.key.removeprefix(library.PORTRAIT)
+            return f"/portraits/{pid}/thumb", f"/portraits/{pid}.jpg"
+        if it.kind == "version":
+            return (
+                f"/variant-file/{it.variant_id}?thumb=1",
+                f"/variant-file/{it.variant_id}",
+            )
+        t = pipeline.thumb_url(it.work)
+        return t, pipeline.preview_url(it.work) or t
+
+    def here_of(request: Request) -> str:
+        return request.url.path + ("?" + request.url.query if request.url.query else "")
+
+    async def library_page(request: Request):
+        cat, q = svc.catalogue(), request.query_params
+        f = lib_filter(q)
+        items = all_items()
+        rows = lib_rows(cat, items, f)
+        pages = max(1, math.ceil(len(rows) / PAGE))
+        try:
+            page = min(max(1, int(q.get("page") or 1)), pages)
+        except ValueError:
+            page = 1
+        base = [(k, v) for k, v in q.multi_items() if k not in ("page", "tag") and v]
+
+        def url(tags: list[str], page: int = 1, **over) -> str:
+            pairs = [(k, v) for k, v in base if k not in over]
+            pairs += [(k, v) for k, v in over.items() if v]
+            pairs += [("tag", t) for t in tags]
+            if page > 1:
+                pairs.append(("page", page))
+            return "/library" + ("?" + urlencode(pairs) if pairs else "")
+
+        tags = f["tags"]
+        # Bulk forms post the filter itself, so "all" means every page of it.
+        filter_qs = urlencode([(k, v) for k, v in q.multi_items() if k != "page" and v])
+        s = svc.settings()
+        in_lib = {it.root for it in library.eligible(cat, items)}
+        return render(
+            request,
+            "library.html",
+            page="library",
+            f=f,
+            q=q,
+            views=VIEWS,
+            sorts=SORTS,
+            rows=rows[(page - 1) * PAGE : page * PAGE],
+            total=len(rows),
+            pictures=pictures,
+            pageno=page,
+            pages=pages,
+            link=lambda n: url(tags, n),
+            view_url=lambda scope, view: (
+                "/library?"
+                + urlencode([("scope", scope)] + ([("view", view)] if view else []))
+            ),
+            drop_tag=lambda t: url([x for x in tags if x != t]),
+            add_tag=lambda t: url(list(dict.fromkeys([*tags, t]))),
+            clear_tags=url([]),
+            tag_label=tag_label,
+            tag_group=lambda t: TAG_GROUPS.get(t.partition(":")[0], ""),
+            here=here_of(request),
+            filter_qs=filter_qs,
+            bulk_ok=narrowed(q),
+            sources=[*SOURCES, *OWN_SOURCES],
+            source_label=lambda x: OWN_SOURCES.get(x) or SOURCE_NAMES.get(x, x),
+            kinds=[*KINDS, *photos.KINDS],
+            types=cat.variant_types(),
+            library_size=len(in_lib),
+            pool=s.pool,
+            estimate=VARIANT_ESTIMATE,
+        )
+
+    async def library_tags_json(request: Request):
+        """Tag suggestions for the picker, grouped, from the works the filter leaves."""
+        q = request.query_params
+        chosen = [norm_tag(v) for v in q.getlist("tag") if v.strip()]
+        source, kind = q.get("source"), q.get("kind")
+        text = (q.get("q") or "").strip().lower()
+        counts: Counter = Counter()
+        for it in all_items().values():
+            if source and f"source:{source}" not in it.tags:
+                continue
+            if kind and f"kind:{kind}" not in it.tags:
+                continue
+            if not all(has_tag(it, t) for t in chosen):
+                continue
+            for t in it.tags:
+                if t in chosen or t.partition(":")[0] not in TAG_GROUPS:
+                    continue
+                if (
+                    text
+                    and text not in t.partition(":")[2]
+                    and text not in tag_label(t).lower()
+                ):
+                    continue
+                counts[t] += 1
+        starts = re.compile(rf"\b{re.escape(text)}") if text else None
+        ranked = sorted(
+            counts,
+            key=lambda t: (bool(starts) and not starts.search(tag_label(t).lower()),
+                           -counts[t], t),
+        )  # fmt: skip
+        return JSONResponse(
+            [
+                {
+                    "tag": t,
+                    "label": tag_label(t),
+                    "group": TAG_GROUPS[t.partition(":")[0]],
+                    "count": counts[t],
+                }
+                for t in ranked[:LIBRARY_TAGS]
+            ]  # fmt: skip
+        )
+
+    def eligible_live(cat, items) -> set[str]:
+        """Live keys the TV may keep showing."""
+        ok = {it.key for it in library.eligible(cat, items)}
+        return {x.key for x in library.live(cat, items)} & ok
+
+    def sync_if_dropped(cat, before: set[str], items=None) -> None:
+        """Take works off the TV now, not at the next run, when one stopped being eligible."""
+        if before - eligible_live(cat, items if items is not None else all_items()):
+            svc.submit("sync")
+
+    def chosen(request: Request, form, cat, items) -> list[str] | PlainTextResponse:
+        """The keys a Library action is for: the ticked ones, or the whole filter."""
+        if form.get("all") == "1":
+            q = request.query_params
+            if not narrowed(q):
+                return PlainTextResponse(
+                    "Choose a filter first: that would act on every work.", 400
+                )
+            return [r["it"].key for r in lib_rows(cat, items, lib_filter(q))]
+        keys = [k for k in form.getlist("key") if k in items]
+        if not keys:
+            return PlainTextResponse("no works chosen", 400)
+        return keys
+
+    def library_action(fn):
+        """Wrap ``fn(cat, items, keys, form)`` as a Library POST: pick the keys,
+        act, sync when something live dropped out, then go back."""
+
+        async def handler(request: Request):
+            cat, form, items = svc.catalogue(), await request.form(), all_items()
+            keys = chosen(request, form, cat, items)
+            if isinstance(keys, PlainTextResponse):
+                return keys
+            before = eligible_live(cat, items)
+            resp = fn(request, cat, items, keys, form)
+            if resp is not None:
+                return resp
+            sync_if_dropped(cat, before, items)
+            return back(request, "/library")
+
+        return handler
+
+    def checked(form, name: str, default: bool = True) -> bool:
+        """A checkbox sent with a hidden "0" before it; missing means ``default``."""
+        values = form.getlist(name)
+        return values[-1] == "1" if values else default
+
+    def do_add(request, cat, items, keys, form):
+        library.add(cat, keys)
+
+    def do_remove(request, cat, items, keys, form):
+        library.remove(cat, items, keys, with_versions=checked(form, "with_versions"))
+
+    def do_put_back(request, cat, items, keys, form):
+        library.put_back(cat, keys)
+
+    def do_star(request, cat, items, keys, form):
+        for k in keys:
+            cat.collect(k, form.get("on", "1") == "1")
+
+    def do_tag(request, cat, items, keys, form):
+        tag = (form.get("tag") or "").strip().lower().removeprefix("yours:").strip()
+        if not tag:
+            return PlainTextResponse("type a tag", 400)
+        cat.set_tag(keys, tag, form.get("on", "1") == "1")
+
+    def do_make_versions(request, cat, items, keys, form):
+        vt = next((t for t in cat.variant_types() if t.slug == form.get("type")), None)
+        if vt is None:
+            return PlainTextResponse("unknown type", 404)
+        originals = sorted(k for k in keys if items[k].kind != "version")
+        if not originals:
+            return PlainTextResponse("versions are made of originals only", 400)
+        if form.get("confirm") != "1":
+            return render(
+                request, "library_confirm.html", page="library", type=vt,
+                count=len(originals), cost=len(originals) * VARIANT_ESTIMATE,
+                action=here_of(request), fields=[
+                    (k, v) for k, v in form.multi_items() if k in ("key", "all", "type")
+                ],
+                estimate=VARIANT_ESTIMATE, cancel=back(request, "/library").headers["location"],
+            )  # fmt: skip
+        svc.submit("generate", {"keys": originals, "type": vt.slug})
+
+    def version_action(fn):
+        async def handler(request: Request):
+            cat = svc.catalogue()
+            v = cat.variant(request.path_params["id"])
+            if v is None:
+                return PlainTextResponse("unknown version", 404)
+            items = all_items()
+            before = eligible_live(cat, items)
+            fn(cat, items, f"{library.VARIANT}{v.id}", v)
+            sync_if_dropped(cat, before, items)
+            return back(request, f"/works/{library.VARIANT}{v.id}")
+
+        return handler
+
+    def version_remove(cat, items, key, v):
+        library.remove(cat, items, [key], with_versions=False)
+
+    def version_put_back(cat, items, key, v):
+        library.put_back(cat, [key])
+
+    def version_regenerate(cat, items, key, v):
+        svc.submit("regenerate", {"variant": v.id})
+
+    async def delete_item(request: Request):
+        """Delete a portrait, or a version's file (its row stays, Removed)."""
+        key = request.path_params["key"]
+        cat, items = svc.catalogue(), all_items()
+        it = items.get(key)
+        if it is None:
+            return PlainTextResponse("unknown work", 404)
+        before = eligible_live(cat, items)
+        if it.kind == "portrait":
+            pid = int(key.removeprefix(library.PORTRAIT))
+            svc.studio().remove_painting(pid)
+            cat.set_library([key], None)
+            (thumbs / "paintings" / f"{pid}.jpg").unlink(missing_ok=True)
+            sync_if_dropped(cat, before)
+            return back(request, "/library")
+        if it.kind == "version":
+            Path(it.path).unlink(missing_ok=True)
+            (thumbs / "variants" / f"{it.variant_id}.jpg").unlink(missing_ok=True)
+            cat.set_library([key], "removed")
+            sync_if_dropped(cat, before, items)
+            return back(request, f"/works/{key}")
+        return PlainTextResponse("only portraits and versions can be deleted", 400)
+
     async def settings_page(request: Request):
         errors: list[str] = []
         saved = False
@@ -588,9 +1030,6 @@ def create_app(svc: Service) -> Starlette:
             ],
             fields=[f.name for f in fields(Settings)],
         )
-
-    # What the OpenRouter model charges for one 4K edit, roughly.
-    VARIANT_ESTIMATE = 0.12
 
     MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
               "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")  # fmt: skip
@@ -1439,41 +1878,57 @@ def create_app(svc: Service) -> Starlette:
         return FileResponse(out, headers={"Cache-Control": "max-age=86400"})
 
     async def work_page(request: Request):
+        """Any item's page: tags, Library state, versions and, for some, Delete."""
         key = request.path_params["key"]
-        cat = svc.catalogue()
-        w = find_work(cat, key)
-        if not w:
+        cat, items = svc.catalogue(), all_items()
+        it = items.get(key)
+        if it is None:
             return PlainTextResponse("unknown work", 404)
-        states = cat.variant_states()
-        mine = cat.variants(key)
-        sections = []
-        for t in cat.variant_types():
-            made = [v for v in mine if v.type == t.slug]
-            st = states.get((key, t.slug))
-            current = next((v for v in made if st and v.id == st.current), None)
-            sections.append(
-                {
-                    "type": t,
-                    "current": current,
-                    "older": [v for v in reversed(made) if v is not current],
-                    "dont_use": bool(st and st.dont_use),
-                }
-            )
+        lib, mine = cat.library(), cat.user_tags().get(key, set())
+        groups: dict[str, list[str]] = {}
+        for t in sorted(it.tags):
+            if t.partition(":")[0] in TAG_GROUPS and t != "yours:favorite":
+                groups.setdefault(TAG_GROUPS[t.partition(":")[0]], []).append(t)
+        live = {x.key for x in library.live(cat, items)}
+        versions = sorted(
+            (v for v in items.values() if v.kind == "version" and v.root == key),
+            key=lambda v: v.added_at,
+            reverse=True,
+        )
+        thumb, full = pictures(it)
         return render(
             request,
             "work.html",
-            page="catalogue",
-            w=w,
-            override=cat.overrides().get(key),
-            collected=key in cat.collection(),
-            live=key in {p.key for p in cat.published(active=True)},
-            sections=sections,
+            page="library",
+            it=it,
+            w=it.work if it.kind == "museum" else None,
+            thumb=thumb,
+            full=full,
+            state=item_state(lib, it),
+            starred=key in cat.collection(),
+            on_tv=key in live,
+            groups=[
+                (g, groups[g])
+                for g in dict.fromkeys(TAG_GROUPS.values())
+                if g in groups
+            ],
+            mine={f"yours:{t}" for t in mine},
+            tag_label=tag_label,
+            rejected=cat.rejected().get(key),
+            original=items.get(it.root) if it.kind == "version" else None,
+            variant=cat.variant(it.variant_id) if it.variant_id else None,
+            versions=[(v, item_state(lib, v), v.key in live) for v in versions],
+            has_versions=bool(versions),
+            types=cat.variant_types(),
+            photo_id=key.removeprefix(library.PHOTO) if it.kind == "photo" else None,
+            file_missing=bool(it.path) and not Path(it.path).is_file(),
         )
 
     async def generate_for_work(request: Request):
         key = request.path_params["key"]
         cat = svc.catalogue()
-        if not find_work(cat, key):
+        it = all_items().get(key)
+        if it is None or it.kind == "version":
             return PlainTextResponse("unknown work", 404)
         form = await request.form()
         vt = next((t for t in cat.variant_types() if t.slug == form.get("type")), None)
@@ -1489,34 +1944,6 @@ def create_app(svc: Service) -> Starlette:
             },
         )
         return RedirectResponse("/runs", status_code=303)
-
-    async def make_variant_current(request: Request):
-        key = request.path_params["key"]
-        cat = svc.catalogue()
-        v = cat.variant(request.path_params["id"])
-        if not v or v.key != key:
-            return PlainTextResponse("unknown variant", 404)
-        cat.set_current_variant(key, v.type, v.id)
-        # Same rule as the generate job: a hand-picked version stays on the TV.
-        types = {t.slug for t in cat.variant_types()}
-        if key in {p.key for p in cat.published(active=True)} and v.type in (
-            svc.settings().today_shares(svc.today(), types)
-        ):
-            cat.set_slot(key, v.type, manual=True)
-        svc.submit("versions", {"keys": [key]})
-        return back(request, default=f"/works/{key}")
-
-    async def set_variant_dont_use(request: Request):
-        key, vtype = request.path_params["key"], request.path_params["type"]
-        cat = svc.catalogue()
-        if not find_work(cat, key):
-            return PlainTextResponse("unknown work", 404)
-        if not any(t.slug == vtype for t in cat.variant_types()):
-            return PlainTextResponse("unknown type", 404)
-        form = await request.form()
-        cat.set_dont_use(key, vtype, form.get("on") == "1")
-        svc.submit("versions", {"keys": [key]})
-        return back(request, default=f"/works/{key}")
 
     async def now_page(request: Request):
         return render(request, "now.html", page="now", now=svc.now_showing())
@@ -1548,6 +1975,33 @@ def create_app(svc: Service) -> Starlette:
             Route("/collection", catalogue),
             Route("/history", history_page),
             Route("/tags.json", tags_json),
+            Route("/library", library_page),
+            Route("/library/tags.json", library_tags_json),
+            Route("/library/add", library_action(do_add), methods=["POST"]),
+            Route("/library/remove", library_action(do_remove), methods=["POST"]),
+            Route("/library/put-back", library_action(do_put_back), methods=["POST"]),
+            Route("/library/star", library_action(do_star), methods=["POST"]),
+            Route("/library/tag", library_action(do_tag), methods=["POST"]),
+            Route(
+                "/library/make-versions",
+                library_action(do_make_versions),
+                methods=["POST"],
+            ),
+            Route(
+                "/versions/{id:int}/remove",
+                version_action(version_remove),
+                methods=["POST"],
+            ),
+            Route(
+                "/versions/{id:int}/put-back",
+                version_action(version_put_back),
+                methods=["POST"],
+            ),
+            Route(
+                "/versions/{id:int}/regenerate",
+                version_action(version_regenerate),
+                methods=["POST"],
+            ),
             Route("/settings", settings_page, methods=["GET", "POST"]),
             Route("/photos", photos_page),
             Route("/photos/upload", upload_photos, methods=["POST"]),
@@ -1593,16 +2047,7 @@ def create_app(svc: Service) -> Starlette:
                 generate_for_work,
                 methods=["POST"],
             ),
-            Route(
-                "/works/{key:path}/variants/{id:int}/current",
-                make_variant_current,
-                methods=["POST"],
-            ),
-            Route(
-                "/works/{key:path}/variants/{type}/dont-use",
-                set_variant_dont_use,
-                methods=["POST"],
-            ),
+            Route("/works/{key:path}/delete", delete_item, methods=["POST"]),
             Route("/works/{key:path}", work_page),  # last: it matches any key
             Route("/variant-file/{id:int}", variant_file),
             Route("/thumb/{folder}/{name}", thumb),

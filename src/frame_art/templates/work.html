@@ -1,57 +1,78 @@
 {% extends "base.html" %}
-{% from "_macros.html" import override_buttons %}
-{% block title %}{{ w.title }} · Frame Art{% endblock %}
+{% from "_macros.html" import library_buttons %}
+{% block title %}{{ it.title }} · Frame Art{% endblock %}
 {% block body %}
-<h1>{% if w.page_url %}<a href="{{ w.page_url }}" target="_blank" rel="noopener">{{ w.title }}</a>{% else %}{{ w.title }}{% endif %}</h1>
-<p class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %}</p>
-{% set img = preview_url(w) or thumb_url(w) %}
-{% if img %}<img class="work-original" referrerpolicy="no-referrer" src="{{ img }}" alt="{{ w.title }}" style="max-width: 100%; max-height: 70vh">{% endif %}
-<p class="muted small">The original · {{ source_names[w.source] }} · {{ w.kind }} · {{ w.width }}×{{ w.height }}{% if not live %} · not on the TV now{% endif %}</p>
-{{ override_buttons(w.key, override, "/works/" ~ w.key, collected) }}
+{% set states = {"in": "In the Library", "out": "Not in the Library", "removed": "Removed"} %}
+<h1>{% if w and w.page_url %}<a href="{{ w.page_url }}" target="_blank" rel="noopener">{{ it.title }}</a>{% else %}{{ it.title }}{% endif %}</h1>
+{% if w %}<p class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %}</p>
+{% elif original %}<p class="who">A version of <a href="/works/{{ original.key }}">{{ original.title }}</a></p>
+{% elif photo_id %}<p class="who">Your photo · <a href="/studio/{{ photo_id }}">Open in Studio</a></p>
+{% elif it.kind == "portrait" %}<p class="who">Studio portrait</p>{% endif %}
 
-<h2>Seasonal versions</h2>
-{% for sec in sections %}
-{% set t = sec.type %}
-<section class="variant-type">
-  <h3>{{ t.name }}{% if sec.dont_use %} <span class="badge">not used</span>{% endif %}</h3>
-  {% if sec.current %}
-  {% set v = sec.current %}
-  <figure>
-    <a href="/variant-file/{{ v.id }}" target="_blank" rel="noopener"><img src="/variant-file/{{ v.id }}?thumb=1" alt="{{ t.name }} version of {{ w.title }}" style="max-width: 100%"></a>
-    <figcaption class="muted small">Current · {{ v.prompt }} · {{ v.model }} · {% if v.cost is not none %}${{ '%.2f' | format(v.cost) }}{% else %}cost unknown{% endif %} · {{ ago(v.created_at) }}</figcaption>
-  </figure>
-  <form method="post" action="/works/{{ w.key }}/variants/{{ t.slug }}/dont-use">
-    {% if sec.dont_use %}
-    <button name="on" value="0" title="Let the TV show this version again">Use again</button>
+{% if file_missing %}<p class="muted">The file has been deleted.</p>
+{% elif full %}<a href="{{ full }}" target="_blank" rel="noopener"><img class="work-original" referrerpolicy="no-referrer" src="{{ full }}" alt="{{ it.title }}" style="max-width: 100%; max-height: 70vh"></a>{% endif %}
+<p class="muted small">
+  {% if w %}{{ source_names[w.source] }} · {{ w.kind }} · {{ w.width }}×{{ w.height }} · {% endif %}
+  {% if variant %}{{ variant.prompt }} · {{ variant.model }} · {% if variant.cost is not none %}${{ '%.2f' | format(variant.cost) }}{% else %}cost unknown{% endif %} · {% endif %}
+  added {{ when(it.added_at) }}
+</p>
+<p><span class="badge state-{{ state }}">{{ states[state] }}</span>{% if on_tv %} <span class="badge live">On the TV</span>{% endif %}{% if rejected %} <span class="warn small">Rejected: {{ rejected }}</span>{% endif %}</p>
+{{ library_buttons(it, state, "/works/" ~ it.key, starred, versions | length) }}
+{% if it.kind in ("portrait", "version") and not file_missing %}
+<form method="post" action="/works/{{ it.key }}/delete" class="buttons">
+  <button class="danger" title="{{ 'Delete the painting for good' if it.kind == 'portrait' else 'Delete the file; the version stays listed as Removed' }}">Delete</button>
+</form>
+{% endif %}
+
+<h2>Tags</h2>
+{% for group, tags in groups %}
+<div class="tag-group"><span class="muted small">{{ group }}</span>
+  <div class="chips">
+  {% for t in tags %}
+    {% if t in mine %}
+    <form method="post" action="/library/tag?next={{ ('/works/' ~ it.key) | urlencode }}" class="chip-form">
+      <input type="hidden" name="key" value="{{ it.key }}"><input type="hidden" name="tag" value="{{ t }}">
+      <a class="chip" href="/library?scope=all&amp;tag={{ t | urlencode }}" title="{{ t }}">{{ tag_label(t) }}</a><button class="chip" name="on" value="0" title="Remove your tag">✕</button>
+    </form>
     {% else %}
-    <button name="on" value="1" class="danger" title="Never put this version on the TV">Don't use</button>
+    <a class="chip" href="/library?scope=all&amp;tag={{ t | urlencode }}" title="{{ t }}">{{ tag_label(t) }}</a>
     {% endif %}
-  </form>
-  {% else %}
-  <p class="muted">No {{ t.name }} version yet.</p>
-  {% endif %}
-
-  {% if sec.older %}
-  <h4>Earlier versions</h4>
-  <div class="grid">
-    {% for v in sec.older %}
-    <article class="card">
-      <a href="/variant-file/{{ v.id }}" target="_blank" rel="noopener"><img loading="lazy" src="/variant-file/{{ v.id }}?thumb=1" alt="Earlier {{ t.name }} version" width="240"></a>
-      <div class="meta">{{ v.prompt }}<br>{{ v.model }} · {% if v.cost is not none %}${{ '%.2f' | format(v.cost) }}{% else %}cost unknown{% endif %} · {{ ago(v.created_at) }}</div>
-      <form method="post" action="/works/{{ w.key }}/variants/{{ v.id }}/current"><button>Use this one</button></form>
-    </article>
-    {% endfor %}
+  {% endfor %}
   </div>
-  {% endif %}
+</div>
+{% endfor %}
+<form method="post" action="/library/tag?next={{ ('/works/' ~ it.key) | urlencode }}" class="buttons">
+  <input type="hidden" name="key" value="{{ it.key }}">
+  <input type="text" name="tag" required placeholder="Your tag, e.g. christmas" aria-label="Your tag">
+  <button name="on" value="1">Add tag</button>
+</form>
 
-  <form method="post" action="/works/{{ w.key }}/variants/generate" class="settings">
+{% if it.kind != "version" %}
+<h2 id="versions">Versions</h2>
+{% if versions %}
+<div class="grid">
+  {% for v, vstate, vlive in versions %}
+  <article class="card" id="{{ card_id(v.key) }}">
+    {% if v.path %}<a href="/works/{{ v.key }}"><img loading="lazy" src="/variant-file/{{ v.variant_id }}?thumb=1" alt="{{ v.title }}"></a>{% endif %}
+    <div class="title"><a href="/works/{{ v.key }}">{{ v.title }}</a></div>
+    <div class="meta">{{ states[vstate] if vstate != "in" else "In with this work" }}{% if vlive %} · on the TV{% endif %} · {{ ago(v.added_at) }}</div>
+    {{ library_buttons(v, vstate, "/works/" ~ it.key ~ "#" ~ card_id(v.key)) }}
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<p class="muted">No versions yet.</p>
+{% endif %}
+{% for t in types %}
+<details class="variant-type">
+  <summary>Make a {{ t.name }} version</summary>
+  <form method="post" action="/works/{{ it.key }}/variants/generate" class="settings">
     <input type="hidden" name="type" value="{{ t.slug }}">
     <label class="stack">Prompt <textarea name="prompt" rows="5">{{ t.prompt }}</textarea></label>
     <p class="muted small">Default prompt: {{ t.prompt }}</p>
-    <button type="submit">{{ "Make another" if sec.current else "Make one" }}</button>
+    <button type="submit">Make one</button>
   </form>
-</section>
-{% else %}
-<p class="muted">No types yet. Add one on the <a href="/variants">Seasonal</a> page.</p>
+</details>
 {% endfor %}
+{% endif %}
 {% endblock %}

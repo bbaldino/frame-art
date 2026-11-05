@@ -356,3 +356,38 @@ table.runs { width: 100%; border-collapse: collapse; background: var(--panel); b
 .try-card .form-actions form { margin: 0; }
 .portrait-info { display: flex; gap: 0.6rem; align-items: center; }
 .portrait-source img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; display: block; }
+
+/* Library */
+.views { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.75rem; }
+.views a {
+  padding: 0.25rem 0.75rem; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--ink); text-decoration: none; font-size: 0.9rem;
+}
+.views a[aria-current="page"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.lib-card .imgwrap { position: relative; }
+.lib-card .imgwrap img { display: block; }
+.lib-card.state-out img, .lib-card.state-removed img { opacity: 0.55; }
+.tv-badge {
+  position: absolute; top: 0.4rem; left: 0.4rem; padding: 0.05rem 0.4rem; border-radius: 4px;
+  background: var(--ink); color: var(--bg); font-size: 0.75rem;
+}
+.vtag {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 0.1rem 0.4rem;
+  background: rgb(160 90 20 / 85%); color: #fff; font-size: 0.75rem; border-radius: 0 0 4px 4px;
+}
+.badge.state-in { color: var(--ok); border-color: currentColor; }
+.badge.state-removed { color: var(--danger); border-color: currentColor; }
+.actions { flex-wrap: wrap; }
+.actions label { display: inline-flex; align-items: center; gap: 0.2rem; margin-left: 0.3rem; }
+.bulk { margin: 0 0 1rem; }
+.bulk summary { cursor: pointer; color: var(--muted); }
+.bulk .buttons { margin: 0.5rem 0; }
+.suggest li.group {
+  cursor: default; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); padding-top: 0.45rem;
+}
+.suggest li.group:hover { background: none; }
+.tag-group { margin: 0.4rem 0; }
+.tag-group .chips { margin-top: 0.15rem; }
+.chip-form { display: inline-flex; gap: 0; margin: 0; }
+.chip-form button.chip { padding: 0 0.35rem; cursor: pointer; }

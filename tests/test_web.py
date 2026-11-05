@@ -639,10 +639,12 @@ def test_work_page_renders_and_404s(client, tmp_path):
     cat, v = _work_variant(svc, tmp_path)
     default = next(t for t in cat.variant_types() if t.slug == "halloween").prompt
     page = c.get("/works/nga:1").text
-    assert "make it spooky" in page and "$0.12" in page
     assert f"Default prompt: {html.escape(default)}" in page
     assert f"{html.escape(default)}</textarea>" in page
     assert f"/variant-file/{v.id}" in page
+    # A version's own page says how it was made.
+    page = c.get(f"/works/variant:{v.id}").text
+    assert "make it spooky" in page and "$0.12" in page
 
 
 def test_variant_file_serves_by_id(client, tmp_path):
@@ -656,37 +658,6 @@ def test_variant_file_serves_by_id(client, tmp_path):
     assert c.get("/variant-file/999").status_code == 404
     (tmp_path / "v.jpg").unlink()
     assert c.get(f"/variant-file/{v.id}").status_code == 404
-
-
-def test_work_dont_use_queues_versions(client, tmp_path):
-    c, svc = client
-    cat, v = _work_variant(svc, tmp_path)
-    r = c.post(
-        "/works/nga:1/variants/halloween/dont-use",
-        data={"on": "1"},
-        follow_redirects=False,
-    )
-    assert r.status_code == 303 and r.headers["location"] == "/works/nga:1"
-    assert cat.variant_states()[("nga:1", "halloween")].dont_use
-    [job] = svc.queued()
-    assert job.kind == "versions" and job.args == {"keys": ["nga:1"]}
-    c.post("/works/nga:1/variants/halloween/dont-use", data={"on": "0"})
-    assert not cat.variant_states()[("nga:1", "halloween")].dont_use
-
-
-def test_work_make_current_pins_slot_only_in_the_mix(client, tmp_path):
-    c, svc = client
-    cat, v1 = _work_variant(svc, tmp_path)
-    v2 = cat.add_variant("nga:1", "halloween", 2, "again", "g", None, v1.path)
-    cat.record_publish("nga-1-monet-haystacks.jpg", "full", "nga:1", 0)
-    assert c.post(f"/works/nga:1/variants/{v1.id}/current").status_code == 200
-    assert cat.variant_states()[("nga:1", "halloween")].current == v1.id
-    assert "nga:1" not in cat.slots()  # halloween has no share
-    svc.save_settings(Settings(schedules=[everyday({"halloween": 10})]))
-    c.post(f"/works/nga:1/variants/{v2.id}/current")
-    assert cat.slots()["nga:1"].manual
-    assert {j.kind for j in svc.queued()} == {"versions"}
-    assert c.post("/works/nga:2/variants/%d/current" % v2.id).status_code == 404
 
 
 def test_work_generate_prompt(client, tmp_path):
@@ -718,8 +689,6 @@ def test_work_posts_404_for_unknown_type_or_key(client, tmp_path):
     c, svc = client
     _work_variant(svc, tmp_path)
     for path, data in (
-        ("/works/nga:1/variants/nope/dont-use", {"on": "1"}),
-        ("/works/nga:999/variants/halloween/dont-use", {"on": "1"}),
         ("/works/nga:1/variants/generate", {"type": "nope"}),
         ("/works/nga:999/variants/generate", {"type": "halloween"}),
     ):

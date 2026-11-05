@@ -24,3 +24,54 @@
 <div class="title" title="{{ w.title }}">{% if w.page_url %}<a href="{{ w.page_url }}" target="_blank" rel="noopener">{{ w.title }}</a>{% else %}{{ w.title }}{% endif %}</div>
 <div class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %} · <a class="small" href="/works/{{ w.key }}">Details</a></div>
 {% endmacro %}
+
+{% macro library_buttons(it, state, next, starred=false, versions=0) %}
+{% set go = "?next=" ~ (next | urlencode) %}
+<div class="actions">
+  <form method="post" action="/library/star{{ go }}"><input type="hidden" name="key" value="{{ it.key }}">
+    {% if starred %}<button class="on" name="on" value="0" data-key="c" title="Unstar">★ Starred</button>
+    {% else %}<button name="on" value="1" data-key="c" title="Star it: a starred Library work comes round more often">☆ Star</button>{% endif %}
+  </form>
+  {% if it.kind == "version" %}
+    {% if state == "removed" %}
+    <form method="post" action="/versions/{{ it.variant_id }}/put-back{{ go }}"><button data-key="a">Put back</button></form>
+    {% else %}
+    <form method="post" action="/versions/{{ it.variant_id }}/remove{{ go }}"><button class="danger" data-key="r" title="Never show this version; its file is kept">Remove</button></form>
+    {% endif %}
+    <form method="post" action="/versions/{{ it.variant_id }}/regenerate{{ go }}"><button title="Make another; this one is removed">Regenerate</button></form>
+  {% elif state == "in" %}
+  <form method="post" action="/library/remove{{ go }}"><input type="hidden" name="key" value="{{ it.key }}">
+    <button class="danger" data-key="r" title="Take it out of the Library and off the TV">Remove</button>
+    {% if versions %}<input type="hidden" name="with_versions" value="0"><label class="small"><input type="checkbox" name="with_versions" value="1" checked> and its {{ versions }} version{{ "s" if versions != 1 }}</label>{% endif %}
+  </form>
+  {% elif state == "removed" %}
+  <form method="post" action="/library/put-back{{ go }}"><input type="hidden" name="key" value="{{ it.key }}"><button data-key="a" title="Back in the Library; its versions stay out">Put back</button></form>
+  {% else %}
+  <form method="post" action="/library/add{{ go }}"><input type="hidden" name="key" value="{{ it.key }}"><button class="primary" data-key="a" title="Put it in the Library, so the TV can show it">Add</button></form>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro item_card(r, here, pictures) %}
+{% set it = r.it %}
+{% set states = {"in": "In the Library", "out": "Not in the Library", "removed": "Removed"} %}
+{% set pics = pictures(it) %}
+<article class="card lib-card state-{{ r.state }}{% if r.starred %} collected{% endif %}" id="{{ card_id(it.key) }}">
+  <div class="imgwrap">
+    {% if pics[0] %}<img loading="lazy" referrerpolicy="no-referrer" src="{{ pics[0] }}" data-full="{{ pics[1] }}" alt="{{ it.title }}">{% else %}<div class="noimg"></div>{% endif %}
+    {% if r.on_tv %}<span class="tv-badge">On the TV</span>{% endif %}
+    {% if it.kind == "version" %}<span class="vtag">{{ r.about[1] }}</span>{% endif %}
+  </div>
+  <div class="title" title="{{ it.title }}"><a href="/works/{{ it.key }}">{{ it.title }}</a></div>
+  <div class="who">{{ r.about[0] }}</div>
+  <div class="meta">{{ r.about[1] }} · {{ r.date }}</div>
+  <div class="status-line">
+    <span class="badge state-{{ r.state }}">{{ "In with its original" if it.kind == "version" and r.state == "in" else states[r.state] }}</span>
+    {% if r.versions %}<a class="small" href="/works/{{ it.key }}#versions">{{ r.versions }} version{{ "s" if r.versions != 1 }}</a>{% endif %}
+    {% if it.kind == "version" %}<a class="small" href="/works/{{ it.root }}">original</a>{% endif %}
+  </div>
+  {% if r.rejected %}<div class="small warn">Rejected: {{ r.rejected }}</div>
+  {% elif r.warning %}<div class="small warn" title="Adding it is still allowed">May not fit: {{ r.warning }}</div>{% endif %}
+  {{ library_buttons(it, r.state, here ~ "#" ~ card_id(it.key), r.starred, r.versions) }}
+</article>
+{% endmacro %}

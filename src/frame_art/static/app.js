@@ -38,13 +38,16 @@ document.addEventListener("submit", (event) => {
   submitAction(form, event.submitter);
 });
 
-// Tag autocomplete on the catalogue. Without JavaScript the box still works:
-// whatever is typed is submitted as one more tag.
+// Tag autocomplete on the catalogue and the Library. Without JavaScript the
+// box still works: whatever is typed is submitted as one more tag. The
+// Library's suggestions carry a group (Kind, Source…), shown as headings.
 const tagInput = document.getElementById("tag-input");
 if (tagInput) {
   const form = tagInput.form;
   const list = document.getElementById("tag-suggest");
+  const url = tagInput.dataset.suggest || "/tags.json";
   let items = [];
+  let options = []; // the <li>s that can be chosen, in the order shown
   let active = -1;
   let timer;
   let seq = 0;
@@ -63,33 +66,52 @@ if (tagInput) {
 
   const highlight = (i) => {
     active = i;
-    [...list.children].forEach((li, n) => li.setAttribute("aria-selected", n === i));
+    options.forEach((li, n) => li.setAttribute("aria-selected", n === i));
     if (i >= 0) {
-      tagInput.setAttribute("aria-activedescendant", list.children[i].id);
-      list.children[i].scrollIntoView({ block: "nearest" });
+      tagInput.setAttribute("aria-activedescendant", options[i].id);
+      options[i].scrollIntoView({ block: "nearest" });
     }
   };
 
+  const option = (item, n) => {
+    const li = document.createElement("li");
+    li.id = `tag-opt-${n}`;
+    li.setAttribute("role", "option");
+    const name = document.createElement("span");
+    name.textContent = item.label ?? item.tag;
+    const meta = document.createElement("span");
+    meta.className = "muted";
+    meta.textContent = item.group ? `${item.count}` : `${item.kind} · ${item.count}`;
+    li.append(name, meta);
+    // mousedown, not click: it fires before the input's blur closes the list.
+    li.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      choose(item);
+    });
+    return li;
+  };
+
   const show = () => {
-    list.replaceChildren(
-      ...items.map((item, n) => {
-        const li = document.createElement("li");
-        li.id = `tag-opt-${n}`;
-        li.setAttribute("role", "option");
-        const name = document.createElement("span");
-        name.textContent = item.tag;
-        const meta = document.createElement("span");
-        meta.className = "muted";
-        meta.textContent = `${item.kind} · ${item.count}`;
-        li.append(name, meta);
-        // mousedown, not click: it fires before the input's blur closes the list.
-        li.addEventListener("mousedown", (e) => {
-          e.preventDefault();
-          choose(item);
-        });
-        return li;
-      }),
-    );
+    // Grouped suggestions: each group together, in the order groups first appear.
+    const groups = [...new Set(items.map((item) => item.group))];
+    const ordered = groups.flatMap((g) => items.filter((item) => item.group === g));
+    const rows = [];
+    let heading;
+    items = ordered;
+    options = ordered.map((item, n) => {
+      if (item.group && item.group !== heading) {
+        heading = item.group;
+        const h = document.createElement("li");
+        h.className = "group";
+        h.setAttribute("role", "presentation");
+        h.textContent = heading;
+        rows.push(h);
+      }
+      const li = option(item, n);
+      rows.push(li);
+      return li;
+    });
+    list.replaceChildren(...rows);
     list.hidden = items.length === 0;
     highlight(-1);
   };
@@ -106,7 +128,7 @@ if (tagInput) {
     });
     const mine = ++seq;
     try {
-      const resp = await fetch(`/tags.json?${params}`);
+      const resp = await fetch(`${url}?${params}`);
       if (!resp.ok || mine !== seq) return;
       items = await resp.json();
       if (mine === seq && document.activeElement === tagInput) show();

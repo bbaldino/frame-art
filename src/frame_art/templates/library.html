@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% from "_macros.html" import item_card %}
+{% block title %}Library · Frame Art{% endblock %}
+{% block body %}
+<h1>Library <span class="muted">{{ total }} matching · {{ library_size }} in the Library · <a href="/photos">Add photos</a></span></h1>
+{% if library_size < pool %}
+<p class="notice small">The Library ({{ library_size }} work{{ "s" if library_size != 1 }}) is smaller than the TV's pool of {{ pool }}, so the TV keeps all of it and has nothing to rotate in. Add works from <a href="{{ view_url('all', 'out') }}">Not in Library</a>.</p>
+{% endif %}
+<nav class="views" aria-label="Views">
+  {% set current = (f.scope, f.view) %}
+  <a href="{{ view_url('library', None) }}" {% if current == ('library', 'in') %}aria-current="page"{% endif %}>Library</a>
+  <a href="{{ view_url('all', None) }}" {% if current == ('all', None) %}aria-current="page"{% endif %}>All works</a>
+  {% for v in ("out", "removed", "favorites") %}
+  <a href="{{ view_url('all', v) }}" {% if f.view == v %}aria-current="page"{% endif %}>{{ views[v] }}</a>
+  {% endfor %}
+</nav>
+<form class="filters" method="get" action="/library">
+  <input type="hidden" name="scope" value="{{ f.scope }}">
+  {% if f.view and not (f.scope == "library" and f.view == "in") %}<input type="hidden" name="view" value="{{ f.view }}">{% endif %}
+  <input type="search" name="q" value="{{ q.get('q', '') }}" placeholder="Search title, artist, style, place, subjects">
+  <select name="source" aria-label="Source">
+    <option value="">All sources</option>
+    {% for s in sources %}<option value="{{ s }}" {% if f.source == s %}selected{% endif %}>{{ source_label(s) }}</option>{% endfor %}
+  </select>
+  <select name="kind" aria-label="Kind">
+    <option value="">All kinds</option>
+    {% for k in kinds %}<option value="{{ k }}" {% if f.kind == k %}selected{% endif %}>{{ k }}</option>{% endfor %}
+  </select>
+  <div class="tagbox">
+    {% for t in f.tags %}<input type="hidden" name="tag" value="{{ t }}">{% endfor %}
+    <input type="text" name="tag" id="tag-input" data-suggest="/library/tags.json" autocomplete="off" placeholder="Add a tag: subject, kind, source, AI variant, yours" aria-label="Add a tag filter" aria-autocomplete="list" aria-controls="tag-suggest">
+    <ul class="suggest" id="tag-suggest" role="listbox" hidden></ul>
+  </div>
+  <select name="sort" aria-label="Sort">
+    {% for k, label in sorts.items() %}<option value="{{ k }}" {% if f.sort == k %}selected{% endif %}>{{ label }}</option>{% endfor %}
+  </select>
+  <label class="small">Added since <input type="date" name="added_since" value="{{ q.get('added_since', '') }}"></label>
+  <label class="small"><input type="checkbox" name="versions" value="1" {% if f.versions %}checked{% endif %}> Show versions</label>
+  <label class="small"><input type="checkbox" name="nudes" value="hide" {% if f.hide_nudes %}checked{% endif %}> Hide nudes</label>
+  <label class="small"><input type="checkbox" name="full_screen" value="1" {% if f.full_screen %}checked{% endif %}> Full screen only</label>
+  <button>Filter</button>
+</form>
+{% if f.tags %}<div class="chips active-tags">{% for t in f.tags %}<a class="chip active" href="{{ drop_tag(t) }}" title="{{ tag_group(t) or 'Remove this tag' }}">{{ tag_label(t) if ':' in t else t }} ✕</a>{% endfor %}{% if f.tags | length > 1 %}<a class="small" href="{{ clear_tags }}">Clear all</a>{% endif %}</div>{% endif %}
+
+{% if total %}
+<details class="bulk">
+  <summary>Act on all {{ total }} matching</summary>
+  {% if bulk_ok %}
+  {% set act = "?" ~ filter_qs ~ ("&" if filter_qs else "") ~ "next=" ~ (here | urlencode) %}
+  <div class="buttons">
+    {% if f.view != "in" %}<form method="post" action="/library/add{{ act }}"><input type="hidden" name="all" value="1"><button class="primary">Add all {{ total }}</button></form>{% endif %}
+    {% if f.view == "removed" %}<form method="post" action="/library/put-back{{ act }}"><input type="hidden" name="all" value="1"><button>Put back all {{ total }}</button></form>{% endif %}
+    {% if f.view != "removed" %}<form method="post" action="/library/remove{{ act }}"><input type="hidden" name="all" value="1"><input type="hidden" name="with_versions" value="0"><button class="danger">Remove all {{ total }}</button> <label class="small"><input type="checkbox" name="with_versions" value="1" checked> and their versions</label></form>{% endif %}
+  </div>
+  <div class="buttons">
+    <form method="post" action="/library/tag{{ act }}"><input type="hidden" name="all" value="1"><input type="text" name="tag" required placeholder="Your tag" aria-label="Your tag"> <button name="on" value="1">Tag all</button> <button name="on" value="0">Untag all</button></form>
+    {% if types %}<form method="post" action="/library/make-versions{{ act }}"><input type="hidden" name="all" value="1"><select name="type" aria-label="Version style">{% for t in types %}<option value="{{ t.slug }}">{{ t.name }}</option>{% endfor %}</select> <button>Make versions…</button> <span class="muted small">about ${{ '%.2f' | format(estimate) }} each; you confirm first</span></form>{% endif %}
+  </div>
+  {% else %}
+  <p class="muted small">Filter first: an action on all works would add every crawled work.</p>
+  {% endif %}
+</details>
+{% endif %}
+
+<div class="grid">
+{% for r in rows %}
+  {{ item_card(r, here, pictures) }}
+{% else %}
+  <p class="muted">{% if f.scope == "library" and f.view == "in" and not f.tags and not f.text %}Nothing in the Library yet. Add works from <a href="{{ view_url('all', None) }}">All works</a>.{% else %}Nothing matches.{% endif %}</p>
+{% endfor %}
+</div>
+{% if pages > 1 %}
+<nav class="pager">
+  {% if pageno > 1 %}<a href="{{ link(pageno - 1) }}" data-dir="prev">← Previous</a>{% endif %}
+  <span>Page {{ pageno }} of {{ pages }}</span>
+  {% if pageno < pages %}<a href="{{ link(pageno + 1) }}" data-dir="next">Next →</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}

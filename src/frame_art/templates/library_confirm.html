@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Make versions · Frame Art{% endblock %}
+{% block body %}
+<h1>Make {{ type.name }} versions?</h1>
+<p>This makes a {{ type.name }} version of each of <strong>{{ count }} work{{ "s" if count != 1 }}</strong>, for about <strong>${{ '%.2f' | format(cost) }}</strong> ({{ count }} × ${{ '%.2f' | format(estimate) }}).</p>
+<p class="muted small">They're made in the background (see Runs) and go on the TV only through a schedule's {{ type.name }} slice.</p>
+<form method="post" action="{{ action }}" class="buttons">
+  {% for k, v in fields %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}
+  <button class="primary" name="confirm" value="1">Confirm</button>
+  <a class="button" href="{{ cancel }}">Cancel</a>
+</form>
+{% endblock %}
