@@ -66,25 +66,26 @@ def upgrade(cat: Catalogue, studio: StudioStore) -> bool:
             for k, at in db.execute("select key, set_at from overrides")
             if k in banned
         ]
-        # 5. Versions: only the current one, unless vetoed, stays eligible. The
-        # one live on the TV right now stays too, so the first run keeps it.
-        files = set(cat.published_variants())
+        # 5. Versions: only the current one, unless vetoed, stays eligible. A
+        # non-vetoed one live on the TV right now stays too (no churn).
         on_tv = {
             v
-            for f, v in db.execute(
-                "select pv.filename, pv.variant from published_variants pv "
+            for (v,) in db.execute(
+                "select pv.variant from published_variants pv "
                 "join published p using (filename) where p.retired_at is null"
             )
-            if f in files
         }
-        current = {
-            (key, type): None if dont_use else cur
+        state = {
+            (key, type): (cur, bool(dont_use))
             for key, type, cur, dont_use in db.execute(
                 "select key, type, current, dont_use from variant_state"
             )
         }
         for vid, key, type in db.execute("select id, key, type from variants"):
-            if current.get((key, type)) == vid or vid in on_tv:
+            cur, vetoed = state.get((key, type), (None, False))
+            # A vetoed type is Removed whole; otherwise the current version and
+            # the one live now stay eligible.
+            if not vetoed and (cur == vid or vid in on_tv):
                 continue
             rows.append((f"{library.VARIANT}{vid}", "removed", now))
         db.executemany("insert or ignore into library values (?, ?, ?)", rows)

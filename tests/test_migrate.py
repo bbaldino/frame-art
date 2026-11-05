@@ -71,8 +71,12 @@ def test_dont_use_and_old_versions_are_removed(setup):
     live = env.version(w[7], "halloween", n=1)
     newer = env.version(w[7], "halloween", n=2)  # current; live file is the old one
     env.cat.record_publish("lv.jpg", "full", w[7], 7, variant=live.id, published_at=100)
+    vlive = env.version(w[8], "winter")  # vetoed, and its file is live right now
+    env.cat.set_dont_use(w[8], "winter", True)
+    env.cat.record_publish("vl.jpg", "full", w[8], 8, variant=vlive.id, published_at=90)
     migrate.upgrade(env.cat, env.studio)
     lib = env.cat.library()
+    assert lib[f"variant:{vlive.id}"][0] == "removed"
     k = lambda v: f"variant:{v.id}"  # noqa: E731
     assert k(new) not in lib and k(newer) not in lib  # current: eligible
     assert lib[k(old)][0] == "removed"
@@ -136,6 +140,10 @@ def test_first_run_after_upgrade_does_not_churn(setup):
     )  # the original, retired
     env.cat.record_retire("w5.jpg", None)
     env.cat.record_publish("w5-v.jpg", "full", w[5], 9, variant=v.id, published_at=600)
+    env.cat.record_publish(
+        "g.jpg", "full", w[9], 11, published_at=300
+    )  # shown, then retired
+    env.cat.record_retire("g.jpg", None)
     live_before = {p.filename for p in env.cat.published(active=True)}
     assert old.id != v.id
     assert migrate.upgrade(env.cat, env.studio) is True
@@ -145,5 +153,28 @@ def test_first_run_after_upgrade_does_not_churn(setup):
         count=0,
         seed=1,
     )
-    assert res.added == [] and res.retired == [] and res.failed == []
-    assert {p.filename for p in env.cat.published(active=True)} == live_before
+    assert res.retired == [] and res.failed == []
+    assert live_before <= {p.filename for p in env.cat.published(active=True)}
+    assert res.added == [
+        "full/s0-9-artist-9-work-9.jpg"
+    ]  # only the retired one fills the pool
+
+
+def test_start_migrates_before_any_job_can_run(tmp_path, monkeypatch):
+    import threading
+
+    from frame_art.service import Service
+
+    svc = Service(tmp_path / "data", tmp_path / "out", "/config/x", None, 1883, "test")
+    started = []
+    monkeypatch.setattr(
+        threading.Thread, "start", lambda self: started.append(self.name)
+    )
+
+    def boom(cat, studio):
+        raise RuntimeError("upgrade failed")
+
+    monkeypatch.setattr(migrate, "upgrade", boom)
+    with pytest.raises(RuntimeError):
+        svc.start()
+    assert started == []  # no worker or scheduler ran against an un-migrated Library

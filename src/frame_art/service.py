@@ -186,8 +186,6 @@ class Service:
         self._wake.set()  # the run time may have changed
 
     def start(self) -> None:
-        threading.Thread(target=self._worker, name="jobs", daemon=True).start()
-        threading.Thread(target=self._scheduler, name="schedule", daemon=True).start()
         cat = self.catalogue()
         pins_to_collection(cat)
         if migrate.upgrade(cat, self.studio()):
@@ -195,6 +193,9 @@ class Service:
                 "moved the collection, bans, portraits and versions into the Library"
             )
         variants.seed_types(cat)
+        # Only now may jobs run: they must never see an un-migrated Library.
+        threading.Thread(target=self._worker, name="jobs", daemon=True).start()
+        threading.Thread(target=self._scheduler, name="schedule", daemon=True).start()
         self.publish_state(cat)
         self.publish_now(cat)
 
