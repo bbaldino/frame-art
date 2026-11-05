@@ -27,6 +27,7 @@ from . import (
     jobs,
     keys,
     library,
+    migrate,
     photo_kind,
     providers,
     studio,
@@ -189,6 +190,10 @@ class Service:
         threading.Thread(target=self._scheduler, name="schedule", daemon=True).start()
         cat = self.catalogue()
         pins_to_collection(cat)
+        if migrate.upgrade(cat, self.studio()):
+            log.info(
+                "moved the collection, bans, portraits and versions into the Library"
+            )
         variants.seed_types(cat)
         self.publish_state(cat)
         self.publish_now(cat)
