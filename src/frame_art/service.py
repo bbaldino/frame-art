@@ -48,13 +48,13 @@ JOB_KINDS = {
     "crawl-photos": "Recrawl photo sources only",
     "publish": "Publish new works now",
     "compare": "Make crop comparison sheets",
-    "sync": "Apply bans",
-    "portraits": "Update portraits on the TV",
+    "sync": "Apply removals",
 }
 # Jobs that take arguments, so the web UI queues them from forms, not /jobs/{kind}.
 ARG_JOBS = {
-    "generate": "Generate seasonal variants",
-    "versions": "Update seasonal versions on the TV",
+    "generate": "Generate seasonal versions",
+    "make-now": "Make the versions a schedule needs",
+    "regenerate": "Make another version",
     "classify-photos": "Suggest portrait or scene for new photos",
     "import-google": "Add photos picked in Google Photos",
     "paint": "Paint a Studio try",
@@ -281,17 +281,12 @@ class Service:
             return {
                 "retired": jobs.publisher(cat, http, self.data, self.dest, s).sync()
             }
-        if kind == "portraits":
-            # replaced in Task 8: a removed painting goes when it is no longer eligible.
-            pub = jobs.publisher(cat, http, self.data, self.dest, s)
-            return {"retired": pub.sync()}
         if kind == "generate":
             return self._generate(cat, s, **job.args)
-        if kind == "versions":
-            pub = jobs.publisher(cat, http, self.data, self.dest, s)
-            return variants.apply_versions(
-                cat, http, self.data, pub, keys=set(job.args["keys"])
-            )
+        if kind == "make-now":
+            return self._make_now(cat, s, job.args["type"])
+        if kind == "regenerate":
+            return self._regenerate(cat, s, job.args["variant"])
         if kind == "classify-photos":
             api_key = keys.read_key("openrouter")
             if not api_key:
@@ -336,43 +331,89 @@ class Service:
             self.submit("classify-photos")
         return out
 
+    def _items(self, cat: Catalogue) -> dict[str, library.Item]:
+        return library.items(cat, self.photos(), self.studio())
+
     def _generate(
         self,
         cat: Catalogue,
         s: Settings,
         type: str,
         keys: list[str],
-        prompt: str | None,
+        prompt: str | None = None,
     ) -> dict:
-        """Make a ``type`` variant of each work, by hand (outside the nightly limit)."""
+        """Make a ``type`` version of each work, by hand (outside the nightly limit)."""
         http = Http(timeout=300)  # edits take a minute or more each
         provider = _image_provider(http)
-        pub = jobs.publisher(cat, http, self.data, self.dest, s)
-        live = {p.key for p in cat.published(active=True)}
-        today = s.today_shares(self.today(), {t.slug for t in cat.variant_types()})
+        all_items = self._items(cat)
+        return self._make(
+            cat, http, provider, s, all_items, [(k, type) for k in keys], prompt
+        )
+
+    def _make(
+        self,
+        cat: Catalogue,
+        http: Http,
+        provider: providers.ImageProvider,
+        s: Settings,
+        all_items: dict[str, library.Item],
+        todo: list[tuple[str, str]],
+        prompt: str | None = None,
+    ) -> dict:
         generated: list[str] = []
         failed: list[str] = []
         cost = 0.0
-        for key in keys:
+        for key, type in todo:
             try:
+                original = all_items.get(key)
+                if original is None or original.kind == "version":
+                    raise LookupError(f"{key} is not in the Library")
                 v = variants.generate(
-                    cat, http, self.data, provider, pub, key, type, prompt
+                    cat, http, self.data, provider, original, type, s.crop, prompt
                 )
             except Exception as ex:  # noqa: BLE001 - one bad work must not stop the rest
                 log.warning(
-                    "%s: could not make a %s variant: %s: %s",
+                    "%s: could not make a %s version: %s: %s",
                     key, type, ex.__class__.__name__, ex,
                 )  # fmt: skip
                 failed.append(key)
                 continue
             generated.append(key)
             cost += v.cost or 0.0
-            # Made by hand, so show it, even past the type's share.
-            if key in live and type in today:
-                cat.set_slot(key, type, manual=True)
-        res = variants.apply_versions(cat, http, self.data, pub, keys=set(generated))
-        failed += [k for k in res["failed"] if k not in failed]
+        # Nothing is submitted: the next publish shows them through their slice.
         return {"generated": generated, "failed": failed, "cost": round(cost, 4)}
+
+    def _make_now(self, cat: Catalogue, s: Settings, type: str) -> dict:
+        """Make the versions of ``type`` that the next schedule using it needs."""
+        http = Http(timeout=300)
+        provider = _image_provider(http)
+        all_items = self._items(cat)
+        today = self.today()
+        n = variants.make_now_count(cat, all_items, s, type, today)
+        days = [today + datetime.timedelta(days=i) for i in range(367)]
+        todo = variants.needed(cat, all_items, s.schedules, s.pool, days, type)[:n]
+        return self._make(cat, http, provider, s, all_items, todo)
+
+    def _regenerate(self, cat: Catalogue, s: Settings, variant: int) -> dict:
+        http = Http(timeout=300)
+        provider = _image_provider(http)
+        try:
+            new = variants.regenerate(
+                cat, http, self.data, provider, self._items(cat), variant, s.crop
+            )
+        except Exception as ex:  # noqa: BLE001 - reported on the job, not raised
+            log.warning(
+                "version %s: could not regenerate: %s: %s",
+                variant,
+                type(ex).__name__,
+                ex,
+            )
+            return {
+                "generated": [],
+                "failed": [f"{library.VARIANT}{variant}"],
+                "cost": 0.0,
+            }
+        return {"generated": [new.key], "failed": [], "cost": round(new.cost or 0.0, 4)}
 
     # -- schedule --------------------------------------------------------------
 
@@ -562,6 +603,11 @@ class Service:
         if p is not None and p.key.startswith(library.PORTRAIT):
             # A saved Studio painting: nothing about it beyond what it is.
             info.update(ours=True, kind="portrait", title="Portrait",
+                        file=f"{p.folder}/{p.filename}")  # fmt: skip
+            return info
+        if p is not None and p.key.startswith(library.PHOTO):
+            # Brian's own photo: never its filename.
+            info.update(ours=True, kind="photo", title="Your photo",
                         file=f"{p.folder}/{p.filename}")  # fmt: skip
             return info
         w = next((w for w in cat.works() if p and w.key == p.key), None)

@@ -40,6 +40,7 @@ def crawl(
     limit: int,
     sources: list[str] | None = None,
 ) -> dict:
+    started = time.time()
     adapters = [
         s for s in all_sources(cache, kinds) if not sources or s.name in sources
     ]
@@ -68,7 +69,8 @@ def crawl(
     cat.upsert(works)
     notable = sum(1 for w in works if w.sitelinks)
     log.info("notability: %d of %d works have Wikipedia articles", notable, len(works))
-    return {"crawled": counts, "catalogue": len(works)}
+    new = sum(1 for t in cat.work_added().values() if t >= started)
+    return {"crawled": counts, "catalogue": len(works), "new": new, "since": started}
 
 
 def last_crawl(cat: Catalogue) -> float:
@@ -129,6 +131,7 @@ def nightly(
     today: datetime.date,
 ) -> dict:
     summary = {}
+    db = data / "frame-art.db"
     if time.time() - last_crawl(cat) > settings.recrawl_days * 86400:
         summary.update(
             crawl(
@@ -140,37 +143,35 @@ def nightly(
                 settings.sources,
             )
         )
-    res = publish(cat, http, data, dest, settings, today=today)
-    summary.update(
-        added=res.added,
-        retired=res.retired,
-        failed=res.failed,
-        live=len(cat.published(active=True)),
-    )
     studio = StudioStore(data / "frame-art.db", data / "studio")
     summary["tries_pruned"] = studio.prune(time.time())
+    failed: list[str] = []
+    # Versions come first, so a schedule's versions go up on its first day.
     try:
         # Edits take a minute or more each, so their client waits longer.
-        db = data / "frame-art.db"
         v = variants.nightly(
             cat,
             Http(timeout=300),
             data,
-            library.items(
-                cat, PhotoStore(db, data / "photos"), StudioStore(db, data / "studio")
-            ),
+            library.items(cat, PhotoStore(db, data / "photos"), studio),
             settings,
             keys.read_key("openrouter"),
             today,
         )
-    except Exception as ex:  # noqa: BLE001 - keep what publishing did
+        summary["variants"] = v
+        # A failed edit makes the run partial, like a failed publish.
+        failed += v["gen_failed"]
+    except Exception as ex:  # noqa: BLE001 - still publish what exists
         log.exception("variants: the seasonal step failed")
         summary["variants"] = {"error": type(ex).__name__}
-        summary["failed"] = [*summary["failed"], "variants"]
-        return summary
-    summary["variants"] = v
-    # A failed edit makes the run partial, like a failed publish.
-    summary["failed"] = [*summary["failed"], *v["gen_failed"]]
+        failed.append("variants")
+    res = publish(cat, http, data, dest, settings, today=today)
+    summary.update(
+        added=res.added,
+        retired=res.retired,
+        failed=[*res.failed, *failed],
+        live=len(cat.published(active=True)),
+    )
     return summary
 
 
@@ -204,9 +205,7 @@ def compare(
 ) -> list[Path]:
     """Sheets of works each looser crop level would add: original, padded, cropped."""
     works = [w for w in cat.works() if w.kind in settings.kinds]
-    loose = pipeline.Prefs(
-        imaging.CROP_LEVELS["loose"], allow_nudes=settings.allow_nudes
-    )
+    loose = pipeline.Prefs(imaging.CROP_LEVELS["loose"])
     cands, _ = pipeline.filter_works(works, None, loose)
     order = _interleave(cands, seed=0)
 

@@ -22,19 +22,14 @@ def _settings(args) -> Settings:
     s = Settings()
     for name in (
         "crop",
-        "full_screen_only",
-        "allow_nudes",
         "pad_style",
         "count",
         "pool",
-        "photo_share",
-        "photo_crop",
     ):
         if hasattr(args, name):
             setattr(s, name, getattr(args, name))
     if getattr(args, "kinds", None):
-        # Photographs come from the style mix (--photo-share), not the kinds list.
-        s.kinds = [k for k in args.kinds if k != "photograph"] or ["painting"]
+        s.kinds = list(args.kinds)
     if getattr(args, "source", None):
         s.sources = args.source
     if hasattr(args, "limit"):
@@ -176,15 +171,6 @@ def main() -> None:
         sp.add_argument("--crop", choices=list(imaging.CROP_LEVELS), default="strict",
                         help="how much a crop to 16:9 may cut off: native 2%%, strict 13%%, "
                              "medium 21%%, loose 27%% (default strict)")  # fmt: skip
-        sp.add_argument("--full-screen-only", action="store_true",
-                        help="skip works that would need a background pad")  # fmt: skip
-        sp.add_argument("--allow-nudes", action="store_true",
-                        help="include nudes (left out by default)")  # fmt: skip
-        sp.add_argument("--season", choices=["winter", "spring", "summer", "autumn"])
-        sp.add_argument("--photo-share", type=int, default=0,
-                        help="percent of new works that are photographs (default 0)")  # fmt: skip
-        sp.add_argument("--photo-crop", choices=list(imaging.CROP_LEVELS), default="medium",
-                        help="crop level for photographs (default medium)")  # fmt: skip
         if with_kinds:
             sp.add_argument("--kinds", type=kinds, default=("painting",),
                             help="comma-separated kinds to show (default painting)")  # fmt: skip
@@ -213,6 +199,7 @@ def main() -> None:
     )
     d.add_argument("--out", type=Path, default=Path("out"))
     add_render_args(d)
+    d.add_argument("--season", choices=["winter", "spring", "summer", "autumn"])
 
     cmp = sub.add_parser(
         "compare", help="side-by-side sheets of what looser crop levels add"
@@ -221,7 +208,6 @@ def main() -> None:
     cmp.add_argument("--out", type=Path, default=Path("out"))
     cmp.add_argument("--pad-style", choices=imaging.PAD_STYLES, default="blur")
     cmp.add_argument("--kinds", type=kinds, default=("painting",))
-    cmp.add_argument("--allow-nudes", action="store_true")
 
     pub = sub.add_parser(
         "publish", help="add new works to the pool and retire the oldest"
