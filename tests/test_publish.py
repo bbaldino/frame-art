@@ -178,18 +178,20 @@ def test_version_replaces_its_live_original(setup):
 
 
 def test_version_retires_its_original_from_another_slice(setup):
-    # Rest keeps the original live; the Christmas slice picks its version, so
-    # the publisher retires the original itself.
+    # The original is live in Rest; the Christmas slice picks its version, so
+    # the publisher retires the original itself, and that is Rest's excess:
+    # s1:1 stays even though it is the oldest.
     env = setup
     env.add("s0:0", "s1:1")
     env.run(pool=2, now=1000)
     env.cat.db.execute("update published set published_at = 1 where key = 's1:1'")
-    env.cat.db.commit()  # s1:1 is the oldest, so Rest's excess is s1:1
+    env.cat.db.commit()
     v = env.version("s0:0", "christmas")
-    env.run(christmas(50), pool=2, count=0)
-    assert env.live() == {"s0:0"}
-    (live,) = env.cat.published(active=True)
-    assert env.cat.published_variants()[live.filename] == v.id
+    res = env.run(christmas(50), pool=2, count=0)
+    assert res.retired == [f"full/{pipeline.filename(env.works[0])}"]
+    assert env.live() == {"s0:0", "s1:1"}
+    files = library.live(env.cat, library.items(env.cat, env.photos, env.studio))
+    assert {f.key for f in files} == {f"variant:{v.id}", "s1:1"}
 
 
 def test_original_waits_while_its_version_is_live(setup):
@@ -292,16 +294,37 @@ def test_render_failure_is_failed_and_skipped(setup, monkeypatch):
     assert env.cat.rejected_keys() == set()
 
 
-def test_excluded_work_is_rejected(setup):
+def test_excluded_work_is_skipped_not_rejected(setup):
+    # Exclusions depend on settings (crop, upscale): skipped this run only.
     env = setup
     w = make_work(20)
     w.title = "Madonna (tondo)"
     env.cat.upsert([w])
-    env.add(w.key)
+    env.add(w.key, "s0:0")
     items = library.items(env.cat, env.photos, env.studio)
-    with pytest.raises(pipeline.Rejected):
+    with pytest.raises(publish.Skipped):
         env.pub().publish_item(items[w.key])
-    assert env.cat.rejected() == {w.key: "round (tondo)"}
+    res = env.run(pool=50)
+    assert len(res.added) == 1 and not res.failed
+    assert env.cat.rejected() == {}
+
+
+def test_own_pictures_and_versions_are_never_rejected(setup, monkeypatch):
+    env = setup
+    env.add("s0:0")
+    pid, paint = env.photo(), env.painting()
+    env.version("s0:0", "christmas")
+
+    def render_image(work, im, prefs, pad_style="blur"):
+        raise pipeline.TooSmall("needs 3x upscaling")
+
+    monkeypatch.setattr(pipeline, "render_image", render_image)
+    res = env.run(christmas(50), pool=50)
+    assert len(res.added) == 1 and not res.failed  # just the museum original
+    assert env.cat.rejected() == {}
+    assert {f"photo:{pid}", f"portrait:{paint}"} <= {
+        it.key for it in library.eligible(env.cat, library.items(env.cat, env.photos, env.studio))
+    }  # fmt: skip
 
 
 def test_duplicate_picture_is_skipped(setup, monkeypatch):
@@ -316,6 +339,54 @@ def test_duplicate_picture_is_skipped(setup, monkeypatch):
     res = env.run(pool=50)
     assert len(res.added) == 1 and not res.failed
     assert env.cat.rejected_keys() == set()
+
+
+def test_rotation_retires_only_what_it_replaced(setup, monkeypatch):
+    env = setup
+    everything(env)
+    env.run(pool=10, count=0, now=1000)
+    first = sorted(p.filename for p in env.cat.published(active=True))
+    calls = []
+
+    def render(http, cand, pad_style="blur"):
+        calls.append(cand.work.key)
+        raise OSError("museum down")
+
+    monkeypatch.setattr(pipeline, "render", render)
+    res = env.run(pool=10, count=4, seed=2, now=1000 + DAY)
+    assert res.retired == [] and len(res.failed) == 4
+    assert sorted(p.filename for p in env.cat.published(active=True)) == first
+
+    # One of four renders works: one retires, the oldest.
+    oldest = env.cat.published(active=True)[0]
+
+    def render_one(http, cand, pad_style="blur"):
+        if calls:
+            raise OSError("museum down")
+        calls.append(cand.work.key)
+        im = noise(int(cand.work.source_id))
+        return pipeline.Output(cand.work, cand.plan, imaging.phash(im), im)
+
+    calls.clear()
+    monkeypatch.setattr(pipeline, "render", render_one)
+    res = env.run(pool=10, count=4, seed=3, now=1000 + 2 * DAY)
+    assert len(res.added) == 1
+    assert res.retired == [f"{oldest.folder}/{oldest.filename}"]
+    assert len(env.live()) == 10
+
+
+def test_schedule_start_version_replaces_without_extra_churn(setup):
+    env = setup
+    env.add("s0:0", "s1:1", "s2:2", "s0:3")
+    env.run(pool=4, count=0, now=1000)
+    env.cat.db.execute("update published set published_at = 1 where key != 's0:3'")
+    env.cat.db.commit()  # s0:3 is the newest, so it isn't Rest's oldest
+    v = env.version("s0:3", "christmas")
+    res = env.run(christmas(25), pool=4, count=0)
+    # Only the original goes: its version takes its place.
+    assert len(res.retired) == 1 and len(res.added) == 1
+    files = library.live(env.cat, library.items(env.cat, env.photos, env.studio))
+    assert {f.key for f in files} == {"s0:0", "s1:1", "s2:2", f"variant:{v.id}"}
 
 
 def test_pinned_stays_live_past_rotation(setup):

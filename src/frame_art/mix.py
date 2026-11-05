@@ -35,7 +35,10 @@ def member(item: Item, slices: list[frozenset[str]]) -> int | None:
 class Plan:
     slices: list[frozenset[str]]  # flattened, Rest last
     targets: list[int]
-    retire: list[str]  # live filenames to retire, in order
+    retire: list[str]  # live filenames to retire now, in order
+    # Per slice: live filenames rotating out, oldest first. The publisher
+    # retires only as many as the slice's new items replace.
+    rotate: list[list[str]]
     fill: list[list[str]]  # per slice: waiting item keys, best first
 
 
@@ -91,6 +94,7 @@ def plan(
     slices = [*named, REST]
     n = len(slices)
     where = {it.key: member(it, named) for it in items}
+    by_key = {it.key: it for it in items}
     retire: list[str] = []
 
     # 1. Live files outside the Library, or in no slice today, go first.
@@ -118,23 +122,57 @@ def plan(
         extra = min(pool_size - sum(targets), available[i] - targets[i])
         targets[i] += max(0, extra)
 
-    # 4-5. Per slice: retire the excess, rotate the oldest, rank the waiting.
+    # 4-5. Per slice: what leaves (the excess, then the oldest in rotation)
+    # and the waiting, ranked.
     live_keys = {f.key for f in live}
-    rotate = spread(count, targets)
+    # Originals a version can replace: live as themselves, not pinned.
+    swappable = {f.root: f for f in live if f.key == f.root and f.key not in pinned}
+    rotate_n = spread(count, targets)
+    unpinned: list[list[Live]] = []
+    excess: list[int] = []
+    leaving: list[int] = []  # excess + rotation, before any version swaps
     fill: list[list[str]] = []
     for i in range(n):
         here = {f.root for f in on[i]}
         waiting = [
             it for it in members[i] if it.key not in live_keys and it.root not in here
         ]
-        unpinned = [f for f in on[i] if f.key not in pinned]
-        excess = max(0, len(on[i]) - targets[i])
+        unpinned.append([f for f in on[i] if f.key not in pinned])
+        excess.append(max(0, len(on[i]) - targets[i]))
         # Rotate only as many as the waiting roots can replace beyond today's gaps.
-        gap = max(0, targets[i] - (len(on[i]) - min(excess, len(unpinned))))
-        r = min(rotate[i], max(0, len({it.root for it in waiting}) - gap))
-        retire += [f.filename for f in unpinned[: excess + r]]
-        fill.append(_rank(waiting, pinned, favorites, last_shown, now, seed))
-    return Plan(slices, targets, retire, fill)
+        gone = min(excess[i], len(unpinned[i]))
+        gap = max(0, targets[i] - (len(on[i]) - gone))
+        r = min(rotate_n[i], max(0, len({it.root for it in waiting}) - gap))
+        leaving.append(min(len(unpinned[i]), excess[i] + r))
+        fill.append(_rank(waiting, pinned, favorites, last_shown, now, seed,
+                          set(swappable) - here))  # fmt: skip
+
+    # A version going up replaces its live original, so that original stands
+    # in for one of its own slice's departures instead of something older.
+    swapping: set[str] = set()
+    for i in range(n):
+        slots = targets[i] - (len(on[i]) - leaving[i])
+        taken: set[str] = set()
+        for key in fill[i]:
+            if len(taken) >= slots:
+                break
+            it = by_key[key]
+            if it.root in taken:
+                continue
+            taken.add(it.root)
+            if it.kind == "version" and (f := swappable.get(it.root)) is not None:
+                swapping.add(f.filename)
+
+    # Excess retires now; rotation waits until its replacements are up.
+    rotate: list[list[str]] = []
+    for i in range(n):
+        swaps = sum(f.filename in swapping for f in on[i])
+        rest = [f.filename for f in unpinned[i] if f.filename not in swapping]
+        now_n = max(0, excess[i] - swaps)
+        later_n = max(0, leaving[i] - excess[i] - max(0, swaps - excess[i]))
+        retire += rest[:now_n]
+        rotate.append(rest[now_n : now_n + later_n])
+    return Plan(slices, targets, retire, rotate, fill)
 
 
 def _rank(
@@ -144,8 +182,14 @@ def _rank(
     last_shown: dict[str, float],
     now: float,
     seed: int,
+    live_roots: set[str],
 ) -> list[str]:
-    """Pinned first, then never shown (interleaved by group), then least recently shown."""
+    """Pinned first, then never shown (interleaved by group), then least recently shown.
+
+    After the pins, versions of originals live in another slice (``live_roots``)
+    come first, in that same order, so a schedule starting swaps versions in
+    for their originals rather than replacing other works too.
+    """
     pins = sorted(it.key for it in waiting if it.key in pinned)
     rest = [it for it in waiting if it.key not in pinned]
     never = _round_robin([it for it in rest if it.key not in last_shown], seed)
@@ -156,4 +200,8 @@ def _rank(
     shown = sorted(
         (it.key for it in rest if it.key in last_shown), key=lambda k: (-age(k), k)
     )
-    return pins + never + shown
+    swaps = {it.key for it in rest if it.kind == "version" and it.root in live_roots}
+    ranked = never + shown
+    return (
+        pins + [k for k in ranked if k in swaps] + [k for k in ranked if k not in swaps]
+    )

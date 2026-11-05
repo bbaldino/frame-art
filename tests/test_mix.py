@@ -71,20 +71,22 @@ def test_rotation_retires_about_count_oldest():
     live = [lv(f"m:{i:02}", float(100 - i)) for i in range(20)]  # m:19 oldest
     p = run([], items, live, pool=20, count=7)
     assert p.targets == [20]
-    assert p.retire == [f"m:{i:02}.jpg" for i in range(19, 12, -1)]
+    # Held back: the publisher retires them only as replacements go up.
+    assert p.retire == []
+    assert p.rotate == [[f"m:{i:02}.jpg" for i in range(19, 12, -1)]]
 
 
 def test_rotation_keeps_pins():
     items = [it(f"m:{i:02}", "kind:painting") for i in range(40)]
     live = [lv(f"m:{i:02}", float(100 - i)) for i in range(20)]
     p = run([], items, live, pool=20, count=7, pinned={"m:19", "m:18"})
-    assert p.retire == [f"m:{i:02}.jpg" for i in range(17, 10, -1)]
+    assert p.rotate == [[f"m:{i:02}.jpg" for i in range(17, 10, -1)]]
 
 
 def test_no_waiting_no_rotation():
     live = [lv(k.key, float(i)) for i, k in enumerate(paintings)]
     p = run([], paintings, live, pool=10, count=7)
-    assert p.retire == []
+    assert p.retire == [] and p.rotate == [[]]
     assert p.fill == [[]]
 
 
@@ -193,7 +195,7 @@ def test_rotation_never_retires_what_the_waiting_cannot_replace():
     extra = [it(f"m:x{i}", "kind:painting") for i in range(3)]
     p = run([], paintings[:8] + extra, live, pool=10, count=7)
     assert p.targets == [10]
-    assert p.retire == ["m:p0.jpg"]
+    assert p.retire == [] and p.rotate == [["m:p0.jpg"]]
 
 
 def test_rotation_cap_counts_waiting_roots_not_keys():
@@ -205,3 +207,40 @@ def test_rotation_cap_counts_waiting_roots_not_keys():
     assert p.targets == [2, 0]
     assert p.retire == []
     assert p.fill[0] == ["variant:4", "variant:5", "variant:6"]
+
+
+def test_excess_retires_now_rotation_waits():
+    # Rest shrinks from 4 to 2: two retire now, and one more rotates out later.
+    items = [it(f"m:{i}") for i in range(6)]
+    live = [lv(f"m:{i}", float(i)) for i in range(4)]
+    p = run([], items, live, pool=2, count=1)
+    assert p.retire == ["m:0.jpg", "m:1.jpg"]
+    assert p.rotate == [["m:2.jpg"]]
+
+
+XMAS = [everyday([Slice(["ai-variant:christmas"], 25)])]
+
+
+def test_versions_of_live_originals_go_first():
+    rest = [it(k, "kind:painting") for k in ("m:a", "m:b", "m:c", "m:d", "m:x")]
+    va = ver(1, "m:a", "christmas", "kind:painting")
+    vx = ver(2, "m:x", "christmas", "kind:painting")
+    live = [lv("m:d", 1.0), lv("m:c", 2.0), lv("m:b", 3.0), lv("m:a", 4.0)]
+    # vx was never shown, so it would otherwise come first.
+    p = run(XMAS, [*rest, va, vx], live, pool=4, count=0,
+            last_shown={"variant:1": NOW - DAY})  # fmt: skip
+    assert p.targets == [1, 3]
+    assert p.fill[0] == ["variant:1", "variant:2"]
+
+
+def test_schedule_start_swap_stands_in_for_the_excess():
+    # Christmas starts: a's version replaces a, so Rest's excess is a itself
+    # and the oldest (d) stays.
+    rest = [it(k, "kind:painting") for k in ("m:a", "m:b", "m:c", "m:d", "m:x")]
+    va = ver(1, "m:a", "christmas", "kind:painting")
+    vx = ver(2, "m:x", "christmas", "kind:painting")
+    live = [lv("m:d", 1.0), lv("m:c", 2.0), lv("m:b", 3.0), lv("m:a", 4.0)]
+    p = run(XMAS, [*rest, va, vx], live, pool=4, count=0,
+            last_shown={"variant:2": NOW - DAY})  # fmt: skip
+    assert p.fill[0][0] == "variant:1"
+    assert p.retire == [] and p.rotate == [[], []]

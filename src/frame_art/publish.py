@@ -59,7 +59,11 @@ class PublishResult:
     failed: list[str]
 
 
-class Duplicate(Exception):
+class Skipped(Exception):
+    """Not published this run, and not rejected: tried again next time."""
+
+
+class Duplicate(Skipped):
     """The picture looks like one already on the TV; skipped, not rejected."""
 
 
@@ -137,7 +141,11 @@ class Publisher:
         seed: int,
         now: float | None = None,
     ) -> PublishResult:
-        """Retire and fill per today's slices (``layers``, narrowest first)."""
+        """Retire and fill per today's slices (``layers``, narrowest first).
+
+        Works rotating out retire only once their replacements are up, so a
+        night of failed renders leaves the TV as it was.
+        """
         now = time.time() if now is None else now
         all_items = library.items(self.cat, self.photos, self.studio)
         ok = library.eligible(self.cat, all_items)
@@ -172,8 +180,10 @@ class Publisher:
 
         A root (an original and its versions) is live at most once. A version
         whose original is live (not pinned, not put up in this run) replaces
-        it; the original's slice is refilled when its turn comes. Retirements
-        are appended to ``retired``.
+        it; the original's slice is refilled when its turn comes. Each slice's
+        rotation (``plan.rotate``) then retires, oldest first, only as many as
+        the slice is now over its target. Retirements are appended to
+        ``retired``.
         """
         by_key = {it.key: it for it in ok}
         named = plan.slices[:-1]
@@ -182,9 +192,12 @@ class Publisher:
             it = by_key.get(key)
             return None if it is None else mix.member(it, named)
 
+        # Rotating files stay live until replaced, but count as already gone.
+        held = [list(r) for r in plan.rotate]
+        rotating = {name for r in held for name in r}
         here = [0] * len(plan.slices)
         for f in live:
-            if (i := slice_of(f.key)) is not None:
+            if (i := slice_of(f.key)) is not None and f.filename not in rotating:
                 here[i] += 1
         showing = {f.root: f for f in live}
         fresh: set[str] = set()  # roots put up in this run
@@ -214,7 +227,7 @@ class Publisher:
                     tried.add(key)
                     try:
                         out = self.publish_item(item)
-                    except (pipeline.Rejected, Duplicate) as ex:
+                    except (pipeline.Rejected, Skipped) as ex:
                         log.info("%s: skipped: %s", key, ex)
                         continue
                     except Exception as ex:  # noqa: BLE001 - one bad image must not stop the run
@@ -227,11 +240,17 @@ class Publisher:
                     progress = True
                     if cur is not None:
                         retired += self._retire_files([rows[cur.filename]])
-                        if (j := slice_of(cur.key)) is not None:
+                        j = slice_of(cur.key)
+                        if j is not None and cur.filename in held[j]:
+                            held[j].remove(cur.filename)
+                        elif j is not None:
                             here[j] -= 1
                     folder, filename = out.split("/", 1)
                     showing[item.root] = Live(filename, folder, key, item.root, 0.0)
                     fresh.add(item.root)
+        for i, names in enumerate(held):
+            over = here[i] + len(names) - plan.targets[i]
+            retired += self._retire_files([rows[f] for f in names[: max(0, over)]])
         return added, failed
 
     def sync(self) -> list[str]:
@@ -250,8 +269,10 @@ class Publisher:
     def publish_item(self, item: Item) -> str:
         """Render ``item`` into the upload folders; returns ``"<folder>/<filename>"``.
 
-        Raises ``pipeline.Rejected`` (recorded, so it isn't tried again),
-        ``Duplicate``, or whatever downloading or rendering raised.
+        Raises ``pipeline.Rejected`` (a museum work unusable once fetched:
+        recorded, so it isn't tried again), ``Skipped`` (left out this run
+        only), or whatever downloading or rendering raised. Brian's own
+        pictures, portraits and versions are never recorded as rejected.
         """
         if item.kind == "museum":
             return self._publish_museum(item)
@@ -264,8 +285,7 @@ class Publisher:
             style = self.pad_style if museum or self.pad_style != "matte" else "blur"
             out = pipeline.render_image(work, im, self.prefs, style)
         except pipeline.Rejected as ex:
-            self.cat.record_reject(item.key, str(ex))
-            raise
+            raise Skipped(str(ex)) from ex
         folder = pipeline.folder_for(out.plan, self.pad_style) if museum else "full"
         stem = (
             Path(pipeline.filename(work)).stem
@@ -290,10 +310,10 @@ class Publisher:
     def _publish_museum(self, item: Item) -> str:
         w = item.work
         assert w is not None
+        # Exclusions depend on settings (the crop level), so they skip only.
         plan = pipeline.exclusion(w, self.prefs)
         if isinstance(plan, str):
-            self.cat.record_reject(item.key, plan)
-            raise pipeline.Rejected(plan)
+            raise Skipped(plan)
         try:
             cand = pipeline.Candidate(w, plan, 0.0, self.prefs)
             out = pipeline.render(self.http, cand, self.pad_style)
