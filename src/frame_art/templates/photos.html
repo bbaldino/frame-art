@@ -2,7 +2,7 @@
 {% block title %}Your photos · Frame Art{% endblock %}
 {% block head %}{% if (pick and google_signed_in) or (adding and not errors) %}<meta http-equiv="refresh" content="5;url=/photos">{% endif %}{% endblock %}
 {% block body %}
-<h1>Your photos <span class="muted"><a href="/library?tag=source%3Aphotos">Browse in the Library</a></span></h1>
+<h1>Your photos <span class="muted"><a href="/library?scope=all&amp;tag=source%3Aphotos">Browse in the Library</a></span></h1>
 <p class="muted">Your own photos, for painting in the Studio or for the TV as they are: add one to the Library to put it in the mix. They stay on your network; Home Assistant uploads the TV's copy from a folder it doesn't serve.</p>
 {% if notice %}<p class="notice">{{ notice }}</p>{% endif %}
 {% if adding and errors %}<p class="notice">Suggesting a kind for each new photo; reload to see them.</p>

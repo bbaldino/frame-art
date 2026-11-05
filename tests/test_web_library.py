@@ -353,6 +353,10 @@ def test_work_page_for_photo_portrait_version(lib):
         ("/catalogue", "/library?scope=all"),
         ("/catalogue?q=hay&tag=subject%3Afield",
          "/library?scope=all&q=hay&tag=subject%3Afield"),
+        # Old catalogue filters become group-qualified tags; a bare tag stays.
+        ("/catalogue?style=Impressionism&subject=winter&genre=landscape&tag=snow",
+         "/library?scope=all&tag=style%3Aimpressionism&tag=subject%3Awinter"
+         "&tag=genre%3Alandscape&tag=snow"),
         ("/collection", "/library?view=favorites"),
         ("/collection?source=nga", "/library?view=favorites&source=nga"),
         ("/portraits", "/library?tag=source%3Astudio"),
@@ -376,7 +380,7 @@ def test_old_routes_are_gone(lib):
 
 def test_photos_page_links_to_the_library(lib):
     c, *_ = lib
-    assert 'href="/library?tag=source%3Aphotos"' in c.get("/photos").text
+    assert 'href="/library?scope=all&amp;tag=source%3Aphotos"' in c.get("/photos").text
     assert 'href="/photos"' in c.get("/library").text
 
 
@@ -387,3 +391,25 @@ def test_nav(lib):
     assert labels == ["Overview", "Now", "On the TV", "Library", "Schedule", "Studio",
                       "History", "Compare crops", "Settings", "Runs"]  # fmt: skip
     assert 'href="/library" aria-current="page"' in nav
+
+
+def test_deleting_a_live_photo_takes_it_off_the_tv(lib, monkeypatch):
+    c, svc, photo, *_ = lib
+    key = f"photo:{photo.id}"
+    cat = svc.catalogue()
+    cat.set_library([key], "in")
+    cat.record_publish(f"photo-{photo.id}.jpg", "full", key, 0)
+    submitted = []
+    monkeypatch.setattr(svc, "submit", lambda kind, args=None: submitted.append(kind))
+    c.post(f"/photos/{photo.id}/delete")
+    assert svc.photos().get(photo.id) is None
+    assert submitted == ["sync"]  # now, not at the next nightly run
+
+
+def test_saving_a_try_again_never_puts_a_removed_portrait_back(lib):
+    c, svc, _, painting, _ = lib
+    key = f"portrait:{painting.id}"
+    cat = svc.catalogue()
+    cat.set_library([key], "removed")
+    c.post(f"/studio/tries/{painting.try_id}/save")  # a resubmitted form
+    assert cat.library()[key][0] == "removed"

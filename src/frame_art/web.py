@@ -432,6 +432,20 @@ def create_app(svc: Service) -> Starlette:
             )
         return render(request, "history.html", page="history", items=rows, todo=todo)
 
+    # The catalogue's old filters, as the Library's group-qualified tags.
+    OLD_TAG_PARAMS = ("style", "subject", "genre")
+
+    async def old_catalogue(request: Request):
+        """/catalogue → All works; ``style=X`` and the like become ``tag=style:x``."""
+        pairs = [("scope", "all")]
+        for k, v in request.query_params.multi_items():
+            if k in OLD_TAG_PARAMS:
+                if v.strip():
+                    pairs.append(("tag", f"{k}:{v.strip().lower()}"))
+            else:
+                pairs.append((k, v))  # a bare old tag=x stays as it is
+        return RedirectResponse("/library?" + urlencode(pairs), status_code=303)
+
     def moved(target: str):
         """A 303 to where an old page went, keeping the query string."""
 
@@ -1510,8 +1524,11 @@ def create_app(svc: Service) -> Starlette:
             painting = st.save(t.id)
         except ValueError as e:
             return PlainTextResponse(str(e), 400)
-        # A portrait Brian saves is one he wants on the TV.
-        svc.catalogue().set_library([f"{library.PORTRAIT}{painting.id}"], "in")
+        # A portrait Brian saves is one he wants on the TV, but a repeated save
+        # (a resubmitted form) never puts back one he has removed since.
+        key, cat = f"{library.PORTRAIT}{painting.id}", svc.catalogue()
+        if key not in cat.library():
+            cat.set_library([key], "in")
         return RedirectResponse(f"/studio/{t.photo_id}?done=saved", status_code=303)
 
     async def delete_try(request: Request):
@@ -1597,9 +1614,12 @@ def create_app(svc: Service) -> Starlette:
         p = store.get(pid)
         if p is None:
             return PlainTextResponse("unknown photo", 404)
+        cat = svc.catalogue()
+        before = eligible_live(cat, all_items())
         store.remove(pid)
         svc.studio().forget_photo(pid)
         (thumbs / "photos" / f"{pid}.jpg").unlink(missing_ok=True)
+        sync_if_dropped(cat, before)  # a live photo leaves the TV now
         return photos_view(request, notice=f"Removed {p.filename}.")
 
     def versions_view(request: Request, errors=(), notice="", status=200):
@@ -1895,7 +1915,7 @@ def create_app(svc: Service) -> Starlette:
             Route("/pool", pool),
             Route("/history", history_page),
             # Old pages, and where they went.
-            Route("/catalogue", moved("/library?scope=all")),
+            Route("/catalogue", old_catalogue),
             Route("/collection", moved("/library?view=favorites")),
             Route("/portraits", moved("/library?tag=source%3Astudio")),
             Route("/variants", moved("/schedule")),
