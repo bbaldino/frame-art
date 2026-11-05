@@ -55,7 +55,6 @@ from .publish import content_index, find_work, read_sidecar
 from .schedules import Schedule
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
 from .settings import (
-    CHOOSE_FROM,
     PHOTO_SOURCES,
     SLIDESHOW,
     SOURCE_NAMES,
@@ -63,6 +62,8 @@ from .settings import (
     Settings,
 )
 from .sources import ART_KINDS, KINDS, info
+
+CHOOSE_FROM: dict[str, str] = {}  # replaced in Task 11
 
 log = logging.getLogger(__name__)
 

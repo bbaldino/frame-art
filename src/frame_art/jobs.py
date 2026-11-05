@@ -14,10 +14,11 @@ from .catalogue import Catalogue
 from .classify import current_season
 from .net import Http
 from .publish import Publisher, PublishResult, diversify
-from .schedules import PORTRAITS
 from .settings import Settings
 from .sources import all_sources
 from .studio import StudioStore
+
+PORTRAITS = "portraits"  # replaced in Task 8
 
 log = logging.getLogger("frame_art")
 

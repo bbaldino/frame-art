@@ -1,8 +1,8 @@
-"""Mix schedules: yearly date ranges, each with a share of the screen per variant type.
+"""Mix schedules: yearly date ranges, each holding slices: a share of the screen for works carrying all of a list of tags.
 
 Schedules that cover the same day combine "off the top": the narrowest range takes
 its total share first, each wider one takes its share of what is left, and
-whatever remains shows originals. Ties go to the later start in the year, then to
+whatever remains is the rest of the Library. Ties go to the later start in the year, then to
 the schedule created later. A schedule on Feb 29 runs on Feb 28 in other years.
 """
 
@@ -11,12 +11,18 @@ from __future__ import annotations
 import calendar
 import re
 import secrets
-from collections import Counter
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 YEAR = 365
 _MMDD = re.compile(r"^(\d\d)-(\d\d)$")
+_TAG = re.compile(r"^[a-z0-9-]+:.+$")
+
+
+@dataclass
+class Slice:
+    tags: list[str]  # group-qualified; all must match
+    share: int  # percent
 
 
 @dataclass
@@ -25,10 +31,10 @@ class Schedule:
     name: str
     start: str  # "MM-DD", inclusive
     end: str  # "MM-DD", inclusive; before start means the range wraps the new year
-    shares: dict[str, int] = field(default_factory=dict)  # percent per variant type
+    slices: list[Slice] = field(default_factory=list)
 
     def total(self) -> int:
-        return sum(self.shares.values())
+        return sum(sl.share for sl in self.slices)
 
 
 def _md(mmdd: str) -> tuple[int, int]:
@@ -75,50 +81,45 @@ def layers(schedules: list[Schedule], day: date) -> list[Schedule]:
     return [s for s in order(schedules) if covers(s, day)]
 
 
-# Saved Studio paintings: a share like a variant type's, but filled by the
-# paintings themselves rather than by versions of museum works.
-PORTRAITS = "portraits"
-
-
-def known(schedules: list[Schedule], types: set[str]) -> list[Schedule]:
-    return [
-        replace(s, shares={t: p for t, p in s.shares.items() if t in types})
-        for s in schedules
-    ]
+def flatten(layers: list[Schedule]) -> list[Slice]:
+    """Every slice, in layer order and then slice order."""
+    return [sl for s in layers for sl in s.slices]
 
 
 def allocate(
-    layers: list[Schedule], n: int, ready: dict[str, int] | None = None
-) -> dict[str, int]:
-    """Works per type out of ``n``, cascading through ``layers`` (narrowest first).
+    layers: list[Schedule], n: int, available: list[int] | None = None
+) -> list[int]:
+    """Works per flattened slice out of ``n``, cascading through ``layers`` (narrowest first).
 
-    With ``ready``, a type gets no more works than it has versions ready, and the
-    rest of that layer's share falls to the next layer down.
+    With ``available``, slice ``i`` gets no more works than ``available[i]``, and
+    the rest of that layer's share falls to the next layer down.
     """
-    rem, out = n, Counter()
+    rem, out, i = n, [], 0
     for s in layers:
         base = rem
-        for t, p in sorted(s.shares.items()):
-            if p <= 0:
-                continue
-            want = min(round(p * base / 100), rem)
-            if ready is not None:
-                want = min(want, max(0, ready.get(t, 0) - out[t]))
-            out[t] += want
+        for sl in s.slices:
+            want = 0
+            if sl.share > 0:
+                want = min(round(sl.share * base / 100), rem)
+                if available is not None:
+                    want = min(want, max(0, available[i]))
+            out.append(want)
             rem -= want
-    return {t: k for t, k in out.items() if k}
+            i += 1
+    return out
 
 
-def shares_for(schedules: list[Schedule], day: date) -> dict[str, float]:
-    """Today's target percent per type: the cascade on 100, unrounded."""
-    rem, out = 100.0, Counter()
+def shares_for(schedules: list[Schedule], day: date) -> list[tuple[Slice, float]]:
+    """Today's target percent per slice: the cascade on 100, unrounded."""
+    rem, out = 100.0, []
     for s in layers(schedules, day):
         base = rem
-        for t, p in sorted(s.shares.items()):
-            if p > 0:
-                out[t] += p * base / 100
-                rem -= p * base / 100
-    return {t: v for t, v in out.items() if v}
+        for sl in s.slices:
+            if sl.share > 0:
+                v = sl.share * base / 100
+                out.append((sl, v))
+                rem -= v
+    return out
 
 
 def next_start(s: Schedule, day: date) -> date:
@@ -168,11 +169,23 @@ def validate(s: Schedule) -> list[str]:
     for label, v in (("The start", s.start), ("The end", s.end)):
         if err := _date_error(label, v):
             errors.append(err)
-    if not isinstance(s.shares, dict):
-        return [*errors, "Shares must be a list of types and percentages"]
-    for t, p in s.shares.items():
-        if not isinstance(p, int) or isinstance(p, bool) or not 0 <= p <= 100:
-            errors.append(f"The share for {t} must be a whole number from 0 to 100")
+    if not isinstance(s.slices, list) or not all(
+        isinstance(sl, Slice) for sl in s.slices
+    ):
+        return [*errors, "Slices must be a list of tags and percentages"]
+    for sl in s.slices:
+        if (
+            not isinstance(sl.tags, list)
+            or not sl.tags
+            or not all(isinstance(t, str) and _TAG.match(t) for t in sl.tags)
+        ):
+            errors.append("Each slice needs tags like group:value")
+        if (
+            not isinstance(sl.share, int)
+            or isinstance(sl.share, bool)
+            or not 0 <= sl.share <= 100
+        ):
+            errors.append("A slice's share must be a whole number from 0 to 100")
     if not errors and s.total() > 100:
         errors.append(f"The shares add up to {s.total()}%; at most 100% is allowed")
     return errors
@@ -182,5 +195,26 @@ def new_id() -> str:
     return secrets.token_hex(4)
 
 
-def everyday(mix: dict[str, int]) -> Schedule:
-    return Schedule(new_id(), "Everyday", "01-01", "12-31", dict(mix))
+def everyday(slices: list[Slice]) -> Schedule:
+    return Schedule(new_id(), "Everyday", "01-01", "12-31", list(slices))
+
+
+def slices_from_shares(shares: dict) -> list[Slice]:
+    """Old per-type shares as slices, in type-name order."""
+    if not isinstance(shares, dict):
+        raise ValueError("shares must be an object")
+    return [
+        Slice(["source:studio"] if t == "portraits" else [f"ai-variant:{t}"], p)
+        for t, p in sorted(shares.items())
+    ]
+
+
+def from_dict(d: dict) -> Schedule:
+    """A schedule from its saved form: new ``slices`` or the old ``shares``."""
+    if "slices" in d:
+        slices = d["slices"]
+        if isinstance(slices, list):
+            slices = [Slice(**sl) if isinstance(sl, dict) else sl for sl in slices]
+    else:
+        slices = slices_from_shares(d.get("shares", {}))
+    return Schedule(d["id"], d["name"], d["start"], d["end"], slices)

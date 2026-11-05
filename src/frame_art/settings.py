@@ -6,24 +6,16 @@ import json
 import logging
 import re
 from dataclasses import asdict, dataclass, field, fields, replace
-from datetime import date
 from pathlib import Path
 
 from . import imaging, pipeline, schedules
-from .schedules import Schedule
+from .schedules import Schedule, Slice
 from .sources import ART_KINDS, SOURCE_NAMES  # noqa: F401 (re-exported)
 
 log = logging.getLogger(__name__)
 
 SOURCES = ("aic", "cleveland", "met", "nga", "rijks", "smk", "commons", "loc")
 PHOTO_SOURCES = ("commons", "loc")
-
-# Where the nightly run looks for new works.
-CHOOSE_FROM = {
-    "collection_first": "Your collection first, then automatic picks",
-    "collection": "Your collection only",
-    "auto": "Automatic picks only",
-}
 
 # How often the TV moves to the next picture: art_set_slideshow's presets.
 SLIDESHOW = {
@@ -40,19 +32,9 @@ SLIDESHOW = {
 class Settings:
     # Which works, and how they fill the screen.
     crop: str = "strict"
-    full_screen_only: bool = False
-    allow_nudes: bool = False
     pad_style: str = "blur"
     kinds: list[str] = field(default_factory=lambda: ["painting"])
     sources: list[str] = field(default_factory=lambda: list(SOURCES))
-    # Style mix: the share of each night's new works that are photographs.
-    photo_share: int = 0  # percent
-    # Photos are mostly 3:2 (a 16% crop), so they get their own, looser level.
-    photo_crop: str = "medium"
-    # The pool on the TV.
-    choose_from: str = "collection_first"
-    # A collection work may go back on the TV this long after it was retired.
-    repeat_days: int = 60
     count: int = 7  # new works per nightly run
     pool: int = 150  # works kept live
     slideshow: str = "1h"  # set on the TV by the "Show" buttons
@@ -63,40 +45,24 @@ class Settings:
     # Works per source and kind. 2000 takes ~40 min and gives ~660 full-screen
     # paintings at the strict crop level (AIC caps its search at 1000).
     crawl_limit: int = 2000
-    # Seasonal variants: yearly date ranges, each with a share (percent) of the
-    # pool per variant type. Originals get whatever is left over.
+    # Yearly date ranges, each with slices: a share (percent) of the pool for
+    # works carrying all of a list of tags. The rest is the Library at large.
     schedules: list[Schedule] = field(default_factory=list)
     variant_limit: int = 10  # AI edits made per nightly run
 
     def prefs(self) -> pipeline.Prefs:
         return pipeline.Prefs(
-            imaging.CROP_LEVELS[self.crop], self.full_screen_only, self.allow_nudes
-        )
-
-    def photo_prefs(self) -> pipeline.Prefs:
-        return pipeline.Prefs(
-            imaging.CROP_LEVELS[self.photo_crop],
-            self.full_screen_only,
-            self.allow_nudes,
+            imaging.CROP_LEVELS[self.crop], full_screen_only=False, allow_nudes=True
         )
 
     def crawl_kinds(self) -> tuple[str, ...]:
         """Art kinds, plus photographs whenever a photo source is enabled.
 
-        The style mix only decides what gets published; photos are catalogued
-        regardless, so they can be browsed, pinned and banned beforehand.
+        Photos are catalogued regardless of what gets published.
         """
         if set(self.sources) & set(PHOTO_SOURCES):
             return (*self.kinds, "photograph")
         return tuple(self.kinds)
-
-    def shown_kinds(self) -> tuple[str, ...]:
-        """Kinds the nightly run may publish."""
-        return (*self.kinds, "photograph") if self.photo_share else tuple(self.kinds)
-
-    def today_shares(self, day: date, types: set[str]) -> dict[str, float]:
-        """The target percent per variant type on ``day``, for types that exist."""
-        return schedules.shares_for(schedules.known(self.schedules, types), day)
 
     def validate(self) -> list[str]:
         errors = []
@@ -106,16 +72,8 @@ class Settings:
             errors.append(f"pad style must be one of {list(imaging.PAD_STYLES)}")
         if not self.kinds or set(self.kinds) - set(ART_KINDS):
             errors.append(f"kinds must be some of {list(ART_KINDS)}")
-        if self.photo_crop not in imaging.CROP_LEVELS:
-            errors.append(f"photo crop must be one of {list(imaging.CROP_LEVELS)}")
-        if not 0 <= self.photo_share <= 100:
-            errors.append("photography share must be 0-100%")
         if not self.sources or set(self.sources) - set(SOURCES):
             errors.append(f"sources must be some of {list(SOURCES)}")
-        if self.choose_from not in CHOOSE_FROM:
-            errors.append(f"choose from must be one of {list(CHOOSE_FROM)}")
-        if not 1 <= self.repeat_days <= 3650:
-            errors.append("repeat interval must be 1-3650 days")
         if not 0 <= self.count <= 25:
             # The integration's batch upload fails beyond about 25 at once.
             errors.append("new works per night must be 0-25")
@@ -154,11 +112,23 @@ class Settings:
         if not isinstance(raw, dict):
             log.warning("settings: %s is not an object; using defaults", path)
             return cls()
+        # Files from before slices carry a photo share outside the schedules.
+        listed = raw.get("schedules")
+        old = not (
+            isinstance(listed, list)
+            and any(isinstance(d, dict) and "slices" in d for d in listed)
+        )
         mix = raw.get("mix")
         if "schedules" not in raw and isinstance(mix, dict) and mix:
             # Before schedules there was one year-round mix.
             # A fixed id, so the editor can find it before the settings are saved.
-            raw["schedules"] = [asdict(replace(schedules.everyday(mix), id="everyday"))]
+            try:
+                every = replace(
+                    schedules.everyday(schedules.slices_from_shares(mix)), id="everyday"
+                )
+                raw["schedules"] = [asdict(every)]
+            except (TypeError, ValueError):
+                log.warning("settings: ignoring mix=%r", mix)
         # Keep every field that is valid on its own, so a file written by a
         # newer version (an unknown source, say) still keeps the rest.
         s = cls()
@@ -174,16 +144,44 @@ class Settings:
                 ]
             try:
                 if f.name == "schedules" and isinstance(value, list):
-                    value = [Schedule(**d) for d in value]
+                    value = [schedules.from_dict(d) for d in value]
                 trial = replace(s, **{f.name: value})
                 errors = trial.validate()
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, KeyError):
                 errors = ["wrong type"]
             if errors:
                 log.warning("settings: ignoring %s=%r (%s)", f.name, value, errors)
                 continue
             s = trial
+        share = raw.get("photo_share")
+        if old and isinstance(share, int) and not isinstance(share, bool) and share > 0:
+            s = s._with_photo_share(share)
         return s
+
+    def _with_photo_share(self, share: int) -> Settings:
+        """The old photography share, as a photograph slice in Everyday."""
+        photo = Slice(["kind:photograph"], share)
+        every = next(
+            (
+                x
+                for x in self.schedules
+                if (x.name, x.start, x.end) == ("Everyday", "01-01", "12-31")
+            ),
+            None,
+        )
+        if every is None:
+            new = replace(schedules.everyday([photo]), id="everyday")
+            scheds = [*self.schedules, new]
+        else:
+            scheds = [
+                replace(x, slices=[*x.slices, photo]) if x is every else x
+                for x in self.schedules
+            ]
+        trial = replace(self, schedules=scheds)
+        if errors := trial.validate():
+            log.warning("settings: dropping photo_share=%r (%s)", share, errors)
+            return self
+        return trial
 
     def save(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
