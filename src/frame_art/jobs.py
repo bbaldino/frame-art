@@ -149,21 +149,19 @@ def nightly(
     )
     studio = StudioStore(data / "frame-art.db", data / "studio")
     summary["tries_pruned"] = studio.prune(time.time())
-    # replaced in Task 8: portraits are published with everything else now.
-    portraits = sum(
-        1 for p in cat.published(active=True) if p.key.startswith(library.PORTRAIT)
-    )
     try:
         # Edits take a minute or more each, so their client waits longer.
+        db = data / "frame-art.db"
         v = variants.nightly(
             cat,
             Http(timeout=300),
             data,
-            publisher(cat, http, data, dest, settings),
+            library.items(
+                cat, PhotoStore(db, data / "photos"), StudioStore(db, data / "studio")
+            ),
             settings,
             keys.read_key("openrouter"),
             today,
-            portraits=portraits,
         )
     except Exception as ex:  # noqa: BLE001 - keep what publishing did
         log.exception("variants: the seasonal step failed")
@@ -171,8 +169,8 @@ def nightly(
         summary["failed"] = [*summary["failed"], "variants"]
         return summary
     summary["variants"] = v
-    # A failed edit or swap makes the run partial, like a failed publish.
-    summary["failed"] = [*summary["failed"], *v["gen_failed"], *v["swap_failed"]]
+    # A failed edit makes the run partial, like a failed publish.
+    summary["failed"] = [*summary["failed"], *v["gen_failed"]]
     return summary
 
 

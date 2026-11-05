@@ -1,158 +1,220 @@
-import dataclasses
-import json
+import io
 from datetime import date
 from pathlib import Path
 
 import pytest
 from PIL import Image
 
-from frame_art import openrouter, pipeline, publish, variants
-from frame_art.catalogue import Catalogue, Slot, VariantState
+from frame_art import library, openrouter, variants
+from frame_art.catalogue import Catalogue
 from frame_art.model import Work
+from frame_art.photos import PhotoStore
 from frame_art.providers import OpenRouterProvider
-from frame_art.schedules import Schedule, everyday
+from frame_art.schedules import Schedule, Slice, everyday
 from frame_art.settings import Settings
-from frame_art.variants import HALLOWEEN_PROMPT, assign_slots, needed
+from frame_art.studio import Painter, StudioStore
+from frame_art.variants import HALLOWEEN_PROMPT, needed
 
-LIVE = ["a", "b", "c", "d"]  # oldest first
 TODAY = date(2026, 10, 28)
-
-
-def test_half_mix_takes_newest_works():
-    assert assign_slots(LIVE, {"hw": 2}, {}, set()) == {
-        "c": Slot("hw", False),
-        "d": Slot("hw", False),
-    }
-
-
-def test_slots_stick_and_prefer_works_with_variants():
-    cur = {"a": Slot("hw", False)}
-    got = assign_slots(LIVE, {"hw": 2}, cur, {("b", "hw")})
-    assert set(got) == {"a", "b"}
-
-
-def test_type_leaving_the_mix_clears_its_slots_even_manual():
-    assert assign_slots(LIVE, {}, {"a": Slot("hw", True)}, set()) == {}
-
-
-def test_shrinking_share_keeps_manual_and_drops_variantless_first():
-    cur = {k: Slot("hw", k == "a") for k in LIVE}
-    got = assign_slots(LIVE, {"hw": 2}, cur, {("a", "hw"), ("c", "hw"), ("d", "hw")})
-    assert set(got) == {"a", "d"}  # b has no variant; then oldest (c) goes
-
-
-def test_retired_works_lose_their_slot():
-    got = assign_slots(["a"], {"hw": 1}, {"z": Slot("hw", False)}, set())
-    assert got == {"a": Slot("hw", False)}
-
-
-def test_ready_only_shows_only_made_versions():
-    cur = {"a": Slot("hw", False), "b": Slot("hw", True)}
-    got = assign_slots(
-        LIVE, {"hw": 3}, cur, {("c", "hw"), ("b", "hw")}, ready_only=True
-    )
-    assert got == {"b": Slot("hw", True), "c": Slot("hw", False)}
-
-
-def test_ready_only_narrower_type_takes_works_from_a_wider_one():
-    # Listed narrowest first: birthday's ready versions are on works Halloween holds.
-    cur = {k: Slot("hw", False) for k in LIVE}
-    usable = {(k, "hw") for k in LIVE} | {("c", "bd"), ("d", "bd")}
-    got = assign_slots(LIVE, {"bd": 2, "hw": 2}, cur, usable, ready_only=True)
-    assert got == {
-        "a": Slot("hw", False),
-        "b": Slot("hw", False),
-        "c": Slot("bd", False),
-        "d": Slot("bd", False),
-    }
-
-
-def test_needed_skips_usable_dont_use_and_repeated_failures():
-    slots = {k: Slot("hw", False) for k in LIVE}
-    states = {
-        ("a", "hw"): VariantState(5, False, 0),
-        ("b", "hw"): VariantState(None, True, 0),
-        ("c", "hw"): VariantState(None, False, 3),
-    }
-    assert needed(slots, states, LIVE) == [("d", "hw")]
+XMAS = "ai-variant:christmas"
+HW = "ai-variant:halloween"
 
 
 def make_work(i: int) -> Work:
-    # As in test_publish: key "s1:1" for i=1.
     return Work(
-        source=f"s{i % 3}", source_id=str(i), title=f"Work {i}", artist=f"Artist {i}",
+        source="s", source_id=str(i), title=f"Work {i}", artist=f"Artist {i}",
         date="1900", kind="painting", license="CC0", image_url=f"http://x/{i}.jpg",
         width=4000, height=2250,
     )  # fmt: skip
 
 
-def solid(color) -> Image.Image:
-    # Full panel size: anything smaller needs upscaling and trips TooSmall.
-    return Image.new("RGB", (3840, 2160), color)
+def solid(color, size=(3840, 2160)) -> Image.Image:
+    return Image.new("RGB", size, color)
 
 
-ORIGINAL_PHASH = 0x1234ABCD
+def sched(id: str, start: str, end: str, tag: str, share: int) -> Schedule:
+    return Schedule(id, id, start, end, [Slice([tag], share)])
 
 
 @pytest.fixture
-def vsetup(tmp_path, monkeypatch):
-    cat = Catalogue(tmp_path / "db.sqlite")
-    w = make_work(1)
-    cat.upsert([w])
-    dest = tmp_path / "frame_upload"
-    name = pipeline.filename(w)
-    (dest / "full").mkdir(parents=True)
-    pipeline.write_atomic(solid("navy"), dest / "full" / name, dest / ".staging")
-    cat.record_publish(name, "full", w.key, ORIGINAL_PHASH)
-    # Pretend HA uploaded it.
-    sidecar = {name: {"content_id": "MY_F0001", "modified": 1.0}}
-    (dest / "full" / publish.SIDECAR).write_text(json.dumps(sidecar))
+def lib(tmp_path):
+    """Four museum works s:1 (oldest) .. s:4 (newest), all in the Library."""
+    db = tmp_path / "db.sqlite"
+    cat = Catalogue(db)
+    cat.upsert([make_work(i) for i in range(1, 5)])
+    cat.set_library([f"s:{i}" for i in range(1, 5)], "in")
+    for i in range(1, 5):
+        cat.db.execute("update library set added_at = ? where key = ?", (i, f"s:{i}"))
     cat.add_variant_type("halloween", "Halloween", HALLOWEEN_PROMPT)
+    cat.add_variant_type("christmas", "Christmas", "make it Christmas")
+    ph = PhotoStore(db, tmp_path / "photos")
+    st = StudioStore(db, tmp_path / "studio")
+    return cat, ph, st
+
+
+def all_items(lib):
+    return library.items(*lib)
+
+
+def keys_of(pairs):
+    return [k for k, _ in pairs]
+
+
+def test_needed_fills_a_short_slice(lib):
+    cat = lib[0]
+    s = [everyday([Slice([HW], 50)])]
+    its = all_items(lib)
+    # 50% of 4 works: two wanted; newest first.
+    assert needed(cat, its, s, 4, [TODAY]) == [
+        ("s:4", "halloween"),
+        ("s:3", "halloween"),
+    ]
+    v = cat.add_variant("s:4", "halloween", 1, "p", "m", None, "/v/1.jpg")
+    its = all_items(lib)
+    assert needed(cat, its, s, 4, [TODAY]) == [("s:3", "halloween")]
+    cat.add_variant("s:3", "halloween", 1, "p", "m", None, "/v/2.jpg")
+    assert needed(cat, all_items(lib), s, 4, [TODAY]) == []
+    assert v.id  # sanity
+
+
+def test_needed_caps_the_pool_at_the_eligible_roots(lib):
+    cat = lib[0]
+    s = [everyday([Slice([HW], 100)])]
+    assert len(needed(cat, all_items(lib), s, 150, [TODAY])) == 4
+
+
+def test_needed_looks_a_week_ahead(lib):
+    cat = lib[0]
+    s = [everyday([Slice([HW], 25)]), sched("x", "11-02", "11-02", XMAS, 50)]
+    days = [date.fromordinal(TODAY.toordinal() + i) for i in range(8)]
+    its = all_items(lib)
+    assert needed(cat, its, s, 4, [TODAY]) == [("s:4", "halloween")]
+    # Today's pair comes first; Nov 2's christmas pairs follow, deduplicated.
+    assert needed(cat, its, s, 4, days) == [
+        ("s:4", "halloween"),
+        ("s:4", "christmas"),
+        ("s:3", "christmas"),
+    ]
+    assert needed(cat, its, s, 4, days, type="christmas") == [
+        ("s:4", "christmas"),
+        ("s:3", "christmas"),
+    ]
+
+
+def test_needed_narrowest_schedule_first(lib):
+    cat = lib[0]
+    wide = everyday([Slice([HW], 25)])
+    narrow = sched("x", "10-28", "10-28", XMAS, 25)
+    got = needed(cat, all_items(lib), [wide, narrow], 4, [TODAY])
+    assert got == [("s:4", "christmas"), ("s:4", "halloween")]
+
+
+def test_needed_skips_removed_and_failing(lib):
+    cat = lib[0]
+    s = [everyday([Slice([HW], 100)])]
+    v = cat.add_variant("s:4", "halloween", 1, "p", "m", None, "/v/1.jpg")
+    cat.set_library([f"variant:{v.id}"], "removed")  # a removed version: not a version
+    cat.set_library(["s:3"], "removed")  # a removed work
+    for _ in range(variants.NIGHTLY_FAILURES):
+        cat.note_variant_failure("s:2", "halloween")
+    cat.note_variant_failure("s:1", "halloween")  # under the limit: still tried
+    got = needed(cat, all_items(lib), s, 4, [TODAY])
+    # s:4's removed version is still "no non-removed version", so s:4 is wanted again.
+    assert keys_of(got) == ["s:4", "s:1"]
+
+
+def test_needed_skips_works_with_a_version_already(lib):
+    cat = lib[0]
+    s = [everyday([Slice([HW], 100)])]
+    cat.add_variant("s:4", "halloween", 1, "p", "m", None, "/v/1.jpg")
+    # 3 wanted beyond the one that exists? want 4, have 1, missing 3.
+    assert keys_of(needed(cat, all_items(lib), s, 4, [TODAY])) == ["s:3", "s:2", "s:1"]
+
+
+def test_needed_prefers_live_originals(lib):
+    cat = lib[0]
+    cat.record_publish("s-1-artist-1-work-1.jpg", "full", "s:1", 1)
+    s = [everyday([Slice([HW], 25)])]
+    assert keys_of(needed(cat, all_items(lib), s, 4, [TODAY])) == ["s:1"]
+
+
+def test_needed_uses_photos_and_portraits_too(lib, tmp_path):
+    cat, ph, st = lib
+    buf = io.BytesIO()
+    Image.new("RGB", (40, 30), "red").save(buf, "JPEG")
+    photo = ph.add("upload", "a.jpg", buf.getvalue(), "a.jpg")
+    cat.set_library([f"photo:{photo.id}"], "in")
+    s = [everyday([Slice([HW], 20)])]
+    got = needed(cat, library.items(cat, ph, st), s, 150, [TODAY])
+    assert keys_of(got) == [f"photo:{photo.id}"]  # newest Library add
+
+
+@pytest.fixture
+def provider(monkeypatch):
+    calls = []
 
     def fake_edit(
         http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
     ):
+        calls.append((im.size, prompt, aspect))
         return openrouter.Edit(solid("orange"), 0.12, "gen-x")
 
     monkeypatch.setattr(openrouter, "edit_image", fake_edit)
-    monkeypatch.setattr(pipeline, "load_work", lambda http, cand: solid("navy"))
-    return cat, dest, tmp_path / "data", publish.Publisher(cat, None, dest, "blur")
+    p = OpenRouterProvider(None, "k")
+    p.calls = calls
+    return p
 
 
-def test_generate_then_swap_and_revert(vsetup):
-    cat, dest, data, pub = vsetup
-    v = variants.generate(
-        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+def fake_load(monkeypatch, size=(3840, 2160)):
+    from frame_art import pipeline
+
+    monkeypatch.setattr(pipeline, "load_work", lambda http, cand: solid("navy", size))
+
+
+def test_generate_a_museum_version(lib, tmp_path, provider, monkeypatch):
+    cat = lib[0]
+    fake_load(monkeypatch)
+    data = tmp_path / "data"
+    orig = all_items(lib)["s:1"]
+    v = variants.generate(cat, None, data, provider, orig, "halloween", "strict")
+    assert v.n == 1 and v.prompt == HALLOWEEN_PROMPT and v.cost == 0.12
+    assert v.path == str(data / "variants" / "halloween" / "s-1" / "1.jpg")
+    assert Path(v.path).exists() and v.key == "s:1"
+    assert provider.calls[0][2] == "16:9"  # fills the screen
+    assert f"variant:{v.id}" in all_items(lib)
+
+
+def test_generate_from_photo_and_portrait(lib, tmp_path, provider):
+    cat, ph, st = lib
+    buf = io.BytesIO()
+    Image.new("RGB", (400, 300), "red").save(buf, "JPEG")
+    photo = ph.add("upload", "a.jpg", buf.getvalue(), "a.jpg")
+    t = st.start_try(
+        photo.id, Painter("hopper", "Edward Hopper", "Flat.", ("portrait",)),
+        "keep", "fill", [], None,
+    )  # fmt: skip
+    st.finish_try(t.id, Image.new("RGB", (320, 180), "orange"), 0.1)
+    st.save(t.id)
+    its = library.items(cat, ph, st)
+    data = tmp_path / "data"
+    v1 = variants.generate(
+        cat, None, data, provider, its["photo:" + photo.id], "halloween", "strict"
     )
-    assert v.n == 1 and Path(v.path).exists() and v.prompt == HALLOWEEN_PROMPT
-    assert v.cost == 0.12 and v.model == openrouter.MODEL
-    stem = "s1-1-artist-1-work-1"
-    assert v.path == str(data / "variants" / "halloween" / stem / "1.jpg")
-    assert (data / "sources" / f"{stem}.jpg").exists()
-    cat.set_slots({"s1:1": Slot("halloween", False)})
-    res = variants.apply_versions(cat, None, data, pub)
-    [live] = cat.published(active=True)
-    assert live.filename.endswith("--halloween-1.jpg") and res["swapped"]
-    assert res["swapped"] == [f"full/{live.filename}"] and not res["failed"]
-    assert cat.published_variants()[live.filename] == v.id
-    # The variant carries the original's hash, for the duplicate check.
-    assert live.phash == ORIGINAL_PHASH
-    assert publish.pending(cat, dest)["retire"] == ["MY_F0001"]
-    assert not (dest / "full" / "s1-1-artist-1-work-1.jpg").exists()
-    index = json.loads((dest / "_meta" / "index.json").read_text())
-    assert list(index) == [f"full/{live.filename}"]
-    # Nothing to change: nothing swapped.
-    assert variants.apply_versions(cat, None, data, pub)["swapped"] == []
-    cat.set_slots({})
-    variants.apply_versions(cat, None, data, pub)
-    [back] = cat.published(active=True)
-    assert back.filename == "s1-1-artist-1-work-1-2.jpg"  # never the old name
-    assert back.filename not in cat.published_variants()
-    assert "MY_F0001" in publish.pending(cat, dest)["retire"]  # still owed a delete
+    v2 = variants.generate(
+        cat, None, data, provider, its["portrait:1"], "halloween", "strict"
+    )
+    assert v1.key == "photo:" + photo.id and v2.key == "portrait:1"
+    assert v1.path == str(
+        data / "variants" / "halloween" / f"photo-{photo.id}" / "1.jpg"
+    )
+    assert Path(v1.path).exists() and Path(v2.path).exists()
+    assert provider.calls[0][0] == (400, 300) and provider.calls[0][2] is None
+    assert provider.calls[1][0] == (320, 180)
 
 
-def test_generate_failure_is_counted_and_reraised(vsetup, monkeypatch):
-    cat, dest, data, pub = vsetup
+def test_generate_failure_is_counted_and_reraised(lib, tmp_path, monkeypatch):
+    cat = lib[0]
+    fake_load(monkeypatch)
 
     def boom(*a, **k):
         raise openrouter.EditFailed("HTTP 402: Insufficient credits")
@@ -160,376 +222,109 @@ def test_generate_failure_is_counted_and_reraised(vsetup, monkeypatch):
     monkeypatch.setattr(openrouter, "edit_image", boom)
     with pytest.raises(openrouter.EditFailed):
         variants.generate(
-            cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
-        )
-    assert cat.variant_states()[("s1:1", "halloween")].failures == 1
+            cat, None, tmp_path, OpenRouterProvider(None, "k"),
+            all_items(lib)["s:1"], "halloween", "strict",
+        )  # fmt: skip
+    assert cat.variant_states()[("s:1", "halloween")].failures == 1
     assert cat.variants() == []
 
 
-def test_source_is_cached(vsetup, monkeypatch):
-    cat, dest, data, pub = vsetup
-    calls = []
-
-    def counting_load(http, cand):
-        calls.append(cand.work.key)
-        return solid("navy")
-
-    monkeypatch.setattr(pipeline, "load_work", counting_load)
-    [w] = cat.works()
-    first = variants.load_source(None, data, w, pub.prefs_for(w))
-    second = variants.load_source(None, data, w, pub.prefs_for(w))
-    assert calls == ["s1:1"]
-    assert variants.source_path(data, w).exists()
-    assert second.size == first.size == (3840, 2160)
-
-
-def test_failed_swap_leaves_the_work_alone(vsetup):
-    cat, dest, data, pub = vsetup
-    v = variants.generate(
-        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+def test_regenerate_removes_the_old_version(lib, tmp_path, provider, monkeypatch):
+    cat = lib[0]
+    fake_load(monkeypatch)
+    old = variants.generate(
+        cat, None, tmp_path, provider, all_items(lib)["s:1"], "halloween", "strict"
     )
-    Path(v.path).unlink()  # the variant file has gone missing
-    cat.set_slots({"s1:1": Slot("halloween", False)})
-    res = variants.apply_versions(cat, None, data, pub)
-    assert res == {"swapped": [], "failed": ["s1:1"]}
-    [live] = cat.published(active=True)
-    assert live.filename == "s1-1-artist-1-work-1.jpg"
-    assert publish.pending(cat, dest)["retire"] == []
+    new = variants.regenerate(
+        cat, None, tmp_path, provider, all_items(lib), old.id, "strict"
+    )
+    assert new.n == 2 and new.key == "s:1" and new.type == "halloween"
+    lib_state = cat.library()
+    assert lib_state[f"variant:{old.id}"][0] == "removed"
+    keys = {i.key for i in library.eligible(cat, all_items(lib))}
+    assert f"variant:{new.id}" in keys and f"variant:{old.id}" not in keys
 
 
-def test_add_variant_failure_is_counted(vsetup, monkeypatch):
-    cat, dest, data, pub = vsetup
-
-    def broken(*a, **k):
-        raise RuntimeError("database is locked")
-
-    monkeypatch.setattr(cat, "add_variant", broken)
+def test_regenerate_failure_keeps_the_old_version(lib, tmp_path, provider, monkeypatch):
+    cat = lib[0]
+    fake_load(monkeypatch)
+    old = variants.generate(
+        cat, None, tmp_path, provider, all_items(lib)["s:1"], "halloween", "strict"
+    )
+    monkeypatch.setattr(
+        openrouter,
+        "edit_image",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")),
+    )
     with pytest.raises(RuntimeError):
-        variants.generate(
-            cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
+        variants.regenerate(
+            cat, None, tmp_path, provider, all_items(lib), old.id, "strict"
         )
-    assert cat.variant_states()[("s1:1", "halloween")].failures == 1
+    assert f"variant:{old.id}" not in cat.library()
 
 
-@pytest.fixture
-def vsetup4(tmp_path, monkeypatch):
-    """Four live works (s1:1 oldest ... s1:4 newest), all Halloween, two edits a night."""
-    cat = Catalogue(tmp_path / "db.sqlite")
-    works = [make_work(i) for i in range(1, 5)]
-    cat.upsert(works)
-    dest = tmp_path / "frame_upload"
-    (dest / "full").mkdir(parents=True)
-    sidecar = {}
-    for i, w in enumerate(works, 1):
-        name = pipeline.filename(w)
-        pipeline.write_atomic(solid("navy"), dest / "full" / name, dest / ".staging")
-        cat.record_publish(name, "full", w.key, ORIGINAL_PHASH + i)
-        # Distinct times, so the publish order is the one above.
-        cat.db.execute(
-            "update published set published_at = ? where filename = ?", (i, name)
-        )
-        sidecar[name] = {"content_id": f"MY_F000{i}", "modified": 1.0}
-    (dest / "full" / publish.SIDECAR).write_text(json.dumps(sidecar))
-    cat.add_variant_type("halloween", "Halloween", HALLOWEEN_PROMPT)
-
-    def fake_edit(
-        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
-    ):
-        return openrouter.Edit(solid("orange"), 0.12, "gen-x")
-
-    monkeypatch.setattr(openrouter, "edit_image", fake_edit)
-    monkeypatch.setattr(pipeline, "load_work", lambda http, cand: solid("navy"))
-    pub = publish.Publisher(cat, None, dest, "blur")
-    settings = Settings(schedules=[everyday({"halloween": 100})], variant_limit=2)
-    return cat, tmp_path / "data", pub, settings
+def settings_with(*sch, limit=2):
+    return Settings(schedules=list(sch), variant_limit=limit)
 
 
-def test_nightly_shows_only_ready_versions(vsetup4):
-    cat, data, pub, settings = vsetup4
-    out = variants.nightly(cat, None, data, pub, settings, "k", TODAY)
-    assert out["generated"] == ["s1:4", "s0:3"]  # newest first
-    assert out["slots"] == {"halloween": 2} and len(out["swapped"]) == 2
-    assert out["gen_failed"] == [] and out["cost"] == 0.24
-    assert set(cat.slots()) == {"s1:4", "s0:3"}  # the rest stay originals
-    out = variants.nightly(cat, None, data, pub, settings, "k", date(2026, 10, 29))
-    assert out["generated"] == ["s2:2", "s1:1"]  # same works kept, two more made
-    assert out["slots"] == {"halloween": 4}
+def test_nightly_respects_the_limit(lib, tmp_path, provider, monkeypatch):
+    cat = lib[0]
+    fake_load(monkeypatch)
+    monkeypatch.setattr(variants, "OpenRouterProvider", lambda http, key: provider)
+    s = settings_with(everyday([Slice([HW], 100)]))
+    out = variants.nightly(cat, None, tmp_path, all_items(lib), s, "k", TODAY)
+    assert out["generated"] == ["s:4", "s:3"] and out["gen_failed"] == []
+    assert out["cost"] == 0.24 and len(cat.variants()) == 2
 
 
-def _with_birthday(cat, settings, *schedules, limit=2):
-    cat.add_variant_type("birthday", "Birthday", "make it a birthday")
-    return dataclasses.replace(settings, schedules=list(schedules), variant_limit=limit)
+def test_nightly_counts_failures(lib, tmp_path, provider, monkeypatch):
+    cat = lib[0]
+    fake_load(monkeypatch)
+    monkeypatch.setattr(variants, "OpenRouterProvider", lambda http, key: provider)
+    real = variants.generate
+
+    def flaky(cat, http, data, prov, original, type, crop, prompt=None):
+        if original.key == "s:4":
+            raise RuntimeError("no")
+        return real(cat, http, data, prov, original, type, crop, prompt)
+
+    monkeypatch.setattr(variants, "generate", flaky)
+    s = settings_with(everyday([Slice([HW], 100)]))
+    out = variants.nightly(cat, None, tmp_path, all_items(lib), s, "k", TODAY)
+    assert out["gen_failed"] == ["s:4"] and out["generated"] == [
+        "s:3"
+    ]  # the limit counts the failure
 
 
-def test_shortfall_gives_the_rest_to_the_wider_schedule(vsetup4):
-    cat, data, pub, settings = vsetup4
-    for key in ("s1:1", "s2:2", "s0:3", "s1:4"):
-        variants.generate(
-            cat, None, data, OpenRouterProvider(None, "k"), pub, key, "halloween"
-        )
-    bday = Schedule("b", "Birthday", "10-28", "10-28", {"birthday": 50})
-    s = _with_birthday(cat, settings, everyday({"halloween": 100}), bday, limit=0)
-    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
-    # No birthday versions yet: all four keep Halloween, none revert to originals.
-    assert out["generated"] == [] and out["slots"] == {"halloween": 4}
-    assert {sl.type for sl in cat.slots().values()} == {"halloween"}
+def test_nightly_without_a_key_makes_nothing(lib, tmp_path):
+    cat = lib[0]
+    s = settings_with(everyday([Slice([HW], 100)]))
+    out = variants.nightly(cat, None, tmp_path, all_items(lib), s, None, TODAY)
+    assert out == {"generated": [], "gen_failed": [], "cost": 0.0}
+    assert cat.variants() == []
 
 
-NOV2 = Schedule("b", "Birthday", "11-02", "11-02", {"birthday": 50})
+def test_make_now_count_uses_next_run(lib):
+    cat = lib[0]
+    its = all_items(lib)
+    s = settings_with(sched("x", "11-02", "11-02", XMAS, 50))
+    # Nothing runs today; the first run is Nov 2: 50% of 4 = 2.
+    assert variants.make_now_count(cat, its, s, "christmas", TODAY) == 2
+    assert variants.make_now_count(cat, its, s, "halloween", TODAY) == 0
+    cat.add_variant("s:4", "christmas", 1, "p", "m", None, "/v/1.jpg")
+    assert variants.make_now_count(cat, all_items(lib), s, "christmas", TODAY) == 1
+    assert variants.make_now_count(cat, its, settings_with(), "christmas", TODAY) == 0
 
 
-def test_lookahead_makes_but_does_not_show(vsetup4):
-    cat, data, pub, settings = vsetup4
-    s = _with_birthday(cat, settings, NOV2)
-    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
-    assert out["generated"] == ["s1:4", "s0:3"]
-    assert out["slots"] == {} and cat.slots() == {} and out["swapped"] == []
-    out = variants.nightly(cat, None, data, pub, s, "k", date(2026, 11, 2))
-    assert out["slots"] == {"birthday": 2} and out["generated"] == []
-    assert set(cat.slots()) == {"s1:4", "s0:3"}
+def test_make_now_count_next_year(lib):
+    cat = lib[0]
+    s = settings_with(sched("x", "03-01", "03-01", XMAS, 25))
+    assert variants.make_now_count(cat, all_items(lib), s, "christmas", TODAY) == 1
 
 
-def test_lookahead_keeps_making_for_the_same_works(vsetup4):
-    cat, data, pub, settings = vsetup4
-    s = _with_birthday(cat, settings, NOV2)
-    variants.nightly(cat, None, data, pub, s, "k", TODAY)
-    out = variants.nightly(cat, None, data, pub, s, "k", date(2026, 10, 29))
-    assert out["generated"] == [] and len(cat.variants()) == 2
-
-
-def test_lookahead_inside_a_wider_schedule_shows_on_its_first_day(vsetup4):
-    cat, data, pub, settings = vsetup4
-    s = _with_birthday(cat, settings, everyday({"halloween": 100}), NOV2)
-    for day in (20, 21):  # Halloween fills all four works before the lookahead
-        variants.nightly(cat, None, data, pub, s, "k", date(2026, 10, day))
-    assert cat.slots() and {sl.type for sl in cat.slots().values()} == {"halloween"}
-    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
-    assert {v.type for v in cat.variants()} == {"halloween", "birthday"}
-    assert out["slots"] == {"halloween": 4}  # not shown before Nov 2
-    off = dataclasses.replace(s, variant_limit=0)
-    out = variants.nightly(cat, None, data, pub, off, "k", date(2026, 11, 2))
-    assert out["slots"] == {"birthday": 2, "halloween": 2}
-
-
-def test_budget_goes_to_the_narrowest_schedule_first(vsetup4):
-    cat, data, pub, settings = vsetup4
-    s = _with_birthday(cat, settings, everyday({"halloween": 100}), NOV2)
-    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
-    assert out["generated"] == ["s1:4", "s0:3"]
-    assert {v.type for v in cat.variants()} == {"birthday"}
-    assert out["slots"] == {}  # no Halloween versions ready, so originals today
-
-
-def test_nightly_without_key_or_limit_still_reverts(vsetup4):
-    cat, data, pub, settings = vsetup4
-    variants.nightly(cat, None, data, pub, settings, "k", TODAY)
-    assert len(cat.published_variants()) == 2
-    off = dataclasses.replace(settings, schedules=[], variant_limit=0)
-    out = variants.nightly(cat, None, data, pub, off, None, TODAY)
-    assert len(out["swapped"]) == 2 and out["generated"] == []
-    assert out["slots"] == {}
-    live = {p.filename for p in cat.published(active=True)}
-    assert not live & set(cat.published_variants())
-
-
-def test_nightly_without_key_generates_nothing(vsetup4):
-    cat, data, pub, settings = vsetup4
-    out = variants.nightly(cat, None, data, pub, settings, None, TODAY)
-    assert out["generated"] == out["gen_failed"] == out["swapped"] == []
-    assert cat.variant_states() == {}  # no attempt, so no failure counted
-
-
-def test_nightly_ignores_types_that_do_not_exist(vsetup4):
-    cat, data, pub, settings = vsetup4
-    mix = {"halloween": 50, "winter": 50}
-    s = dataclasses.replace(settings, schedules=[everyday(mix)])
-    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
-    assert out["slots"] == {"halloween": 2}
-
-
-def test_nightly_carries_on_after_a_failed_edit(vsetup4, monkeypatch):
-    cat, data, pub, settings = vsetup4
-    calls = []
-
-    def flaky(
-        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
-    ):
-        calls.append(prompt)
-        if len(calls) == 1:
-            raise openrouter.EditFailed("HTTP 502: upstream error")
-        return openrouter.Edit(solid("orange"), 0.12, "gen-x")
-
-    monkeypatch.setattr(openrouter, "edit_image", flaky)
-    out = variants.nightly(cat, None, data, pub, settings, "k", TODAY)
-    assert len(out["gen_failed"]) == 1 and len(out["generated"]) == 1
-    assert out["gen_failed"] == ["s1:4"] and out["generated"] == ["s0:3"]
-    assert out["cost"] == 0.12 and len(out["swapped"]) == 1
-    assert cat.variant_states()[("s1:4", "halloween")].failures == 1
-
-
-def test_progress_lists_stuck_works(vsetup4):
-    cat, data, pub, settings = vsetup4
-    variants.nightly(cat, None, data, pub, settings, "k", TODAY)
-    for _ in range(variants.NIGHTLY_FAILURES):
-        cat.note_variant_failure("s2:2", "halloween")
-    [p] = variants.progress(cat, settings, TODAY)
-    assert p["slug"] == "halloween" and p["name"] == "Halloween"
-    assert p["prompt"] == HALLOWEEN_PROMPT
-    assert p["share"] == 100 and p["live_share"] == 50
-    assert p["slotted"] == 4 and p["ready"] == 2
-    assert p["needed"] == 1 and p["stuck"] == ["s2:2"]
-    assert p["cost"] == 0.24
-
-
-def test_progress_counts(vsetup4):
-    cat, data, pub, settings = vsetup4
-    variants.nightly(cat, None, data, pub, settings, "k", TODAY)
-    [p] = variants.progress(cat, settings, TODAY)
-    assert (p["ready"], p["needed"], p["stuck"], p["cost"]) == (2, 2, [], 0.24)
-
-
-def test_seed_types_once_and_only_when_empty(tmp_path):
+def test_seed_types(tmp_path):
     cat = Catalogue(tmp_path / "db.sqlite")
     variants.seed_types(cat)
     assert [t.slug for t in cat.variant_types()] == ["halloween"]
-    cat.db.execute("delete from variant_types")
-    cat.db.commit()
-    variants.seed_types(cat)  # Brian deleted it: it stays gone
-    assert cat.variant_types() == []
-    other = Catalogue(tmp_path / "other.sqlite")
-    other.add_variant_type("winter", "Winter", "make it snowy")
-    variants.seed_types(other)
-    assert [t.slug for t in other.variant_types()] == ["winter"]
-
-
-def test_live_share_counts_only_files_on_the_tv(vsetup4):
-    cat, data, pub, settings = vsetup4
-    variants.nightly(cat, None, data, pub, settings, "k", TODAY)
-    assert variants.progress(cat, settings, TODAY)[0]["live_share"] == 50
-    off = dataclasses.replace(settings, schedules=[], variant_limit=0)
-    variants.nightly(cat, None, data, pub, off, None, TODAY)  # back to originals
-    assert variants.progress(cat, off, TODAY)[0]["live_share"] == 0
-
-
-def test_swap_keeps_the_age_so_retirement_takes_the_oldest(vsetup4):
-    cat, data, pub, settings = vsetup4
-    variants.generate(
-        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
-    )
-    cat.set_slots({"s1:1": Slot("halloween", False)})
-    [before] = [p for p in cat.published(active=True) if p.key == "s1:1"]
-    assert variants.apply_versions(cat, None, data, pub)["swapped"]
-    [after] = [p for p in cat.published(active=True) if p.key == "s1:1"]
-    assert after.filename != before.filename
-    assert after.published_at == before.published_at == 1
-    retired = pub._retire(pool=3)
-    assert retired == [f"full/{after.filename}"]  # the oldest work, though just swapped
-
-
-def test_full_screen_source_gets_a_full_screen_variant(vsetup, monkeypatch):
-    """A 1.6:1 work crops to fill the screen; its variant must too.
-
-    The nearest edit aspect (3:2) would need more crop than strict allows.
-    """
-    cat, dest, data, _ = vsetup
-    monkeypatch.setattr(
-        pipeline, "load_work", lambda http, cand: Image.new("RGB", (4000, 2500))
-    )
-    asked = []
-
-    def fake_edit(
-        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
-    ):
-        aspect = aspect or openrouter.nearest_aspect(*im.size)
-        asked.append(aspect)
-        size = {"3:2": (3840, 2560), "16:9": (3840, 2160)}[aspect]
-        return openrouter.Edit(Image.new("RGB", size, "orange"), 0.12, "gen-x")
-
-    monkeypatch.setattr(openrouter, "edit_image", fake_edit)
-    # Matte: a padded render would land in matted/.
-    pub = publish.Publisher(cat, None, dest, "matte")
-    variants.generate(
-        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
-    )
-    assert asked == ["16:9"]
-    cat.set_slots({"s1:1": Slot("halloween", False)})
-    [swapped] = variants.apply_versions(cat, None, data, pub)["swapped"]
-    assert swapped.startswith("full/")
-
-
-def test_swap_keeps_a_live_work_that_no_longer_fills_the_screen(vsetup, monkeypatch):
-    """New-pick gates (full screen only) don't apply to a work already live."""
-    cat, dest, data, _ = vsetup
-
-    def square_edit(
-        http, api_key, im, prompt, model=openrouter.MODEL, size="4K", aspect=None
-    ):
-        return openrouter.Edit(Image.new("RGB", (2400, 2400), "orange"), 0.1, "g")
-
-    monkeypatch.setattr(openrouter, "edit_image", square_edit)
-    prefs = pipeline.Prefs(full_screen_only=True)
-    pub = publish.Publisher(cat, None, dest, "matte", prefs=prefs)
-    variants.generate(
-        cat, None, data, OpenRouterProvider(None, "k"), pub, "s1:1", "halloween"
-    )
-    cat.set_slots({"s1:1": Slot("halloween", False)})
-    res = variants.apply_versions(cat, None, data, pub)
-    assert res["failed"] == [] and res["swapped"][0].startswith("matted/")
-
-
-def test_nightly_reports_failed_swaps(vsetup4, monkeypatch, caplog):
-    cat, data, pub, settings = vsetup4
-
-    def broken(p, im, variant):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(pub, "swap", broken)
-    out = variants.nightly(cat, None, data, pub, settings, "k", TODAY)
-    assert out["swap_failed"] == ["s0:3", "s1:4"] and out["swapped"] == []
-    assert "s1:4: could not swap versions: OSError: disk full" in caplog.text
-
-
-# -- the Portraits share ------------------------------------------------------------
-
-
-def test_share_types_add_portraits_last(vsetup4):
-    cat, *_ = vsetup4
-    assert variants.share_types(cat) == {"halloween": "Halloween",
-                                         "portraits": "Portraits"}  # fmt: skip
-
-
-def test_portraits_take_their_share_of_the_whole_screen():
-    layer = [everyday({"portraits": 20, "halloween": 50})]
-    live = 100
-    ready = {"halloween": 100}
-    # Half of everything on screen (100 works + 25 portraits) is Halloween.
-    assert variants.museum_target(layer, live, ready, portraits=25) == {"halloween": 62}
-    # No portraits: the same as a schedule without the Portraits share.
-    plain = [everyday({"halloween": 50})]
-    assert variants.museum_target(layer, live, ready, portraits=0) == (
-        variants.museum_target(plain, live, ready, portraits=0)) == {"halloween": 50}  # fmt: skip
-
-
-def test_nightly_without_portraits_is_unchanged(vsetup4):
-    cat, data, pub, settings = vsetup4
-    s = dataclasses.replace(
-        settings, schedules=[everyday({"halloween": 50, "portraits": 20})]
-    )
-    out = variants.nightly(cat, None, data, pub, s, "k", TODAY)
-    assert out["slots"] == {"halloween": 2}
-    assert "portraits" not in {sl.type for sl in cat.slots().values()}
-    assert all(t != "portraits" for _, t in cat.variant_states())
-
-
-def test_nightly_counts_live_portraits_in_the_screen(vsetup4):
-    cat, data, pub, settings = vsetup4
-    for key in ("s1:1", "s2:2", "s0:3", "s1:4"):
-        variants.generate(
-            cat, None, data, OpenRouterProvider(None, "k"), pub, key, "halloween"
-        )
-    s = dataclasses.replace(
-        settings, schedules=[everyday({"halloween": 50, "portraits": 50})]
-    )
-    # 4 works + 4 portraits: Halloween gets half of 8, so all four works.
-    out = variants.nightly(cat, None, data, pub, s, "k", TODAY, portraits=4)
-    assert out["slots"] == {"halloween": 4}
+    variants.seed_types(cat)
+    assert len(cat.variant_types()) == 1
