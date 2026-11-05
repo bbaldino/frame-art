@@ -119,8 +119,8 @@ def test_needed_skips_removed_and_failing(lib):
         cat.note_variant_failure("s:2", "halloween")
     cat.note_variant_failure("s:1", "halloween")  # under the limit: still tried
     got = needed(cat, all_items(lib), s, 4, [TODAY])
-    # s:4's removed version is still "no non-removed version", so s:4 is wanted again.
-    assert keys_of(got) == ["s:4", "s:1"]
+    # s:4 has a removed version: Brian uses Regenerate for that, so no retry.
+    assert keys_of(got) == ["s:1"]
 
 
 def test_needed_skips_works_with_a_version_already(lib):

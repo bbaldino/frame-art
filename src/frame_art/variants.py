@@ -136,7 +136,6 @@ def needed(
     lib = cat.library()
     live = {pub.key for pub in cat.published(active=True)}
     states = cat.variant_states()
-    removed = {k for k, (st, _) in lib.items() if st == "removed"}
     all_versions = [it for it in all_items.values() if it.kind == "version"]
     out: dict[tuple[str, str], None] = {}
     for day in days:
@@ -152,11 +151,8 @@ def needed(
                     for v in elig
                     if v.kind == "version" and v.vtype == t and tags <= v.tags
                 }
-                have_any = {
-                    v.root
-                    for v in all_versions
-                    if v.vtype == t and v.key not in removed
-                }
+                # A removed version stops retries too; Regenerate makes a new one.
+                have_any = {v.root for v in all_versions if v.vtype == t}
                 # Pairs already chosen for an earlier day serve this one too.
                 have |= {
                     all_items[k].root
