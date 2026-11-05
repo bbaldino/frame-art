@@ -1,20 +1,21 @@
 {% extends "base.html" %}
-{% from "_macros.html" import override_buttons, caption %}
+{% from "_macros.html" import library_buttons, caption, tv_title %}
 {% block title %}On the TV · Frame Art{% endblock %}
 {% block body %}
 <h1>On the TV <span class="muted">{{ items | length }} works</span></h1>
-<p class="muted">Newest first. Ban takes a work off the TV the next time Home Assistant syncs. A pinned work is never retired.</p>
+<p class="muted">Newest first. A pinned work is never retired. Remove from Library takes a work off the TV the next time Home Assistant syncs.</p>
 <div class="grid">
 {% for it in items %}
-  <article class="card{% if it.state == 'pinned' %} pinned{% endif %}" id="{{ card_id(it.p.key) }}">
-    <img loading="lazy" src="/thumb/{{ it.p.folder }}/{{ it.p.filename }}" data-full="/render/{{ it.p.folder }}/{{ it.p.filename }}" alt="{{ it.w.title if it.w else '' }}">
-    {% if it.w %}{{ caption(it.w) }}{% else %}<div class="title">{{ it.p.filename }}</div>{% endif %}
+  <article class="card{% if it.pinned %} pinned{% endif %}{% if it.starred %} collected{% endif %}" id="{{ card_id(it.f.key) }}">
+    <img loading="lazy" src="/thumb/{{ it.f.folder }}/{{ it.f.filename }}" data-full="/render/{{ it.f.folder }}/{{ it.f.filename }}" alt="{{ it.private or (it.w.title if it.w else '') }}">
+    {{ tv_title(it, it.f.filename) }}
     <div class="meta">
-      {% if it.w %}{{ source_names[it.w.source] }} · {% endif %}added {{ ago(it.p.published_at) }}
+      {% if it.w and not it.private %}{{ source_names[it.w.source] }} · {% endif %}added {{ ago(it.f.published_at) }}
       · {% if it.on_tv %}on the TV{% else %}<span class="warn">not uploaded yet</span>{% endif %}
-      {% if it.state == "pinned" %} · <strong>pinned</strong>{% endif %}
+      {% if it.pinned %} · <strong>pinned</strong>{% endif %}
     </div>
-    {{ override_buttons(it.p.key, it.state, "/pool#" ~ card_id(it.p.key), it.collected) }}
+    {% if it.version %}<div class="status-line"><span class="badge">{{ it.version }} version</span></div>{% endif %}
+    {% if it.it %}{{ library_buttons(it.it, it.state, "/pool#" ~ card_id(it.f.key), it.starred, pin=(it.f.root, it.pinned), tv=true) }}{% endif %}
   </article>
 {% else %}
   <p class="muted">Nothing published yet. Use "Run now" on the overview.</p>

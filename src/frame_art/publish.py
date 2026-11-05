@@ -13,7 +13,9 @@ Layout under the destination folder:
     _meta/index.json   filename -> title/artist/date/source for live museum works
 
 What HA has to do next (uploads, and TV content ids to delete) goes to HA over
-MQTT rather than into this folder, which HA serves publicly at /local/.
+MQTT rather than into this folder. The folder (``/config/frame_art_pool`` on HA)
+is outside ``/config/www``, so HA never serves it over HTTP: Brian's photos and
+portraits rendered here stay on the LAN.
 
 HA's art_upload_batch only reads images directly inside the folder it is given,
 and records filename -> content_id in a ``.samsungtv_upload.json`` sidecar there.

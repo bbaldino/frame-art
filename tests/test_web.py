@@ -11,7 +11,7 @@ from starlette.testclient import TestClient
 from frame_art import publish, studio
 from frame_art.catalogue import Catalogue
 from frame_art.model import Work
-from frame_art.schedules import everyday
+from frame_art.schedules import Slice, everyday
 from frame_art.service import Service
 from frame_art.settings import Settings
 from frame_art.web import create_app
@@ -35,24 +35,38 @@ def client(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/pool", "/catalogue", "/catalogue?status=eligible", "/settings",
-             "/compare", "/runs", "/healthz", "/collection", "/history",
-             "/history?todo=1"],
+    "path", ["/", "/now", "/pool", "/library", "/library?scope=all", "/schedule",
+             "/studio", "/studio/versions", "/photos", "/settings", "/compare",
+             "/runs", "/healthz", "/history", "/history?todo=1"],
 )  # fmt: skip
 def test_pages_render(client, path):
     c, _ = client
     assert c.get(path).status_code == 200
 
 
-def test_ban_and_unban(client):
+@pytest.mark.parametrize(
+    "path", ["/catalogue", "/catalogue?status=eligible", "/collection", "/portraits",
+             "/variants", "/tags.json"],
+)  # fmt: skip
+def test_old_pages_redirect(client, path):
+    c, _ = client
+    assert c.get(path, follow_redirects=False).status_code == 303
+    assert c.get(path).status_code == 200
+
+
+def test_override_rejects_ban(client):
     c, svc = client
+    for state in ("banned", "collect", "uncollect", "nope"):
+        r = c.post("/works/nga:1/override", data={"state": state})
+        assert r.status_code == 400, state
+    assert svc.catalogue().overrides() == {} and svc.catalogue().collection() == {}
     r = c.post(
-        "/works/nga:1/override?next=/catalogue",
-        data={"state": "banned"},
+        "/works/nga:1/override?next=/pool",
+        data={"state": "pinned"},
         follow_redirects=False,
     )
-    assert r.status_code == 303 and r.headers["location"] == "/catalogue"
-    assert svc.catalogue().overrides() == {"nga:1": "banned"}
+    assert r.status_code == 303 and r.headers["location"] == "/pool"
+    assert svc.catalogue().overrides() == {"nga:1": "pinned"}
     c.post("/works/nga:1/override", data={"state": "clear"})
     assert svc.catalogue().overrides() == {}
 
@@ -105,23 +119,28 @@ def test_settings_shows_key_presence_but_never_the_key(client, tmp_path, monkeyp
     assert str(tmp_path / "keys" / "pexels" / "key") in page
 
 
-def test_settings_style_mix_validates(client):
+DROPPED = ("choose_from", "photo_share", "photo_crop", "allow_nudes",
+           "full_screen_only", "repeat_days")  # fmt: skip
+
+
+def test_settings_form_without_dropped_fields(client):
     c, svc = client
+    page = c.get("/settings").text
+    assert "Kinds to crawl" in page and 'href="/schedule"' in page
+    for name in DROPPED:
+        assert f'name="{name}"' not in page, name
     form = {"crop": "strict", "pad_style": "blur", "kinds": "painting",
             "sources": ["nga", "commons"], "count": "5", "pool": "100",
             "run_at": "02:00", "recrawl_days": "7", "crawl_limit": "300",
-            "photo_share": "40", "photo_crop": "medium"}  # fmt: skip
+            "photo_share": "150", "choose_from": "collection", "repeat_days": "x",
+            "allow_nudes": "on"}  # fmt: skip
     assert "Saved" in c.post("/settings", data=form).text
     s = svc.settings()
-    assert (s.photo_share, s.photo_crop) == (40, "medium")
+    # Photos are crawled whenever a photo source is on.
     assert s.crawl_kinds() == ("painting", "photograph")
-    assert s.shown_kinds() == ("painting", "photograph")
-    zero = Settings(photo_share=0)
-    # Photos are catalogued whenever a photo source is on, but not published at 0%.
-    assert zero.crawl_kinds() == ("painting", "photograph")
-    assert zero.shown_kinds() == ("painting",)
     assert Settings(sources=["nga"]).crawl_kinds() == ("painting",)
-    assert "Not saved" in c.post("/settings", data={**form, "photo_share": "150"}).text
+    saved = json.loads(svc.settings_path.read_text())
+    assert not set(DROPPED) & set(saved)
 
 
 def test_now_showing_maps_tv_id_to_work(client):
@@ -167,22 +186,20 @@ def test_overview_never_embeds_ha_thumbnail_and_reports_tv_off(client):
 
 
 def test_catalogue_filters_on_metadata(client):
+    # The catalogue's filters live on in the Library's "All works".
     c, svc = client
     cat = svc.catalogue()
     w = cat.works()[0]
     w.style, w.genre, w.place = "Impressionism", "landscape painting", "France"
     w.subjects = ["haystacks", "Winter"]
     cat.upsert([w])
-    assert "1 matching" in c.get("/catalogue?style=Impressionism").text
-    assert "0 matching" in c.get("/catalogue?style=Cubism").text
-    assert "1 matching" in c.get("/catalogue?subject=winter").text
-    assert "1 matching" in c.get("/catalogue?q=france").text
-    assert "1 matching" in c.get("/catalogue?tag=france&tag=WINTER").text
-    assert "0 matching" in c.get("/catalogue?tag=france&tag=summer").text
-    page = c.get("/catalogue?tag=france").text
-    # Card chips add to the filter; active tags come off one at a time.
-    assert "tag=france&amp;tag=haystacks" in page
-    assert 'href="/catalogue?page=1" title="Remove this tag"' in page
+    assert "1 matching" in c.get("/catalogue?tag=style:impressionism").text
+    assert "0 matching" in c.get("/catalogue?tag=style:cubism").text
+    assert "1 matching" in c.get("/library?scope=all&tag=subject:winter").text
+    assert "1 matching" in c.get("/library?scope=all&q=france").text
+    page = c.get("/library?scope=all&tag=place:france&tag=SUBJECT:WINTER").text
+    assert "1 matching" in page
+    assert "0 matching" in c.get("/library?scope=all&tag=place:france&tag=x:y").text
 
 
 def test_tag_suggestions(client):
@@ -192,25 +209,24 @@ def test_tag_suggestions(client):
     a.subjects = ["Winter", "snow"]
     b = dataclasses.replace(a, source_id="2", subjects=["winter landscape", "boats"])
     cat.upsert([a, b])
+    # The old address answers with the Library's suggestions.
     tags = [t["tag"] for t in c.get("/tags.json?q=win").json()]
-    assert tags[:2] == ["Winter", "winter landscape"]
+    assert tags[:2] == ["subject:winter", "subject:winter landscape"]
     # Suggestions narrow to works that have the tags already chosen.
-    got = c.get("/tags.json?q=&tag=snow").json()
-    assert {t["tag"] for t in got} >= {"Winter"} and "boats" not in {
-        t["tag"] for t in got
-    }
-    assert "snow" not in {t["tag"].lower() for t in got}
+    got = {t["tag"] for t in c.get("/tags.json?q=&tag=subject:snow").json()}
+    assert "subject:winter" in got and "subject:boats" not in got
+    assert "subject:snow" not in got
 
 
 def test_collect_from_the_catalogue(client):
+    # Collecting is starring now; the collection is the Favorites view.
     c, svc = client
-    assert "0 in your collection" in c.get("/catalogue").text
-    assert "No works match" in c.get("/collection").text
-    c.post("/works/nga:1/override?next=/catalogue", data={"state": "collect"})
+    assert "0 matching" in c.get("/collection").text
+    r = c.post("/library/star?next=/collection", data={"key": "nga:1"})
     assert set(svc.catalogue().collection()) == {"nga:1"}
-    page = c.get("/collection").text
-    assert "1 matching" in page and "Haystacks" in page and "✓ Collected" in page
-    c.post("/works/nga:1/override?next=/catalogue", data={"state": "uncollect"})
+    assert "1 matching" in r.text and "Haystacks" in r.text and "★ Starred" in r.text
+    assert svc.catalogue().library() == {}  # a star doesn't add it to the Library
+    c.post("/library/star", data={"key": "nga:1", "on": "0"})
     assert svc.catalogue().collection() == {}
 
 
@@ -238,7 +254,7 @@ def test_history_records_what_the_tv_showed(client):
     assert (
         "Haystacks" in page and "Not from frame-art" in page and "showing now" in page
     )
-    c.post("/works/nga:1/override?next=/history", data={"state": "collect"})
+    c.post("/library/star?next=/history", data={"key": "nga:1"})
     todo = c.get("/history?todo=1").text
     assert "Haystacks" not in todo and "Nothing left to sort" in todo
 
@@ -363,12 +379,17 @@ def test_upload_button_says_when_nothing_will_happen(client):
     assert svc.catalogue().get("uploads_enabled")["enabled"] is True
 
 
+def halloween(share: int) -> Slice:
+    return Slice(["ai-variant:halloween"], share)
+
+
 def test_schedules_validate():
-    assert Settings(schedules=[everyday({"halloween": 50})]).validate() == []
-    assert Settings(schedules=[everyday({"halloween": 60, "autumn": 50})]).validate()
-    assert Settings(schedules=[everyday({"halloween": -1})]).validate()
+    assert Settings(schedules=[everyday([halloween(50)])]).validate() == []
+    autumn = Slice(["subject:autumn"], 50)
+    assert Settings(schedules=[everyday([halloween(60), autumn])]).validate()
+    assert Settings(schedules=[everyday([halloween(-1)])]).validate()
     assert Settings(variant_limit=51).validate()
-    dup = everyday({"halloween": 5})
+    dup = everyday([halloween(5)])
     assert Settings(schedules=[dup, dup]).validate()  # ids must be unique
 
 
@@ -376,8 +397,8 @@ def test_old_mix_migrates_to_everyday(tmp_path):
     p = tmp_path / "settings.json"
     p.write_text(json.dumps({"mix": {"halloween": 75}, "count": 5}))
     s = Settings.load(p)
-    assert [(x.name, x.start, x.end, x.shares) for x in s.schedules] == [
-        ("Everyday", "01-01", "12-31", {"halloween": 75})
+    assert [(x.name, x.start, x.end, x.slices) for x in s.schedules] == [
+        ("Everyday", "01-01", "12-31", [halloween(75)])
     ]
     assert s.count == 5
     assert Settings.load(p).schedules[0].id == s.schedules[0].id  # stable until saved
@@ -389,7 +410,7 @@ def test_old_mix_migrates_to_everyday(tmp_path):
 
 def test_schedules_round_trip_and_bad_ones_are_dropped(tmp_path):
     p = tmp_path / "settings.json"
-    s = Settings(schedules=[everyday({"halloween": 50})], count=4)
+    s = Settings(schedules=[everyday([halloween(50)])], count=4)
     s.save(p)
     assert Settings.load(p) == s
     raw = json.loads(p.read_text())
@@ -405,7 +426,7 @@ def test_schedules_round_trip_and_bad_ones_are_dropped(tmp_path):
 
 def test_saving_settings_keeps_schedules_and_limit(client):
     c, svc = client
-    sched = [everyday({"halloween": 50})]
+    sched = [everyday([halloween(50)])]
     svc.save_settings(
         dataclasses.replace(svc.settings(), schedules=sched, variant_limit=4)
     )
@@ -417,7 +438,7 @@ def test_saving_settings_keeps_schedules_and_limit(client):
     assert svc.settings().variant_limit == 4
 
 
-def test_generate_job_pins_slot_and_dedupes(client):
+def test_generate_job_dedupes(client):
     c, svc = client
     assert svc.submit(
         "generate", {"type": "halloween", "keys": ["nga:1"], "prompt": None}
@@ -428,17 +449,15 @@ def test_generate_job_pins_slot_and_dedupes(client):
     assert svc.submit(
         "generate", {"type": "halloween", "keys": ["nga:2"], "prompt": None}
     )
-    assert svc.submit("versions", {"keys": ["nga:1"]})
     assert c.post("/jobs/generate").status_code == 404
-    assert c.post("/jobs/versions").status_code == 404
+    with pytest.raises(ValueError):
+        svc.submit("versions", {"keys": ["nga:1"]})  # gone with the old seasonal step
     with pytest.raises(ValueError):
         svc.submit("bogus")
     assert c.get("/").status_code == 200  # the queue shows the new kinds
 
 
-def test_generate_job_makes_a_variant_and_puts_it_on_the_tv(
-    client, tmp_path, monkeypatch
-):
+def test_generate_job_makes_a_version_for_the_library(client, tmp_path, monkeypatch):
     from PIL import Image
 
     from frame_art import openrouter, pipeline, variants
@@ -463,8 +482,6 @@ def test_generate_job_makes_a_variant_and_puts_it_on_the_tv(
     )
     cat = svc.catalogue()
     variants.seed_types(cat)
-    cat.record_publish("nga-1-monet-haystacks.jpg", "full", "nga:1", 0)
-    svc.save_settings(Settings(schedules=[everyday({"halloween": 10})]))
     svc._run(
         Job("generate", {"type": "halloween", "keys": ["nga:1"], "prompt": "spooky"})
     )
@@ -472,9 +489,11 @@ def test_generate_job_makes_a_variant_and_puts_it_on_the_tv(
     assert run["kind"] == "generate" and run["status"] == "ok", run["log"]
     assert run["summary"] == {"generated": ["nga:1"], "failed": [], "cost": 0.12}
     assert seen == [("sk-test", "spooky")]
-    assert cat.slots()["nga:1"].manual
-    [live] = cat.published(active=True)
-    assert live.filename.endswith("--halloween-1.jpg")
+    # The version is a work of its own; the next publish shows it through a slice.
+    [v] = cat.variants()
+    assert (v.key, v.type) == ("nga:1", "halloween")
+    assert f"variant:{v.id}" in c_items(svc)
+    assert cat.published(active=True) == []
     assert "sk-test" not in run["log"]
     # The runs page shows it.
     c, _ = client
@@ -492,18 +511,10 @@ def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "publish", lambda *a, **k: PublishResult(["x"], [], []))
     calls = []
 
-    def fake_nightly(cat, http, data, pub, settings, api_key, today, portraits=None):
+    def fake_nightly(cat, http, data, items, settings, api_key, today):
         calls.append(api_key)
-        assert portraits == 0  # no Portraits share, so none live
         assert today == svc.today()
-        return {
-            "slots": {},
-            "generated": [],
-            "gen_failed": ["nga:1"],
-            "swapped": [],
-            "swap_failed": ["nga:2"],
-            "cost": 0.0,
-        }
+        return {"generated": [], "gen_failed": ["nga:1"], "cost": 0.0}
 
     monkeypatch.setattr(variants, "nightly", fake_nightly)
     svc._run(Job("nightly"))
@@ -511,9 +522,8 @@ def test_nightly_with_a_failed_edit_is_partial(client, tmp_path, monkeypatch):
     assert calls == [None]  # no key on disk
     assert run["status"] == "partial"
     assert run["summary"]["added"] == ["x"]
-    assert run["summary"]["failed"] == ["nga:1", "nga:2"]
+    assert run["summary"]["failed"] == ["nga:1"]
     assert run["summary"]["variants"]["gen_failed"] == ["nga:1"]
-    assert run["summary"]["portraits"] == {"live": 0, "added": [], "retired": []}
 
 
 def test_nightly_keeps_the_publish_summary_when_variants_break(
@@ -542,6 +552,12 @@ def test_nightly_keeps_the_publish_summary_when_variants_break(
     assert s["failed"] == ["z", "variants"]
     assert s["variants"] == {"error": "RuntimeError"}
     assert "database is locked" in run["log"]
+
+
+def c_items(svc):
+    from frame_art import library
+
+    return library.items(svc.catalogue(), svc.photos(), svc.studio())
 
 
 def _work_variant(svc, tmp_path):
@@ -701,16 +717,19 @@ def test_catalogue_tags_works_with_a_seasonal_version(client, tmp_path):
             )
         ]
     )  # fmt: skip
-    page = c.get("/catalogue").text
-    assert "Halloween version" in page and "Water Lilies" in page
-    # The seasonal tag is its own tag: a subject called "halloween" doesn't match.
-    page = c.get("/catalogue?tag=halloween+version").text
-    assert "Haystacks" in page and "Water Lilies" not in page
+    page = c.get("/catalogue?versions=1").text
+    assert "Haystacks (Halloween)" in page and "Water Lilies" in page
+    # A version's tag is its own: a subject called "halloween" doesn't match.
+    page = c.get("/catalogue?tag=ai-variant-halloween").text
+    assert "Haystacks (Halloween)" in page and "Water Lilies" not in page
     assert f"/variant-file/{v.id}?thumb=1" in page
-    page = c.get("/collection?tag=halloween+version").text
-    assert "Haystacks" not in page
+    page = c.get("/catalogue?tag=subject:halloween").text
+    assert "Water Lilies" in page and f"/variant-file/{v.id}" not in page
+    page = c.get("/collection?tag=ai-variant:halloween").text
+    assert "Haystacks" not in page  # not starred
     got = c.get("/tags.json?q=hallo").json()
-    assert {"tag": "Halloween version", "kind": "seasonal", "count": 1} in got
+    assert {"tag": "ai-variant:halloween", "label": "ai-variant-halloween",
+            "group": "AI variant", "count": 1} in got  # fmt: skip
 
 
 def _jpeg(color="red") -> bytes:
@@ -769,13 +788,25 @@ def test_kind_override_and_delete(client):
     assert c.get(f"/photos/{p.id}/thumb").status_code == 404
 
 
+# Pages about what the TV shows. The Library and Your photos are where Brian
+# browses his own pictures, so they are the only pages that name one.
+TV_PAGES = ("/", "/now", "/now.json", "/pool", "/history", "/schedule")
+
+
 def test_photos_stay_off_public_pages(client):
     c, svc = client
     files = [("files", ("secret-name.jpg", _jpeg(), "image/jpeg"))]
     c.post("/photos/upload", files=files)
-    for page in ("/", "/catalogue", "/pool", "/collection", "/variants"):
-        assert "secret-name" not in c.get(page).text
+    # Outside the Library, nothing of it is rendered for the TV.
     assert not svc.dest.exists() or not any(svc.dest.rglob("*"))
+    [p] = svc.photos().all()
+    svc.catalogue().set_library([f"photo:{p.id}"], "in")
+    _put_on_tv(svc, f"photo:{p.id}", f"photo-{p.id}.jpg")
+    svc._on_current({"content_id": "MY_F0042", "on": True})
+    for page in TV_PAGES:
+        text = c.get(page).text
+        assert "secret-name" not in text and p.path not in text, page
+    assert "Your photo" in c.get("/pool").text
 
 
 def _google_client(tmp_path, monkeypatch):
@@ -985,6 +1016,18 @@ def test_painters_page_add_edit_delete(client):
     assert r.status_code == 400 and "name" in r.text
 
 
+def _put_on_tv(svc, key, name, content_id="MY_F0042"):
+    """``key`` live as ``full/<name>``, uploaded as ``content_id``."""
+    cat = svc.catalogue()
+    cat.record_publish(name, "full", key, 0)
+    cat.set_palette(key, ["#112233"])
+    (svc.dest / "full").mkdir(parents=True, exist_ok=True)
+    (svc.dest / "full" / name).write_bytes(b"jpeg")
+    (svc.dest / "full" / publish.SIDECAR).write_text(
+        json.dumps({name: {"content_id": content_id, "modified": 1.0}})
+    )
+
+
 def _photo_in_studio(svc, kind=None):
     p = svc.photos().add("upload", "studio-1", _jpeg(), "kid.jpg")
     if kind:
@@ -1108,24 +1151,26 @@ def _done_try(svc, p, painter="monet"):
     return st.get_try(t.id)
 
 
-def test_save_a_try_to_portraits(client):
+def test_save_try_adds_to_library(client):
     c, svc = client
     p = _photo_in_studio(svc, "portrait")
     t = _done_try(svc, p)
     page = c.get(f"/studio/{p.id}").text
-    assert f'action="/studio/tries/{t.id}/save"' in page
+    assert f'action="/studio/tries/{t.id}/save"' in page and "Save to Library" in page
     r = c.post(f"/studio/tries/{t.id}/save", follow_redirects=False)
     assert (
         r.status_code == 303 and r.headers["location"] == f"/studio/{p.id}?done=saved"
     )
     page = c.get(r.headers["location"]).text
-    assert "Saved to Portraits." in page
+    assert "Saved to the Library." in page
     assert f'action="/studio/tries/{t.id}/save"' not in page
     assert f'action="/studio/tries/{t.id}/delete"' not in page
     (painting,) = svc.studio().paintings()
+    assert svc.catalogue().library()[f"portrait:{painting.id}"][0] == "in"
     assert (
         "Portraits from this photo" in page
         and f"/portraits/{painting.id}/thumb" in page
+        and f'href="/works/portrait:{painting.id}"' in page
     )
     assert c.post("/studio/tries/999/save").status_code == 404
 
@@ -1164,29 +1209,35 @@ def test_deleting_a_photo_keeps_its_portraits(client):
     assert svc.studio().tries(p.id) == [] and not Path(other.path).exists()
     assert svc.studio().get_painting(painting.id).photo_id is None
     assert c.get(f"/studio/{p.id}").status_code == 404
-    page = c.get("/portraits").text
-    assert f"/portraits/{painting.id}/thumb" in page and "photo deleted" in page
+    page = c.get(f"/works/portrait:{painting.id}").text
+    assert f"/portraits/{painting.id}.jpg" in page and "photo deleted" in page
 
 
 def test_portraits_page_links_and_removes(client):
+    # Portraits are browsed in the Library; Delete is on the portrait's own page.
     c, svc = client
     p = _photo_in_studio(svc, "portrait")
-    painting = svc.studio().save(_done_try(svc, p, "hopper").id)
+    t = _done_try(svc, p, "hopper")
+    c.post(f"/studio/tries/{t.id}/save")
+    (painting,) = svc.studio().paintings()
     page = c.get("/portraits").text
-    assert "Edward Hopper" in page and "$0.12" in page
-    assert f'href="/studio/{p.id}"' in page and f"/photos/{p.id}/thumb" in page
-    assert 'href="/portraits"' in c.get("/").text
+    assert "Portrait by Edward Hopper" in page
+    assert f"/portraits/{painting.id}/thumb" in page
+    page = c.get(f"/works/portrait:{painting.id}").text
+    assert "$0.12" in page and f'href="/studio/{p.id}"' in page
+    assert 'href="/portraits"' not in c.get("/").text
     assert (
         c.get(f"/portraits/{painting.id}.jpg").content
         == Path(painting.path).read_bytes()
     )
     assert c.get(f"/portraits/{painting.id}/thumb").status_code == 200
-    r = c.post(f"/portraits/{painting.id}/remove")
-    assert r.status_code == 200 and "Removed" in r.text
+    r = c.post(f"/works/portrait:{painting.id}/delete", follow_redirects=False)
+    assert r.status_code == 303
     assert svc.studio().get_painting(painting.id) is None
     assert not Path(painting.path).exists()
     assert c.get(f"/portraits/{painting.id}.jpg").status_code == 404
-    assert c.post(f"/portraits/{painting.id}/remove").status_code == 404
+    assert c.post(f"/works/portrait:{painting.id}/delete").status_code == 404
+    assert c.post(f"/portraits/{painting.id}/remove").status_code in (404, 405)
 
 
 def test_photos_page_counts_tries_and_portraits(client):
@@ -1205,23 +1256,21 @@ def test_paintings_stay_off_the_museum_pages(client):
                      "fill", [], None)  # fmt: skip
     st.finish_try(t.id, Image.new("RGB", (64, 36), "orange"), 0.12)
     painting = st.save(t.id)
-    for page in ("/", "/catalogue", "/pool", "/collection", "/variants", "/history"):
+    svc.catalogue().set_library([f"portrait:{painting.id}"], "in")
+    _put_on_tv(svc, f"portrait:{painting.id}", f"portrait-{painting.id}.jpg")
+    svc._on_current({"content_id": "MY_F0042", "on": True})
+    for page in TV_PAGES:
         text = c.get(page).text
         assert "Mary Cassatt" not in text and painting.path not in text, page
+    assert "Portrait" in c.get("/pool").text
 
 
 def _live_portrait(svc, content_id="MY_F0042"):
-    from frame_art import portraits
-
     p = _photo_in_studio(svc)
     painting = svc.studio().save(_done_try(svc, p, "hopper").id)
-    cat = svc.catalogue()
-    pub = publish.Publisher(cat, None, svc.dest, "blur")
-    portraits.sync(cat, svc.studio(), pub, svc.dest, want=1, seed=1)
-    name = f"portrait-{painting.id}.jpg"
-    (svc.dest / "full" / publish.SIDECAR).write_text(
-        json.dumps({name: {"content_id": content_id, "modified": 1.0}})
-    )
+    key, name = f"portrait:{painting.id}", f"portrait-{painting.id}.jpg"
+    svc.catalogue().set_library([key], "in")
+    _put_on_tv(svc, key, name, content_id)
     return painting, name
 
 
@@ -1255,8 +1304,8 @@ def test_removing_a_portrait_updates_the_tv(client, monkeypatch):
     monkeypatch.setattr(
         svc, "submit", lambda kind, args=None: submitted.append((kind, args))
     )
-    c.post(f"/portraits/{painting.id}/remove")
-    assert submitted == [("portraits", None)]
+    c.post(f"/works/portrait:{painting.id}/delete")
+    assert submitted == [("sync", None)]  # takes it off the TV now
 
 
 def test_studio_polls_the_tries_without_reloading_the_form(client, monkeypatch):
@@ -1303,3 +1352,101 @@ def test_a_queued_try_whose_job_was_lost_never_started(client):
     page = c.get(f"/studio/{p.id}").text  # no job: the service restarted
     assert "This try never started." in page and "data-poll" not in page
     assert f"/studio/tries/{t.id}/delete" in page
+
+
+def test_now_remove_from_library(client, monkeypatch):
+    c, svc = client
+    cat = svc.catalogue()
+    cat.set_library(["nga:1"], "in")
+    _put_on_tv(svc, "nga:1", "haystacks.jpg")
+    svc._on_current({"content_id": "MY_F0042", "on": True})
+    page = c.get("/now").text
+    assert 'action="/library/star?next=/now"' in page
+    assert 'action="/library/remove?next=/now"' in page
+    assert "Remove from Library" in page and "Ban" not in page
+    submitted = []
+    monkeypatch.setattr(
+        svc, "submit", lambda kind, args=None: submitted.append((kind, args))
+    )
+    r = c.post("/library/star?next=/now", data={"key": "nga:1"}, follow_redirects=False)
+    assert r.headers["location"] == "/now" and set(cat.collection()) == {"nga:1"}
+    c.post("/library/remove?next=/now", data={"key": "nga:1"})
+    assert cat.library()["nga:1"][0] == "removed"
+    assert submitted == [("sync", None)]  # off the TV now, not at the next run
+    assert "Put back" in c.get("/now").text
+
+
+def test_now_buttons_for_a_portrait_say_nothing_of_it(client):
+    c, svc = client
+    painting, _ = _live_portrait(svc)
+    svc._on_current({"content_id": "MY_F0042", "on": True})
+    page = c.get("/now").text
+    assert "Remove from Library" in page and "Edward Hopper" not in page
+    assert f'value="portrait:{painting.id}"' in page
+
+
+def test_history_stars_and_removes(client):
+    c, svc = client
+    cat = svc.catalogue()
+    cat.set_library(["nga:1"], "in")
+    _put_on_tv(svc, "nga:1", "haystacks.jpg")
+    svc._on_current({"content_id": "MY_F0042", "on": True})
+    page = c.get("/history").text
+    assert "/library/star?next=" in page and "Remove from Library" in page
+    assert "Collect" not in page and "Ban" not in page
+    c.post("/library/remove?next=/history", data={"key": "nga:1"})
+    # Sorted: removed works leave the to-do list, as starred ones do.
+    assert "Nothing left to sort" in c.get("/history?todo=1").text
+
+
+def test_pool_pin_any_item(client):
+    c, svc = client
+    cat = svc.catalogue()
+    p = _photo_in_studio(svc)
+    _put_on_tv(svc, "nga:1", "haystacks.jpg")
+    cat.record_publish(f"photo-{p.id}.jpg", "full", f"photo:{p.id}", 0)
+    page = c.get("/pool").text
+    for key in ("nga:1", f"photo:{p.id}"):
+        assert f'action="/works/{key}/override?next=' in page, key
+    assert "kid.jpg" not in page  # a photo is never named by its file
+    r = c.post(
+        f"/works/photo:{p.id}/override?next=/pool",
+        data={"state": "pinned"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303 and cat.overrides() == {f"photo:{p.id}": "pinned"}
+    assert "Unpin" in c.get("/pool").text
+    c.post(f"/works/photo:{p.id}/override", data={"state": "clear"})
+    assert cat.overrides() == {}
+    r = c.post("/works/photo:nope/override", data={"state": "pinned"})
+    assert r.status_code == 404
+    # A pin outlives a deleted item, and can still be cleared.
+    cat.set_override("portrait:99", "pinned")
+    c.post("/works/portrait:99/override", data={"state": "clear"})
+    assert cat.overrides() == {}
+
+
+def test_runs_links_new_works(client):
+    import datetime
+
+    c, svc = client
+    cat = svc.catalogue()
+    since = datetime.datetime(2026, 11, 3, 2, 0, tzinfo=svc.tz).timestamp()
+    for new in (3, 0):
+        run = cat.start_run("crawl")
+        summary = {"crawled": {}, "catalogue": 5, "new": new, "since": since}
+        cat.finish_run(run, "ok", summary, "")
+    run = cat.start_run("import-google")
+    cat.finish_run(run, "ok", {"added": 2, "skipped": 0, "failed": []}, "")
+    page = c.get("/runs").text
+    assert (
+        '<a href="/library?scope=all&amp;sort=added&amp;added_since=2026-11-03">'
+        "3 new</a>"
+    ) in page
+    assert "0 new" not in page
+    today = datetime.datetime.now(svc.tz).date().isoformat()
+    assert (
+        '<a href="/library?scope=all&amp;sort=added&amp;source=photos&amp;'
+        f'added_since={today}">2 new</a>'
+    ) in page
+    assert c.get("/").status_code == 200  # the overview shows the same table

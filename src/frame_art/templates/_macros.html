@@ -1,47 +1,35 @@
-{% macro override_buttons(key, state, next, collected=false) %}
-<div class="actions">
-  {% if collected %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button class="on" name="state" value="uncollect" data-key="c" title="Take this out of your collection">✓ Collected</button></form>
-  {% else %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="collect" data-key="c" title="Add to the works the nightly run picks from">+ Collect</button></form>
-  {% endif %}
-  {% if state == "pinned" %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear" data-key="p" title="Remove the pin">Unpin</button></form>
-  {% elif state != "banned" %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="pinned" data-key="p" title="Keep on the TV: publish soon and never retire">Pin</button></form>
-  {% else %}
-  <form><button type="button" disabled title="Unban it first">Pin</button></form>
-  {% endif %}
-  {% if state == "banned" %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button name="state" value="clear" data-key="b">Unban</button></form>
-  {% else %}
-  <form method="post" action="/works/{{ key }}/override?next={{ next | urlencode }}"><button class="danger" name="state" value="banned" data-key="b" title="Never show this; take it off the TV">Ban</button></form>
-  {% endif %}
-</div>
-{% endmacro %}
-
 {% macro caption(w) %}
 <div class="title" title="{{ w.title }}">{% if w.page_url %}<a href="{{ w.page_url }}" target="_blank" rel="noopener">{{ w.title }}</a>{% else %}{{ w.title }}{% endif %}</div>
 <div class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %} · <a class="small" href="/works/{{ w.key }}">Details</a></div>
 {% endmacro %}
 
-{% macro library_buttons(it, state, next, starred=false, versions=0) %}
+{# The Library's buttons for one item. The TV pages (Now, On the TV, History)
+   pass ``tv``, and On the TV passes ``pin``: the key a pin is kept on, and
+   whether it is pinned. Viewer keys: S star, P pin, R remove, A add or put back. #}
+{% macro library_buttons(it, state, next, starred=false, versions=0, pin=none, tv=false) %}
 {% set go = "?next=" ~ (next | urlencode) %}
+{% set remove = "Remove from Library" if tv else "Remove" %}
 <div class="actions">
   <form method="post" action="/library/star{{ go }}"><input type="hidden" name="key" value="{{ it.key }}">
-    {% if starred %}<button class="on" name="on" value="0" data-key="c" title="Unstar">★ Starred</button>
-    {% else %}<button name="on" value="1" data-key="c" title="Star it: a starred Library work comes round more often">☆ Star</button>{% endif %}
+    {% if starred %}<button class="on" name="on" value="0" data-key="s" title="Unstar">★ Starred</button>
+    {% else %}<button name="on" value="1" data-key="s" title="Star it: a starred Library work comes round more often">☆ Star</button>{% endif %}
   </form>
+  {% if pin %}
+  <form method="post" action="/works/{{ pin[0] }}/override{{ go }}">
+    {% if pin[1] %}<button class="on" name="state" value="clear" data-key="p" title="Let it retire with the rest">Unpin</button>
+    {% else %}<button name="state" value="pinned" data-key="p" title="Keep it on the TV: never retired">Pin</button>{% endif %}
+  </form>
+  {% endif %}
   {% if it.kind == "version" %}
     {% if state == "removed" %}
     <form method="post" action="/versions/{{ it.variant_id }}/put-back{{ go }}"><button data-key="a">Put back</button></form>
     {% else %}
-    <form method="post" action="/versions/{{ it.variant_id }}/remove{{ go }}"><button class="danger" data-key="r" title="Never show this version; its file is kept">Remove</button></form>
+    <form method="post" action="/versions/{{ it.variant_id }}/remove{{ go }}"><button class="danger" data-key="r" title="Never show this version; its file is kept">{{ remove }}</button></form>
     {% endif %}
-    <form method="post" action="/versions/{{ it.variant_id }}/regenerate{{ go }}"><button title="Make another; this one is removed">Regenerate</button></form>
+    {% if not tv %}<form method="post" action="/versions/{{ it.variant_id }}/regenerate{{ go }}"><button title="Make another; this one is removed">Regenerate</button></form>{% endif %}
   {% elif state == "in" %}
   <form method="post" action="/library/remove{{ go }}"><input type="hidden" name="key" value="{{ it.key }}">
-    <button class="danger" data-key="r" title="Take it out of the Library and off the TV">Remove</button>
+    <button class="danger" data-key="r" title="Take it out of the Library and off the TV">{{ remove }}</button>
     {% if versions %}<input type="hidden" name="with_versions" value="0"><label class="small"><input type="checkbox" name="with_versions" value="1" checked> and its {{ versions }} version{{ "s" if versions != 1 }}</label>{% endif %}
   </form>
   {% elif state == "removed" %}
@@ -74,4 +62,12 @@
   {% elif r.warning %}<div class="small warn" title="Adding it is still allowed">May not fit: {{ r.warning }}</div>{% endif %}
   {{ library_buttons(it, r.state, here ~ "#" ~ card_id(it.key), r.starred, r.versions) }}
 </article>
+{% endmacro %}
+
+{# A TV page's title lines for ``t`` (web.tv_item): a museum work's caption,
+   or only "Your photo" or "Portrait", never a filename or painter. #}
+{% macro tv_title(t, fallback) %}
+{% if t.private %}<div class="title">{{ t.private }}</div><div class="who muted"><a class="small" href="/works/{{ t.it.key }}">Details</a></div>
+{% elif t.w %}{{ caption(t.w) }}
+{% else %}<div class="title">{{ fallback }}</div>{% endif %}
 {% endmacro %}

@@ -1,4 +1,4 @@
-"""LAN web UI: the pool, the catalogue, settings, comparison sheets, runs.
+"""LAN web UI: the TV, the Library, the schedule, Studio, settings and runs.
 
 Server-rendered with plain HTML forms; no build step. It never talks to the TV
 and holds no HA token. The "on the TV now" picture is HA's own public
@@ -17,7 +17,6 @@ import secrets
 import threading
 import time
 from collections import Counter
-from dataclasses import fields
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from urllib.parse import urlencode
@@ -49,10 +48,8 @@ from . import (
     studio,
     variants,
 )
-from .catalogue import Variant
-from .classify import current_season
 from .net import Http
-from .publish import content_index, read_sidecar
+from .publish import content_index, find_content, read_sidecar
 from .schedules import Schedule, Slice
 from .service import ARG_JOBS, JOB_KINDS, TV_ACTIONS, Service
 from .settings import (
@@ -60,11 +57,8 @@ from .settings import (
     SLIDESHOW,
     SOURCE_NAMES,
     SOURCES,
-    Settings,
 )
 from .sources import ART_KINDS, KINDS, info
-
-CHOOSE_FROM: dict[str, str] = {}  # replaced in Task 11
 
 log = logging.getLogger(__name__)
 
@@ -73,14 +67,6 @@ PAGE = 60
 THUMB = (480, 270)
 # Largest photo an upload may carry, per file.
 MAX_UPLOAD = 50 * 1024 * 1024
-STATUSES = {
-    "eligible": "Eligible",
-    "live": "In the pool",
-    "pinned": "Pinned",
-    "banned": "Banned",
-    "excluded": "Left out by settings",
-    "rejected": "Rejected after download",
-}
 # The nightly automation uploads full/ only, so the TV-matte style is not offered.
 UI_PAD_STYLES = {"blur": "Blurred background", "solid": "Solid colour"}
 CROP_LABELS = {
@@ -99,84 +85,9 @@ def _version() -> str:
 
 
 def searchable(w) -> str:
-    """Everything the catalogue's search box matches against, lowercased."""
+    """Everything a museum work's search matches against, lowercased."""
     parts = [w.title, w.artist, w.style, w.genre, w.place, w.description, *w.subjects]
     return " ".join(p for p in parts if p).lower()
-
-
-TAG_PARAMS = ("tag", "subject", "style", "genre")  # the last three: older links
-SUGGESTIONS = 15
-
-
-def tag_pairs(w, seasonal=()):
-    """(kind, tag) for everything a work can be filtered by.
-
-    ``seasonal`` is the work's seasonal-version tags (``seasonal_tags``), which
-    live in frame-art's own tables rather than on the work.
-    """
-    for kind in ("artist", "style", "genre", "place"):
-        if getattr(w, kind):
-            yield kind, getattr(w, kind)
-    for x in w.subjects:
-        yield "subject", x
-    for x in seasonal:
-        yield "seasonal", x
-
-
-def tags_of(w, seasonal=()) -> set[str]:
-    return {t.lower() for _, t in tag_pairs(w, seasonal)}
-
-
-def seasonal_tags(cat) -> dict[str, dict[str, Variant]]:
-    """Per work, "<Type> version" -> its current variant, for each type it has one of.
-
-    Named "... version" so the tag never collides with a subject such as
-    "Halloween".
-    """
-    names = {t.slug: t.name for t in cat.variant_types()}
-    current = {v.id: v for v in cat.variants()}
-    out: dict[str, dict[str, Variant]] = {}
-    for (key, type), st in cat.variant_states().items():
-        if st.current in current and type in names:
-            out.setdefault(key, {})[f"{names[type]} version"] = current[st.current]
-    return out
-
-
-def wanted_tags(q) -> list[str]:
-    """The tag filters in a query string, lowercased, in order, deduplicated."""
-    tags = [v.strip().lower() for k, v in q.multi_items() if k in TAG_PARAMS]
-    return list(dict.fromkeys(t for t in tags if t))
-
-
-def suggest_tags(works, tags: list[str], text: str, seasonal=None) -> list[dict]:
-    """Tags of the works matching ``tags``, for the catalogue's autocomplete.
-
-    Word-start matches rank before matches mid-word, then by how many works
-    carry the tag; tags already in the filter are left out.
-    """
-    counts: Counter = Counter()
-    names: dict[str, Counter] = {}
-    seasonal = seasonal or {}
-    for w in works:
-        extra = seasonal.get(w.key, ())
-        if tags and not set(tags) <= tags_of(w, extra):
-            continue
-        pairs = tag_pairs(w, extra)
-        for key, (kind, tag) in {t.lower(): (k, t) for k, t in pairs}.items():
-            if key in tags or (text and text not in key):
-                continue
-            counts[key] += 1
-            names.setdefault(key, Counter())[(kind, tag)] += 1
-    starts = re.compile(rf"\b{re.escape(text)}") if text else None
-    ranked = sorted(
-        counts,
-        key=lambda k: (bool(starts) and not starts.search(k), -counts[k], k),
-    )
-    out = []
-    for key in ranked[:SUGGESTIONS]:
-        (kind, tag), _ = names[key].most_common(1)[0]
-        out.append({"tag": tag, "kind": kind, "count": counts[key]})
-    return out
 
 
 # -- Library ---------------------------------------------------------------
@@ -261,6 +172,23 @@ def item_text(it: library.Item) -> str:
     return " ".join(words).lower()
 
 
+@dataclasses.dataclass
+class TvContext:
+    """What the TV pages read once per page, not once per card."""
+
+    items: dict[str, library.Item]
+    lib: dict[str, tuple[str, float]]
+    starred: dict[str, float]
+    names: dict[str, str]  # version type slug -> name
+    files: dict[str, int]  # published version filename -> variant id
+
+    def live_key(self, filename: str, key: str) -> str:
+        """The item a published file shows: a version file is ``variant:<id>``."""
+        if filename in self.files:
+            return f"{library.VARIANT}{self.files[filename]}"
+        return key
+
+
 def _ago(ts: float | None) -> str:
     if not ts:
         return "never"
@@ -295,6 +223,10 @@ def create_app(svc: Service) -> Starlette:
         ago=_ago,
         card_id=lambda key: "w-" + re.sub(r"[^A-Za-z0-9_-]", "-", key),
         when=lambda ts: _when(ts, svc.tz),
+        # The local date of a timestamp, as the Library's added_since filter reads it.
+        iso_day=lambda ts: (
+            datetime.datetime.fromtimestamp(ts, svc.tz).date().isoformat()
+        ),
         version=svc.version,
         source_names=SOURCE_NAMES,
         thumb_url=pipeline.thumb_url,
@@ -410,141 +342,50 @@ def create_app(svc: Service) -> Starlette:
             **tv_status(cat),
         )
 
+    def tv_context(cat) -> TvContext:
+        return TvContext(
+            all_items(), cat.library(), cat.collection(),
+            {t.slug: t.name for t in cat.variant_types()}, cat.published_variants(),
+        )  # fmt: skip
+
+    def tv_item(ctx: TvContext, key: str | None) -> dict:
+        """What the TV pages say about an item, and what their buttons act on.
+
+        Brian's photos and portraits are only ever "Your photo" and "Portrait"
+        here: never a filename, a painter or a path.
+        """
+        it = ctx.items.get(key) if key else None
+        if it is None:
+            return {"it": None}
+        root = ctx.items.get(it.root, it)
+        return {
+            "it": it,
+            "w": it.work,
+            "private": {"photo": "Your photo", "portrait": "Portrait"}.get(root.kind),
+            "version": ctx.names.get(it.vtype, it.vtype) if it.vtype else None,
+            "state": item_state(ctx.lib, it),
+            "starred": it.key in ctx.starred,
+        }
+
     async def pool(request: Request):
         cat = svc.catalogue()
-        works = {w.key: w for w in cat.works()}
-        overrides, collection = cat.overrides(), cat.collection()
+        ctx, overrides = tv_context(cat), cat.overrides()
         sidecars = {f: read_sidecar(svc.dest / f) for f in ("full", "matted")}
-        items = [
+        rows = [
             {
-                "p": p,
-                "w": works.get(p.key),
-                "on_tv": p.filename in sidecars.get(p.folder, {}),
-                "state": overrides.get(p.key),
-                "collected": p.key in collection,
+                "f": f,
+                **tv_item(ctx, f.key),
+                "on_tv": f.filename in sidecars.get(f.folder, {}),
+                # Pins are kept on the original; a pin holds its live version too.
+                "pinned": overrides.get(f.root) == "pinned",
             }
-            for p in reversed(cat.published(active=True))
+            for f in reversed(library.live(cat, ctx.items))
         ]
-        return render(request, "pool.html", page="pool", items=items)
-
-    async def catalogue(request: Request):
-        cat = svc.catalogue()
-        q = request.query_params
-        s = svc.settings()
-        prefs, photo_prefs = s.prefs(), s.photo_prefs()
-        shown_kinds = s.shown_kinds()
-        season = current_season(datetime.date.today().month)
-        overrides = cat.overrides()
-        rejected = cat.rejected()
-        live = {p.key for p in cat.published(active=True)}
-        text = (q.get("q") or "").strip().lower()
-        source, kind, status = q.get("source"), q.get("kind"), q.get("status")
-        tags = wanted_tags(q)
-        collection = cat.collection()
-        # /collection is the catalogue limited to Brian's picks, newest first.
-        only_collection = request.url.path == "/collection"
-
-        rows = []
-        counts = dict.fromkeys(STATUSES, 0)
-        works = cat.works()
-        seasonal = seasonal_tags(cat)
-        for w in works:
-            if only_collection and w.key not in collection:
-                continue
-            if source and w.source != source:
-                continue
-            if kind and w.kind != kind:
-                continue
-            versions = seasonal.get(w.key, {})
-            if tags and not set(tags) <= tags_of(w, versions):
-                continue
-            if text and text not in searchable(w):
-                continue
-            plan = pipeline.exclusion(
-                w, photo_prefs if w.kind == "photograph" else prefs
-            )
-            reason = None
-            if overrides.get(w.key) == "banned":
-                st = "banned"
-            elif w.key in live:
-                st = "live"
-            elif overrides.get(w.key) == "pinned":
-                st = "pinned"
-            elif isinstance(plan, str):
-                st, reason = "excluded", plan
-            elif w.key in rejected:
-                st, reason = "rejected", rejected[w.key]
-            elif w.kind == "photograph" and not s.photo_share:
-                st, reason = "excluded", "photography share is 0%"
-            elif w.kind not in shown_kinds or w.source not in s.sources:
-                st, reason = "excluded", "kind or source turned off"
-            else:
-                st = "eligible"
-            counts[st] += 1
-            if status and st != status:
-                continue
-            sc = pipeline.score(w, plan, season) if not isinstance(plan, str) else -99
-            mode = None if isinstance(plan, str) else plan.mode
-            rows.append(
-                {
-                    "w": w,
-                    "status": st,
-                    "reason": reason,
-                    "score": sc,
-                    "mode": mode,
-                    "override": overrides.get(w.key),
-                    "collected": w.key in collection,
-                    "versions": versions,
-                    # Filtering by a seasonal tag shows that version's picture.
-                    "shown_version": next(
-                        (v for t, v in versions.items() if t.lower() in tags), None
-                    ),
-                }
-            )
-        if only_collection:
-            rows.sort(key=lambda r: collection[r["w"].key], reverse=True)
-        else:
-            rows.sort(key=lambda r: r["score"], reverse=True)
-        pages = max(1, math.ceil(len(rows) / PAGE))
-        page = min(max(1, int(q.get("page") or 1)), pages)
-        base = [
-            (k, v) for k, v in q.multi_items() if k not in ("page", *TAG_PARAMS) and v
-        ]
-
-        def url(tags: list[str], page: int = 1) -> str:
-            return (
-                request.url.path
-                + "?"
-                + urlencode(base + [("tag", t) for t in tags] + [("page", page)])
-            )
-
-        return render(
-            request,
-            "catalogue.html",
-            page="collection" if only_collection else "catalogue",
-            in_collection=len(collection),
-            rows=rows[(page - 1) * PAGE : page * PAGE],
-            total=len(rows),
-            counts=counts,
-            statuses=STATUSES,
-            sources=SOURCES,
-            kinds=KINDS,
-            q=q,
-            pageno=page,
-            pages=pages,
-            tags=tags,
-            link=lambda n: url(tags, n),
-            add_tag=lambda t: url(list(dict.fromkeys([*tags, t.lower()]))),
-            drop_tag=lambda t: url([x for x in tags if x != t]),
-            clear_tags=url([]),
-            here=str(request.url.path)
-            + ("?" + request.url.query if request.url.query else ""),
-        )
+        return render(request, "pool.html", page="pool", items=rows)
 
     async def history_page(request: Request):
         cat = svc.catalogue()
-        works = {w.key: w for w in cat.works()}
-        overrides, collection = cat.overrides(), cat.collection()
+        ctx = tv_context(cat)
         published = cat.published()
         # Oldest first, so the last wins; live rows go last, as a swapped-out
         # version shares its replacement's publish time.
@@ -554,8 +395,7 @@ def create_app(svc: Service) -> Starlette:
         live = {p.key for p in published if p.retired_at is None}
         todo = request.query_params.get("todo") == "1"
         by_content = content_index(cat, svc.dest)
-        labels = svc.variant_labels(cat)
-        items, day = [], None
+        rows, day = [], None
         now = time.time()
         for r in cat.shown():
             key = r["key"]
@@ -563,57 +403,46 @@ def create_app(svc: Service) -> Starlette:
             if key is None:
                 # Uploaded after it was first seen: the sidecar knows it now.
                 key = shown_file.key if shown_file else None
-            variant = labels.get(shown_file.filename) if shown_file else None
-            w = works.get(key) if key else None
-            state = overrides.get(key) if key else None
-            collected = key in collection
-            if todo and (w is None or collected or state == "banned"):
+            shown = ctx.live_key(shown_file.filename, key) if shown_file else key
+            about = tv_item(ctx, shown)
+            if todo and (
+                about["it"] is None or about["starred"] or about["state"] == "removed"
+            ):
                 continue
             started = datetime.datetime.fromtimestamp(r["started_at"], svc.tz)
             label = started.strftime("%A %B %-d")
             if label != day:
-                items.append({"day": label})
+                rows.append({"day": label})
                 day = label
             p = latest.get(key)
-            items.append(
+            on_tv = p is not None and p.retired_at is None
+            pics = pictures(about["it"]) if about["it"] else (None, None)
+            rows.append(
                 {
                     "row": r,
-                    "w": w,
-                    "key": key,
-                    "state": state,
-                    "collected": collected,
-                    "variant": variant["type"] if variant else None,
-                    "portrait": bool(key) and key.startswith(library.PORTRAIT),
+                    **about,
                     # None: never published (frame-art didn't put it there).
                     "live": (key in live) if key in latest else None,
-                    "image": f"/thumb/{p.folder}/{p.filename}"
-                    if p and p.retired_at is None
-                    else (pipeline.thumb_url(w) if w else None),
-                    "full": f"/render/{p.folder}/{p.filename}"
-                    if p and p.retired_at is None
-                    else (pipeline.preview_url(w) if w else None),
+                    "image": f"/thumb/{p.folder}/{p.filename}" if on_tv else pics[0],
+                    "full": f"/render/{p.folder}/{p.filename}" if on_tv else pics[1],
                     "started": started.strftime("%-I:%M %p"),
                     "span": _span((r["ended_at"] or now) - r["started_at"]),
                     "current": r["ended_at"] is None,
                 }
             )
-        return render(request, "history.html", page="history", items=items, todo=todo)
+        return render(request, "history.html", page="history", items=rows, todo=todo)
 
-    async def tags_json(request: Request):
-        q = request.query_params
-        source, kind = q.get("source"), q.get("kind")
-        cat = svc.catalogue()
-        collection = cat.collection() if q.get("collection") == "1" else None
-        works = [
-            w
-            for w in cat.works()
-            if (not source or w.source == source)
-            and (not kind or w.kind == kind)
-            and (collection is None or w.key in collection)
-        ]
-        text = (q.get("q") or "").strip().lower()
-        seasonal = {k: list(v) for k, v in seasonal_tags(cat).items()}
-        return JSONResponse(suggest_tags(works, wanted_tags(q), text, seasonal))
+    def moved(target: str):
+        """A 303 to where an old page went, keeping the query string."""
+
+        async def handler(request: Request):
+            query = request.url.query
+            if not query:
+                return RedirectResponse(target, status_code=303)
+            joiner = "&" if "?" in target else "?"
+            return RedirectResponse(f"{target}{joiner}{query}", status_code=303)
+
+        return handler
 
     # -- Library ---------------------------------------------------------------
 
@@ -988,14 +817,12 @@ def create_app(svc: Service) -> Starlette:
         s = svc.settings()
         if request.method == "POST":
             form = await request.form()
-            new = Settings()
-            # Not on this form; edited elsewhere, so carry them over.
-            new.schedules, new.variant_limit = s.schedules, s.variant_limit
+            # Schedules and the versions limit aren't on this form (they live
+            # on /schedule and /studio/versions), so they carry over untouched.
+            new = dataclasses.replace(s)
             try:
                 new.crop = form.get("crop", s.crop)
                 new.pad_style = form.get("pad_style", s.pad_style)
-                new.full_screen_only = form.get("full_screen_only") == "on"
-                new.allow_nudes = form.get("allow_nudes") == "on"
                 new.kinds = form.getlist("kinds")
                 new.sources = form.getlist("sources")
                 new.count = int(form.get("count", s.count))
@@ -1004,10 +831,6 @@ def create_app(svc: Service) -> Starlette:
                 new.paused = form.get("paused") == "on"
                 new.recrawl_days = float(form.get("recrawl_days", s.recrawl_days))
                 new.crawl_limit = int(form.get("crawl_limit", s.crawl_limit))
-                new.photo_share = int(form.get("photo_share", s.photo_share))
-                new.photo_crop = form.get("photo_crop", s.photo_crop)
-                new.choose_from = form.get("choose_from", s.choose_from)
-                new.repeat_days = int(form.get("repeat_days", s.repeat_days))
                 new.slideshow = form.get("slideshow", s.slideshow)
             except ValueError as ex:
                 errors.append(f"not a number: {ex}")
@@ -1027,7 +850,6 @@ def create_app(svc: Service) -> Starlette:
             errors=errors,
             saved=saved,
             crop_labels=CROP_LABELS,
-            choose_from=CHOOSE_FROM,
             slideshow=SLIDESHOW,
             pad_styles=UI_PAD_STYLES,
             art_sources=[x for x in SOURCES if x not in PHOTO_SOURCES],
@@ -1036,7 +858,6 @@ def create_app(svc: Service) -> Starlette:
             keyed=[
                 (k, keys.has_key(k.slug), keys.key_path(k.slug)) for k in keys.SERVICES
             ],
-            fields=[f.name for f in fields(Settings)],
         )
 
     MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -1273,11 +1094,12 @@ def create_app(svc: Service) -> Starlette:
         form = await request.form()
         s, rows, errors = schedule_from_form(form, "")
         if not errors:
-            s = dataclasses.replace(s, id=schedules.new_id())
             current = svc.settings()
-            new = dataclasses.replace(current, schedules=[*current.schedules, s])
+            added = dataclasses.replace(s, id=schedules.new_id())
+            new = dataclasses.replace(current, schedules=[*current.schedules, added])
             errors = new.validate()
         if errors:
+            # The draft keeps no id, so the form still posts as a new schedule.
             return schedule_view(request, errors, status=400, draft=(s, rows))
         svc.save_settings(new)
         return schedule_view(
@@ -1527,7 +1349,7 @@ def create_app(svc: Service) -> Starlette:
     # (a restart mid-paint, say).
     STUCK = 15 * 60
 
-    DONE = {"saved": "Saved to Portraits.", "deleted": "Try deleted."}
+    DONE = {"saved": "Saved to the Library.", "deleted": "Try deleted."}
 
     def waiting_tries() -> set[int]:
         """Tries whose paint job is still queued or running."""
@@ -1685,9 +1507,11 @@ def create_app(svc: Service) -> Starlette:
         if t is None:
             return PlainTextResponse("unknown try", 404)
         try:
-            st.save(t.id)
+            painting = st.save(t.id)
         except ValueError as e:
             return PlainTextResponse(str(e), 400)
+        # A portrait Brian saves is one he wants on the TV.
+        svc.catalogue().set_library([f"{library.PORTRAIT}{painting.id}"], "in")
         return RedirectResponse(f"/studio/{t.photo_id}?done=saved", status_code=303)
 
     async def delete_try(request: Request):
@@ -1704,16 +1528,7 @@ def create_app(svc: Service) -> Starlette:
         (thumbs / "tries" / f"{t.id}.jpg").unlink(missing_ok=True)
         return RedirectResponse(f"/studio/{t.photo_id}?done=deleted", status_code=303)
 
-    # -- Portraits --------------------------------------------------------------
-
-    def portraits_view(request: Request, notice=""):
-        ps = svc.photos()
-        return render(request, "paintings.html", page="portraits",
-                      paintings=svc.studio().paintings(), notice=notice,
-                      photo=lambda pid: ps.get(pid) if pid else None)  # fmt: skip
-
-    async def portraits_page(request: Request):
-        return portraits_view(request)
+    # -- Portraits: browsed in the Library; these serve the pictures -----------
 
     def painting_file(request: Request):
         p = svc.studio().get_painting(request.path_params["id"])
@@ -1731,14 +1546,6 @@ def create_app(svc: Service) -> Starlette:
         if p is None:
             return PlainTextResponse("not found", 404)
         return thumb_of(Path(p.path), thumbs / "paintings" / f"{p.id}.jpg")
-
-    async def remove_painting(request: Request):
-        pid = request.path_params["id"]
-        if not svc.studio().remove_painting(pid):
-            return PlainTextResponse("unknown portrait", 404)
-        svc.submit("portraits")  # takes it off the TV
-        (thumbs / "paintings" / f"{pid}.jpg").unlink(missing_ok=True)
-        return portraits_view(request, notice="Removed from Portraits.")
 
     # -- Studio: painters -------------------------------------------------------
 
@@ -1794,11 +1601,6 @@ def create_app(svc: Service) -> Starlette:
         svc.studio().forget_photo(pid)
         (thumbs / "photos" / f"{pid}.jpg").unlink(missing_ok=True)
         return photos_view(request, notice=f"Removed {p.filename}.")
-
-    async def old_variants_page(request: Request):
-        return RedirectResponse(
-            "/schedule", status_code=303
-        )  # Task 12 redirects it properly
 
     def versions_view(request: Request, errors=(), notice="", status=200):
         cat, s = svc.catalogue(), svc.settings()
@@ -1948,17 +1750,14 @@ def create_app(svc: Service) -> Starlette:
         key = request.path_params["key"]
         form = await request.form()
         state = form.get("state")
-        if state not in ("banned", "pinned", "clear", "collect", "uncollect"):
+        # Ban and collect became Remove from Library and the star (/library/*).
+        if state not in ("pinned", "clear"):
             return PlainTextResponse("bad state", 400)
         cat = svc.catalogue()
-        if not any(w.key == key for w in cat.works()):
+        # A pin outlives its item (a deleted portrait, say), so it can still go.
+        if key not in all_items() and not (state == "clear" and key in cat.overrides()):
             return PlainTextResponse("unknown work", 404)
-        if state in ("collect", "uncollect"):
-            cat.collect(key, state == "collect")
-        else:
-            cat.set_override(key, None if state == "clear" else state)
-        if state == "banned" and key in {p.key for p in cat.published(active=True)}:
-            svc.submit("sync")  # take it off the TV now, not at the next run
+        cat.set_override(key, None if state == "clear" else state)
         return back(request)
 
     async def thumb(request: Request):
@@ -2001,6 +1800,11 @@ def create_app(svc: Service) -> Starlette:
             reverse=True,
         )
         thumb, full = pictures(it)
+        painting = (
+            svc.studio().get_painting(int(key.removeprefix(library.PORTRAIT)))
+            if it.kind == "portrait"
+            else None
+        )
         return render(
             request,
             "work.html",
@@ -2026,6 +1830,11 @@ def create_app(svc: Service) -> Starlette:
             has_versions=bool(versions),
             types=cat.variant_types(),
             photo_id=key.removeprefix(library.PHOTO) if it.kind == "photo" else None,
+            painting=painting,
+            # The photo a portrait was painted from, while it is still here.
+            painted_from=svc.photos().get(painting.photo_id)
+            if painting and painting.photo_id
+            else None,
             file_missing=bool(it.path) and not Path(it.path).is_file(),
         )
 
@@ -2051,7 +1860,15 @@ def create_app(svc: Service) -> Starlette:
         return RedirectResponse("/runs", status_code=303)
 
     async def now_page(request: Request):
-        return render(request, "now.html", page="now", now=svc.now_showing())
+        cat = svc.catalogue()
+        now = svc.now_showing(cat)
+        p = find_content(cat, svc.dest, now["content_id"]) if now["ours"] else None
+        about: dict = {"it": None}
+        if p is not None:
+            # The buttons need the item's key, which now.json leaves out for photos.
+            ctx = tv_context(cat)
+            about = tv_item(ctx, ctx.live_key(p.filename, p.key))
+        return render(request, "now.html", page="now", now=now, about=about)
 
     async def now_json(request: Request):
         return JSONResponse(svc.now_showing())
@@ -2076,10 +1893,13 @@ def create_app(svc: Service) -> Starlette:
             Route("/now.json", now_json),
             Route("/render/{folder}/{name}", rendered),
             Route("/pool", pool),
-            Route("/catalogue", catalogue),
-            Route("/collection", catalogue),
             Route("/history", history_page),
-            Route("/tags.json", tags_json),
+            # Old pages, and where they went.
+            Route("/catalogue", moved("/library?scope=all")),
+            Route("/collection", moved("/library?view=favorites")),
+            Route("/portraits", moved("/library?tag=source%3Astudio")),
+            Route("/variants", moved("/schedule")),
+            Route("/tags.json", moved("/library/tags.json")),
             Route("/library", library_page),
             Route("/library/tags.json", library_tags_json),
             Route("/library/add", library_action(do_add), methods=["POST"]),
@@ -2130,10 +1950,8 @@ def create_app(svc: Service) -> Starlette:
             Route("/studio/tries/{id:int}/thumb", try_thumb),
             Route("/studio/tries/{id:int}/save", save_try, methods=["POST"]),
             Route("/studio/tries/{id:int}/delete", delete_try, methods=["POST"]),
-            Route("/portraits", portraits_page),
             Route("/portraits/{id:int}.jpg", painting_image),
             Route("/portraits/{id:int}/thumb", painting_thumb),
-            Route("/portraits/{id:int}/remove", remove_painting, methods=["POST"]),
             Route("/schedule", schedule_page),
             Route("/schedule/schedules", add_schedule, methods=["POST"]),
             Route("/schedule/schedules/{id}", save_schedule, methods=["POST"]),
@@ -2149,7 +1967,6 @@ def create_app(svc: Service) -> Starlette:
             Route("/studio/painters/{slug}/delete", delete_painter, methods=["POST"]),
             Route("/studio/{photo_id}", studio_page),
             Route("/studio/{photo_id}/paint", studio_paint, methods=["POST"]),
-            Route("/variants", old_variants_page),
             Route("/compare", compare_page),
             Route("/compare/{name}", compare_image),
             Route("/runs", runs_page),

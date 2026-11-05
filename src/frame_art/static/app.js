@@ -1,4 +1,4 @@
-// Collect/pin/ban without a full page load, so the page keeps its scroll position.
+// Star/pin/remove without a full page load, so the page keeps its scroll position.
 // Without JavaScript the forms still work: the redirect lands on the card's anchor.
 // Resolves to the card now on the page (the old one, if the work left the filter).
 async function submitAction(form, submitter) {
@@ -17,7 +17,7 @@ async function submitAction(form, submitter) {
       card.replaceWith(fresh);
       return fresh;
     }
-    // The work no longer matches the page's filter (e.g. banned under "Eligible").
+    // The work no longer matches the page's filter (e.g. removed under "Library").
     card.classList.remove("updating");
     card.classList.add("gone");
     card.querySelector(".actions").textContent = "Updated; hidden by this filter";
@@ -38,14 +38,14 @@ document.addEventListener("submit", (event) => {
   submitAction(form, event.submitter);
 });
 
-// Tag autocomplete on the catalogue and the Library. Without JavaScript the
-// box still works: whatever is typed is submitted as one more tag. The
-// Library's suggestions carry a group (Kind, Source…), shown as headings.
+// Tag autocomplete on the Library. Without JavaScript the box still works:
+// whatever is typed is submitted as one more tag. Suggestions carry a group
+// (Kind, Source…), shown as headings.
 const tagInput = document.getElementById("tag-input");
 if (tagInput) {
   const form = tagInput.form;
   const list = document.getElementById("tag-suggest");
-  const url = tagInput.dataset.suggest || "/tags.json";
+  const url = tagInput.dataset.suggest || "/library/tags.json";
   let items = [];
   let options = []; // the <li>s that can be chosen, in the order shown
   let active = -1;
@@ -118,7 +118,6 @@ if (tagInput) {
 
   const fetchSuggestions = async () => {
     const params = new URLSearchParams({ q: tagInput.value.trim() });
-    if (location.pathname === "/collection") params.set("collection", "1");
     for (const name of ["source", "kind"]) {
       const value = form.elements[name]?.value;
       if (value) params.set(name, value);
@@ -163,7 +162,7 @@ if (tagInput) {
 // A closer look: click a card's picture to see it large; arrows step through
 // the cards, loading the next or previous page into the grid when they run
 // out. Esc or a click on the picture closes it. The card's buttons come along
-// (keys C, P and B), acting on the card behind.
+// (keys S star, P pin, R remove, A add or put back), acting on the card behind.
 const viewer = document.getElementById("viewer");
 if (viewer) {
   const big = viewer.querySelector("img");

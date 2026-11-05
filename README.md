@@ -27,18 +27,56 @@ docker run -p 8740:8740 \
 | `FRAME_ART_MQTT_HOST`, `FRAME_ART_MQTT_PORT` | Broker Home Assistant listens on |
 | `FRAME_ART_PORT` | Web UI port (default 8740) |
 
-The web UI (no authentication; keep it on the LAN) shows the pool, the
-catalogue and a history of what the TV showed. You collect the works you want
-(nightly runs pick from your collection first, or only), ban the ones you
-don't, and pin the ones that should never leave the TV. It also holds the
-settings: crop tolerance, background style, kinds, museums, nudes filter, pool
-size, nightly run time.
+The web UI (no authentication; keep it on the LAN) has these pages:
 
-Seasonal variants are AI-edited versions of your works (a Halloween look, say)
-that take the place of the original on the TV for a season. Define the types and
-the nightly mix on the Seasonal page; it needs an OpenRouter key (see
-`docs/api-keys.md`). The design is in
-`docs/superpowers/specs/2026-10-27-variants-design.md`.
+- **Library**: one place for everything the TV can show: crawled museum
+  works, your own photos, Studio portraits and AI versions of any of them.
+  The TV draws only from works you add to the Library. "All works" shows
+  everything crawled or added; filter by source, kind, search or tags, star
+  favourites, tag works yourself, and add, remove or put back in bulk. A
+  removed work never comes back on its own.
+- **Schedule**: the mix. Each schedule is a yearly date range with slices,
+  each a share of the TV for Library works carrying a set of tags (for
+  example `ai-variant:christmas` 50% from December 1 to 31, or
+  `kind:photograph` 20% all year). What the slices leave is filled from the
+  rest of the Library.
+- **Now**, **On the TV** and **History**: what the TV shows, has live and has
+  shown. Star a work or remove it from the Library from any of them; pin a
+  work on the TV so it is never retired.
+- **Studio**: paint your photos in a painter's style and save them to the
+  Library; **Version styles** holds the AI version types (a Halloween look,
+  say) and how many are made each night. Versions need an OpenRouter key (see
+  `docs/api-keys.md`). Your photos are uploaded or picked from Google Photos
+  on the Your photos page (linked from the Library as "Add photos"). They
+  never leave the LAN: the folder HA uploads from is outside `/config/www`.
+- **Settings**: crop tolerance, background style, kinds to crawl, museums,
+  pool size, works per night, nightly run time.
+
+The old pages redirect: `/catalogue` to All works, `/collection` to
+Favorites, `/portraits` to the Studio portraits in the Library, and
+`/variants` to the Schedule. The design is in
+`docs/superpowers/specs/2026-11-05-library-and-schedule-design.md`.
+
+### Upgrading to the Library (0.12.0)
+
+The first start moves everything over once: your collection, every work that
+has ever been on the TV and every saved portrait go into the Library (banned
+works don't); bans become Removed; the collection becomes stars; pins stay
+pins; existing versions become version works; and old type shares become
+slices. These settings are dropped (an old settings file still loads; the
+keys are ignored):
+
+| Setting | Now |
+|---|---|
+| `choose_from` | gone: the TV draws only from the Library |
+| `photo_share` | becomes a `kind:photograph` slice in Everyday |
+| `photo_crop` | gone: photographs render at the `crop` setting like everything else |
+| `allow_nudes`, `full_screen_only` | Library filters instead of settings |
+| `repeat_days` | gone |
+
+`kinds` stays, but only controls what is crawled ("Kinds to crawl"); it no
+longer filters what is published. `variant_limit` stays. No environment
+variable changed, and Home Assistant needs no change.
 
 Home Assistant learns what to do from an MQTT-discovered `sensor.frame_art` and
 acknowledges on `frame-art/ack`; see `docs/design.md` for the automation.

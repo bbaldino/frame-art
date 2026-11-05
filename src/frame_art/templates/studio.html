@@ -46,8 +46,8 @@
 <ul class="tries">
   {% for pt in paintings %}
   <li class="try-card">
-    <a href="/portraits/{{ pt.id }}.jpg" target="_blank"><img src="/portraits/{{ pt.id }}/thumb" alt="" loading="lazy"></a>
-    <p class="small"><b>{{ pt.painter }}</b> · from try #{{ pt.try_id }} · <a href="/portraits">Portraits</a></p>
+    <a href="/works/portrait:{{ pt.id }}"><img src="/portraits/{{ pt.id }}/thumb" alt="" loading="lazy"></a>
+    <p class="small"><b>{{ pt.painter }}</b> · from try #{{ pt.try_id }} · <a href="/library?tag=source%3Astudio">All portraits in the Library</a></p>
   </li>
   {% endfor %}
 </ul>
@@ -74,7 +74,7 @@
       {% if t.status == "done" %}
       <a class="button" href="/studio/{{ photo.id }}?from={{ t.id }}#paint">Try again from this</a>
       {% if t.id in saved %}<span class="badge">Saved</span>
-      {% else %}<form method="post" action="/studio/tries/{{ t.id }}/save" class="inline-form"><button type="submit" class="primary">Save to Portraits</button></form>{% endif %}
+      {% else %}<form method="post" action="/studio/tries/{{ t.id }}/save" class="inline-form"><button type="submit" class="primary" title="Keep it as a portrait, in the Library so the TV can show it">Save to Library</button></form>{% endif %}
       {% endif %}
       {% if t.id not in saved and (t.status != "painting" or stuck(t)) %}
       <form method="post" action="/studio/tries/{{ t.id }}/delete" class="inline-form"><button type="submit" class="danger">Delete</button></form>

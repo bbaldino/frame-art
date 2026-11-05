@@ -2,6 +2,13 @@
 
 Status: draft for Brian's review. Nothing in Home Assistant or on the TV has been changed.
 
+> **Since 0.12.0 (Library and Schedule):** what goes on the TV is no longer picked by score from
+> the whole catalogue, a collection or a photo share. Brian adds works (museum works, his photos,
+> Studio portraits, AI versions) to the **Library**, and the **Schedule**'s tag slices set the mix;
+> the rest of the Library fills the remainder. Crawling still works as below, and `kinds` only
+> decides what is crawled. The nudes and full-screen-only filters are Library filters, not
+> settings. See `docs/superpowers/specs/2026-11-05-library-and-schedule-design.md`.
+
 ## Facts checked (read-only, 2026-10-25)
 - HA is **Home Assistant Container** (core-2026.9.1) on a Proxmox VM at 192.168.1.73, with config at `/config`.
   That means no add-ons; the fetcher runs as a sibling container or somewhere else.
@@ -80,6 +87,8 @@ and a User-Agent that includes a contact address.
    (strong edge columns), and images with very low entropy.
 7. **Score/select**: weighted by source tier, presence on a seed list, resolution, aspect fit, and Brian's
    taste filters (movements, eras, artists in or out). Later: thumbs up or down via `art_get_current`.
+   *(0.12.0: replaced by the Library. Only works Brian adds can be published; the Schedule's slices,
+   not a score, decide the mix.)*
 
 ## Getting files into `/config/frame_art_pool/`
 
@@ -203,6 +212,7 @@ Source API probes (keyless, all worked):
 ## Decisions (2026-10-25, via hub)
 - It runs as a sibling container on the Proxmox HA host. Deployment details are coordinated with the proxmox agent (homelab-stacks/Komodo).
 - Taste: "good pieces" plus some seasonal art. Highlights come first, and works tagged with the current season get a boost.
+  *(0.12.0: seasonal art is a Schedule slice, such as `ai-variant:halloween` or a subject tag, for a date range.)*
 - Defaults: portraits get the blurred-background pad; the TV pool is about 150 with 7 new per night; written in Python; v1 uses keyless sources only.
 
 ## Post-v1 ideas (from Brian)
@@ -236,6 +246,7 @@ Source API probes (keyless, all worked):
   qualifier). It adds up to +4 to the score. Rijksmuseum crawls notable works first. About 1,000 of 2,500 catalogued works match.
   WDQS rejects generic library User-Agents, so it gets its own descriptive UA.
 - Drawings and prints: `--kinds painting,drawing,print` on crawl, dry-run and publish (default painting only).
+  *(0.12.0: in the web UI `kinds` is "Kinds to crawl"; it no longer filters what is published.)*
 
 ## Brian's answers (2026-10-25)
 - Pad style: **blur** (the default).
@@ -245,10 +256,12 @@ Source API probes (keyless, all worked):
 - Cropping: Brian is torn ("feels wrong to do that to the art", but padding breaks the immersion), so crop tolerance is a
   setting: `--crop native|strict|medium|loose` (crops may cut 2/13/21/27%), plus `--full-screen-only` to skip
   anything needing a pad. `frame-art compare` renders sheets of what each level adds (original | padded | cropped).
+  *(0.12.0: full-screen-only is a Library filter, no longer a setting.)*
 - Nudes: **filtered out by default** (`--allow-nudes` to include). The signals are museum subject terms (AIC subjects,
   Met tags, NGA keywords), Wikidata depicts/genre (nude, nudity, female/male nudity, male nude), and a multilingual title
   match on nudes and classical nude subjects (Venus, Susanna, Danaë, bathers, nymphs...). It is deliberately broad. A
   known miss: an untitled or obliquely titled nude from Cleveland, Rijks or SMK with no Wikidata depicts statement.
+  *(0.12.0: the nudes filter is a Library filter; nothing is published unless Brian adds it to the Library.)*
 - Folder: `/config/frame_art_pool/` (outside `www`) is the one deployed.
 - samsungtv_smart: Brian upgraded it to 8.14.2 himself.
 

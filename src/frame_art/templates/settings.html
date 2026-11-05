@@ -7,41 +7,30 @@
 <form method="post" action="/settings" class="settings">
   <fieldset>
     <legend>Filling the screen</legend>
-    <p class="muted">A work that isn't 16:9 is either cropped to fill the screen or shown whole on a background. The crop level sets how much a crop may cut off; past that the work gets a background. <a href="/compare">Compare the levels</a>.</p>
+    <p class="muted">A work that isn't 16:9 is either cropped to fill the screen or shown whole on a background. The crop level sets how much a crop may cut off; past that the work gets a background. It applies to everything on the TV: museum works, your photos, portraits and versions. <a href="/compare">Compare the levels</a>.</p>
     {% for k, label in crop_labels.items() %}
     <label class="radio"><input type="radio" name="crop" value="{{ k }}" {% if s.crop == k %}checked{% endif %}> {{ label }}</label>
     {% endfor %}
-    <label class="check"><input type="checkbox" name="full_screen_only" {% if s.full_screen_only %}checked{% endif %}> Full screen only: skip works that would need a background</label>
     <label>Background for works that don't fill the screen
       <select name="pad_style">{% for k, label in pad_styles.items() %}<option value="{{ k }}" {% if s.pad_style == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
     </label>
   </fieldset>
 
   <fieldset>
-    <legend>What to show</legend>
+    <legend>What to crawl</legend>
+    <p class="muted">What the crawl fetches into All works. The TV shows only what you add to the <a href="/library">Library</a>, and the <a href="/schedule">Schedule</a> sets its mix.</p>
     <div class="row">
-      <div><div class="label">Kinds of art</div>
+      <div><div class="label">Kinds to crawl</div>
         {% for k in kinds %}<label class="check"><input type="checkbox" name="kinds" value="{{ k }}" {% if k in s.kinds %}checked{% endif %}> {{ k }}s</label>{% endfor %}
       </div>
       <div><div class="label">Museums</div>
         {% for src in art_sources %}<label class="check"><input type="checkbox" name="sources" value="{{ src }}" {% if src in s.sources %}checked{% endif %}> {{ source_names[src] }}</label>{% endfor %}
       </div>
+      <div><div class="label">Photo sources</div>
+        {% for src in photo_sources %}<label class="check"><input type="checkbox" name="sources" value="{{ src }}" {% if src in s.sources %}checked{% endif %}> {{ source_names[src] }}</label>{% endfor %}
+        <p class="muted small">Landscape photographs, crawled whenever a photo source is on.</p>
+      </div>
     </div>
-    <label class="check"><input type="checkbox" name="allow_nudes" {% if s.allow_nudes %}checked{% endif %}> Include nudes <span class="muted">(left out by default)</span></label>
-  </fieldset>
-
-  <fieldset>
-    <legend>Style mix</legend>
-    <p class="muted">The share of each night's new works that are landscape photographs rather than art. If the photo catalogue runs short, art fills the gap. Photos from enabled sources are catalogued either way, so you can browse, pin and ban them first.</p>
-    <div class="row">
-      <label>Photography <input type="number" name="photo_share" min="0" max="100" step="5" value="{{ s.photo_share }}"> %</label>
-      <label>Crop level for photos
-        <select name="photo_crop">{% for k, label in crop_labels.items() %}<option value="{{ k }}" {% if s.photo_crop == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
-      </label>
-    </div>
-    <div class="label">Photo sources</div>
-    {% for src in photo_sources %}<label class="check"><input type="checkbox" name="sources" value="{{ src }}" {% if src in s.sources %}checked{% endif %}> {{ source_names[src] }}</label>{% endfor %}
-    <p class="muted small">Most photos are 3:2, which needs a 16% crop to fill the screen, so photos default to the medium level.</p>
   </fieldset>
 
   <fieldset>
@@ -61,9 +50,6 @@
 
   <fieldset>
     <legend>The pool on the TV</legend>
-    <label>Choose new works from
-      <select name="choose_from">{% for k, label in choose_from.items() %}<option value="{{ k }}" {% if s.choose_from == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
-    </label>
     <div class="row">
       <label>New works per night <input type="number" name="count" min="0" max="25" value="{{ s.count }}"></label>
       <label>Works kept on the TV <input type="number" name="pool" min="1" max="1000" value="{{ s.pool }}"></label>
@@ -71,14 +57,11 @@
     <label>On the TV, change the picture every
       <select name="slideshow">{% for k, label in slideshow.items() %}<option value="{{ k }}" {% if s.slideshow == k %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
     </label>
-    <div class="row">
-      <label>Collection works can return after <input type="number" name="repeat_days" min="1" max="3650" value="{{ s.repeat_days }}"> days</label>
-    </div>
-    <p class="muted small">Each night adds the new works and retires the oldest beyond the pool size. With "collection only", a night adds nothing once every collection work is on the TV or waiting to return. Other retired works can come back after a year. The picture interval takes effect the next time you press "Show frame-art's works" or "Back to Samsung art" on the overview.</p>
+    <p class="muted small">Each night retires the works on the TV longest and adds new ones from the Library, as the <a href="/schedule">Schedule</a> mixes them. The picture interval takes effect the next time you press "Show frame-art's works" or "Back to Samsung art" on the overview.</p>
   </fieldset>
 
   <fieldset>
-    <legend>Schedule</legend>
+    <legend>Nightly run</legend>
     <div class="row">
       <label>Nightly run at <input type="time" name="run_at" value="{{ s.run_at }}"></label>
       <label>Recrawl museums every <input type="number" name="recrawl_days" min="1" max="365" step="1" value="{{ s.recrawl_days | int }}"> days</label>

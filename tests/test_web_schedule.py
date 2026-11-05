@@ -254,3 +254,13 @@ def test_old_variants_page_goes_to_schedule(sched):
     r = c.get("/variants", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/schedule"
     assert c.post("/variants/limit").status_code in (404, 405)
+
+
+def test_new_schedule_refused_by_settings_stays_new(sched, monkeypatch):
+    c, svc, _ = sched
+    bad = dataclasses.replace(svc.settings(), count=99)  # invalid on its own
+    monkeypatch.setattr(svc, "settings", lambda: bad)
+    r = c.post("/schedule/schedules", data=form("Spring"))
+    assert r.status_code == 400
+    # The form still posts as a new schedule, not to an id that doesn't exist.
+    assert 'action="/schedule/schedules"' in r.text

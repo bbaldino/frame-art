@@ -345,3 +345,45 @@ def test_work_page_for_photo_portrait_version(lib):
     assert svc.studio().get_painting(painting.id) is None
     assert c.get(f"/works/portrait:{painting.id}").status_code == 404
     assert c.post("/works/nga:1/delete").status_code == 400
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ("/catalogue", "/library?scope=all"),
+        ("/catalogue?q=hay&tag=subject%3Afield",
+         "/library?scope=all&q=hay&tag=subject%3Afield"),
+        ("/collection", "/library?view=favorites"),
+        ("/collection?source=nga", "/library?view=favorites&source=nga"),
+        ("/portraits", "/library?tag=source%3Astudio"),
+        ("/portraits?scope=all", "/library?tag=source%3Astudio&scope=all"),
+        ("/variants", "/schedule"),
+        ("/variants?edit=x", "/schedule?edit=x"),
+        ("/tags.json?q=win", "/library/tags.json?q=win"),
+    ],
+)  # fmt: skip
+def test_redirects_keep_query(lib, old, new):
+    c, *_ = lib
+    r = c.get(old, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == new
+
+
+def test_old_routes_are_gone(lib):
+    c, _, _, painting, _ = lib
+    for path in ("/variants/limit", f"/portraits/{painting.id}/remove"):
+        assert c.post(path).status_code in (404, 405), path
+
+
+def test_photos_page_links_to_the_library(lib):
+    c, *_ = lib
+    assert 'href="/library?tag=source%3Aphotos"' in c.get("/photos").text
+    assert 'href="/photos"' in c.get("/library").text
+
+
+def test_nav(lib):
+    c, *_ = lib
+    nav = c.get("/library").text.split("<nav>")[1].split("</nav>")[0]
+    labels = re.findall(r">([^<]+)</a>", nav)
+    assert labels == ["Overview", "Now", "On the TV", "Library", "Schedule", "Studio",
+                      "History", "Compare crops", "Settings", "Runs"]  # fmt: skip
+    assert 'href="/library" aria-current="page"' in nav

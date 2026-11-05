@@ -7,7 +7,7 @@
 {% if w %}<p class="who">{{ w.artist or "Unknown artist" }}{% if w.date %}, {{ w.date }}{% endif %}</p>
 {% elif original %}<p class="who">A version of <a href="/works/{{ original.key }}">{{ original.title }}</a></p>
 {% elif photo_id %}<p class="who">Your photo · <a href="/studio/{{ photo_id }}">Open in Studio</a></p>
-{% elif it.kind == "portrait" %}<p class="who">Studio portrait</p>{% endif %}
+{% elif it.kind == "portrait" %}<p class="who">Studio portrait{% if painting and painting.cost %} · ${{ '%.2f' | format(painting.cost) }}{% endif %} · {% if painted_from %}<a href="/studio/{{ painted_from.id }}">Open its photo in Studio</a>{% else %}<span class="muted">photo deleted</span>{% endif %}</p>{% endif %}
 
 {% if file_missing %}<p class="muted">The file has been deleted.</p>
 {% elif full %}<a href="{{ full }}" target="_blank" rel="noopener"><img class="work-original" referrerpolicy="no-referrer" src="{{ full }}" alt="{{ it.title }}" style="max-width: 100%; max-height: 70vh"></a>{% endif %}

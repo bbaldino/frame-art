@@ -13,7 +13,7 @@
 <header class="top">
   <a class="brand" href="/">Frame Art</a>
   <nav>
-    {% for key, label in [("overview", "Overview"), ("now", "Now showing"), ("history", "History"), ("pool", "On the TV"), ("collection", "Collection"), ("photos", "Your photos"), ("studio", "Studio"), ("portraits", "Portraits"), ("schedule", "Schedule"), ("catalogue", "Catalogue"), ("compare", "Compare crops"), ("settings", "Settings"), ("runs", "Runs")] %}
+    {% for key, label in [("overview", "Overview"), ("now", "Now"), ("pool", "On the TV"), ("library", "Library"), ("schedule", "Schedule"), ("studio", "Studio"), ("history", "History"), ("compare", "Compare crops"), ("settings", "Settings"), ("runs", "Runs")] %}
     <a href="{{ '/' if key == 'overview' else '/' ~ key }}" {% if page == key %}aria-current="page"{% endif %}>{{ label }}</a>
     {% endfor %}
   </nav>
@@ -25,7 +25,7 @@
   <img alt="">
   <div class="viewer-bar">
     <div class="viewer-caption"></div>
-    <div class="viewer-actions" title="Keys: C collect, P pin, B ban"></div>
+    <div class="viewer-actions" title="Keys: S star, P pin, R remove, A add"></div>
     <div class="viewer-nav">
       <button type="button" data-step="-1" aria-label="Previous">←</button>
       <button type="button" data-step="1" aria-label="Next">→</button>
