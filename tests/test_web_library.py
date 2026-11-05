@@ -175,11 +175,62 @@ def test_bulk_all_on_all_works_needs_a_filter(lib):
     r = c.post("/library/add?scope=all", data={"all": "1"}, follow_redirects=False)
     assert r.status_code == 400 and "filter" in r.text
     assert svc.catalogue().library() == {}
-    # Within the Library, "all" is already a choice of works.
+    # A view alone is no filter: "Not in Library" is nearly every work.
+    r = c.post(
+        "/library/add?scope=all&view=out", data={"all": "1"}, follow_redirects=False
+    )
+    assert r.status_code == 400 and svc.catalogue().library() == {}
+    page = c.get("/library?scope=all&view=out").text
+    assert "Add all" not in page and "Filter first" in page
+    # Within the Library, "all" is already a choice of works to add or tag.
     svc.catalogue().set_library(["nga:1"], "in")
-    r = c.post("/library/remove", data={"all": "1"}, follow_redirects=False)
+    r = c.post("/library/tag", data={"all": "1", "tag": "x"}, follow_redirects=False)
     assert r.status_code == 303
-    assert svc.catalogue().library()["nga:1"][0] == "removed"
+
+
+def test_bulk_remove_and_put_back_need_a_filter(lib):
+    c, svc, *_ = lib
+    cat = svc.catalogue()
+    cat.set_library(["nga:1", "nga:2"], "in")
+    for url in ("/library/remove", "/library/remove?scope=all&view=in"):
+        r = c.post(url, data={"all": "1"}, follow_redirects=False)
+        assert r.status_code == 400 and "filter" in r.text
+    assert {k: st for k, (st, _) in cat.library().items()} == {
+        "nga:1": "in",
+        "nga:2": "in",
+    }
+    page = c.get("/library").text
+    assert "Remove all" not in page and "Filter first" in page
+    assert "Remove all" in c.get("/library?source=nga").text
+    r = c.post("/library/remove?source=nga&tag=subject:field", data={"all": "1"},
+               follow_redirects=False)  # fmt: skip
+    assert r.status_code == 303 and cat.library()["nga:1"][0] == "removed"
+    assert cat.library()["nga:2"][0] == "in"
+    r = c.post("/library/put-back?scope=all&view=removed", data={"all": "1"},
+               follow_redirects=False)  # fmt: skip
+    assert r.status_code == 400
+    assert "Put back all" not in c.get("/library?scope=all&view=removed").text
+    r = c.post("/library/put-back?scope=all&view=removed&source=nga", data={"all": "1"},
+               follow_redirects=False)  # fmt: skip
+    assert r.status_code == 303 and cat.library()["nga:1"][0] == "in"
+
+
+def test_version_remove_and_deletes_sync_when_live(lib):
+    c, svc, _, painting, v = lib
+    cat = svc.catalogue()
+    cat.set_library(["nga:1", f"portrait:{painting.id}"], "in")
+    cat.record_publish("haystacks--christmas-1.jpg", "full", "nga:1", 0, variant=v.id)
+    c.post(f"/versions/{v.id}/remove")
+    assert [j.kind for j in svc.queued()] == ["sync"]
+    svc._queued.clear()
+    c.post(f"/versions/{v.id}/put-back")
+    assert svc.queued() == []
+    c.post(f"/works/variant:{v.id}/delete")
+    assert [j.kind for j in svc.queued()] == ["sync"]
+    svc._queued.clear()
+    cat.record_publish("portrait-1.jpg", "full", f"portrait:{painting.id}", 0)
+    c.post(f"/works/portrait:{painting.id}/delete")
+    assert [j.kind for j in svc.queued()] == ["sync"]
 
 
 def test_star_does_not_add(lib):

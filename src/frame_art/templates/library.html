@@ -49,15 +49,16 @@
   {% set act = "?" ~ filter_qs ~ ("&" if filter_qs else "") ~ "next=" ~ (here | urlencode) %}
   <div class="buttons">
     {% if f.view != "in" %}<form method="post" action="/library/add{{ act }}"><input type="hidden" name="all" value="1"><button class="primary">Add all {{ total }}</button></form>{% endif %}
-    {% if f.view == "removed" %}<form method="post" action="/library/put-back{{ act }}"><input type="hidden" name="all" value="1"><button>Put back all {{ total }}</button></form>{% endif %}
-    {% if f.view != "removed" %}<form method="post" action="/library/remove{{ act }}"><input type="hidden" name="all" value="1"><input type="hidden" name="with_versions" value="0"><button class="danger">Remove all {{ total }}</button> <label class="small"><input type="checkbox" name="with_versions" value="1" checked> and their versions</label></form>{% endif %}
+    {% if f.view == "removed" and bulk_filtered %}<form method="post" action="/library/put-back{{ act }}"><input type="hidden" name="all" value="1"><button>Put back all {{ total }}</button></form>{% endif %}
+    {% if f.view != "removed" and bulk_filtered %}<form method="post" action="/library/remove{{ act }}"><input type="hidden" name="all" value="1"><input type="hidden" name="with_versions" value="0"><button class="danger">Remove all {{ total }}</button> <label class="small"><input type="checkbox" name="with_versions" value="1" checked> and their versions</label></form>{% endif %}
   </div>
   <div class="buttons">
     <form method="post" action="/library/tag{{ act }}"><input type="hidden" name="all" value="1"><input type="text" name="tag" required placeholder="Your tag" aria-label="Your tag"> <button name="on" value="1">Tag all</button> <button name="on" value="0">Untag all</button></form>
     {% if types %}<form method="post" action="/library/make-versions{{ act }}"><input type="hidden" name="all" value="1"><select name="type" aria-label="Version style">{% for t in types %}<option value="{{ t.slug }}">{{ t.name }}</option>{% endfor %}</select> <button>Make versions…</button> <span class="muted small">about ${{ '%.2f' | format(estimate) }} each; you confirm first</span></form>{% endif %}
   </div>
+  {% if not bulk_filtered %}<p class="muted small">Filter first (search, source, kind, tag or date) to remove or put back all at once.</p>{% endif %}
   {% else %}
-  <p class="muted small">Filter first: an action on all works would add every crawled work.</p>
+  <p class="muted small">Filter first (search, source, kind, tag or date): an action on all of these would add or tag nearly every crawled work.</p>
   {% endif %}
 </details>
 {% endif %}

@@ -195,8 +195,10 @@ TAG_GROUPS = {
     "ai-variant": "AI variant", "yours": "Yours",
 }  # fmt: skip
 OWN_SOURCES = {"photos": "Your photos", "studio": "Studio"}
-# Query parameters that narrow "All works"; one must be set to act on all of it.
-NARROWING = ("q", "source", "kind", "tag", "added_since", "view")
+# Query parameters that narrow a view; one must be set to act on all of "All
+# works", or to remove or put back all of anything. A view alone doesn't count:
+# "Not in Library" is nearly every crawled work, and "Library" is the whole TV.
+NARROWING = ("q", "source", "kind", "tag", "added_since")
 LIBRARY_TAGS = 20  # suggestions per tags.json answer
 
 
@@ -647,9 +649,11 @@ def create_app(svc: Service) -> Starlette:
             "full_screen": q.get("full_screen") == "1",
         }  # fmt: skip
 
-    def narrowed(q) -> bool:
-        """Whether an "all" action is a choice: "All works" needs a filter."""
-        return q.get("scope") != "all" or any(q.get(k) for k in NARROWING)
+    def narrowed(q, emptying: bool = False) -> bool:
+        """Whether an "all" action is a choice: "All works" needs a filter, and
+        so does removing or putting back everything a view shows."""
+        filtered = any(q.get(k) for k in NARROWING)
+        return filtered or (not emptying and q.get("scope") != "all")
 
     def lib_rows(cat, items: dict[str, library.Item], f: dict) -> list[dict]:
         """The items ``f`` matches, sorted, each version after its original."""
@@ -793,6 +797,7 @@ def create_app(svc: Service) -> Starlette:
             here=here_of(request),
             filter_qs=filter_qs,
             bulk_ok=narrowed(q),
+            bulk_filtered=narrowed(q, emptying=True),
             sources=[*SOURCES, *OWN_SOURCES],
             source_label=lambda x: OWN_SOURCES.get(x) or SOURCE_NAMES.get(x, x),
             kinds=[*KINDS, *photos.KINDS],
@@ -854,11 +859,13 @@ def create_app(svc: Service) -> Starlette:
         if before - eligible_live(cat, items if items is not None else all_items()):
             svc.submit("sync")
 
-    def chosen(request: Request, form, cat, items) -> list[str] | PlainTextResponse:
+    def chosen(
+        request: Request, form, cat, items, emptying: bool
+    ) -> list[str] | PlainTextResponse:
         """The keys a Library action is for: the ticked ones, or the whole filter."""
         if form.get("all") == "1":
             q = request.query_params
-            if not narrowed(q):
+            if not narrowed(q, emptying):
                 return PlainTextResponse(
                     "Choose a filter first: that would act on every work.", 400
                 )
@@ -868,13 +875,13 @@ def create_app(svc: Service) -> Starlette:
             return PlainTextResponse("no works chosen", 400)
         return keys
 
-    def library_action(fn):
+    def library_action(fn, emptying: bool = False):
         """Wrap ``fn(cat, items, keys, form)`` as a Library POST: pick the keys,
         act, sync when something live dropped out, then go back."""
 
         async def handler(request: Request):
             cat, form, items = svc.catalogue(), await request.form(), all_items()
-            keys = chosen(request, form, cat, items)
+            keys = chosen(request, form, cat, items, emptying)
             if isinstance(keys, PlainTextResponse):
                 return keys
             before = eligible_live(cat, items)
@@ -1978,8 +1985,16 @@ def create_app(svc: Service) -> Starlette:
             Route("/library", library_page),
             Route("/library/tags.json", library_tags_json),
             Route("/library/add", library_action(do_add), methods=["POST"]),
-            Route("/library/remove", library_action(do_remove), methods=["POST"]),
-            Route("/library/put-back", library_action(do_put_back), methods=["POST"]),
+            Route(
+                "/library/remove",
+                library_action(do_remove, emptying=True),
+                methods=["POST"],
+            ),
+            Route(
+                "/library/put-back",
+                library_action(do_put_back, emptying=True),
+                methods=["POST"],
+            ),
             Route("/library/star", library_action(do_star), methods=["POST"]),
             Route("/library/tag", library_action(do_tag), methods=["POST"]),
             Route(
