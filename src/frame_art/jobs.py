@@ -5,20 +5,29 @@ from __future__ import annotations
 import datetime
 import itertools
 import logging
+import random
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import imaging, keys, notability, pipeline, portraits, report, variants
+from . import (
+    imaging,
+    keys,
+    library,
+    notability,
+    pipeline,
+    report,
+    schedules,
+    variants,
+)
 from .catalogue import Catalogue
-from .classify import current_season
 from .net import Http
-from .publish import Publisher, PublishResult, diversify
+from .photos import PhotoStore
+from .publish import Publisher, PublishResult
 from .settings import Settings
 from .sources import all_sources
 from .studio import StudioStore
-
-PORTRAITS = "portraits"  # replaced in Task 8
 
 log = logging.getLogger("frame_art")
 
@@ -70,33 +79,38 @@ def last_crawl(cat: Catalogue) -> float:
     )
 
 
-def publisher(cat: Catalogue, http: Http, dest: Path, s: Settings) -> Publisher:
+def publisher(
+    cat: Catalogue, http: Http | None, data: Path, dest: Path, s: Settings
+) -> Publisher:
+    db = data / "frame-art.db"
     return Publisher(
         cat,
         http,
         dest,
         s.pad_style,
-        tuple(s.kinds),
-        s.prefs(),
-        s.photo_share,
-        s.photo_prefs(),
-        s.choose_from,
-        s.repeat_days,
+        s.crop,
+        PhotoStore(db, data / "photos"),
+        StudioStore(db, data / "studio"),
+        data,
     )
 
 
 def publish(
     cat: Catalogue,
     http: Http,
+    data: Path,
     dest: Path,
     settings: Settings,
-    season: str | None = None,
     seed: int | None = None,
+    today: datetime.date | None = None,
 ) -> PublishResult:
-    season = season or current_season(datetime.date.today().month)
-    seed = seed if seed is not None else datetime.date.today().toordinal()
-    result = publisher(cat, http, dest, settings).run(
-        settings.count, settings.pool, season, seed
+    today = today or datetime.date.today()
+    seed = seed if seed is not None else today.toordinal()
+    result = publisher(cat, http, data, dest, settings).run(
+        schedules.layers(settings.schedules, today),
+        settings.pool,
+        settings.count,
+        seed,
     )
     live = len(cat.published(active=True))
     log.info(
@@ -104,28 +118,6 @@ def publish(
         len(result.added), len(result.retired), len(result.failed), live, dest,
     )  # fmt: skip
     return result
-
-
-def sync_portraits(
-    cat: Catalogue,
-    store: StudioStore,
-    dest: Path,
-    settings: Settings,
-    today: datetime.date,
-    rotate: bool = False,
-) -> dict:
-    """Put today's Portraits share of saved paintings on the TV.
-
-    The nightly run rotates (see portraits.sync); a hand run only catches up.
-    """
-    shares = settings.today_shares(today, set(variants.share_types(cat)))
-    want = portraits.target(
-        shares.get(PORTRAITS, 0),
-        len(cat.published(active=True)),
-        len(store.paintings()),
-    )
-    pub = publisher(cat, None, dest, settings)
-    return portraits.sync(cat, store, pub, dest, want, today.toordinal(), rotate)
 
 
 def nightly(
@@ -148,7 +140,7 @@ def nightly(
                 settings.sources,
             )
         )
-    res = publish(cat, http, dest, settings)
+    res = publish(cat, http, data, dest, settings, today=today)
     summary.update(
         added=res.added,
         retired=res.retired,
@@ -157,26 +149,21 @@ def nightly(
     )
     studio = StudioStore(data / "frame-art.db", data / "studio")
     summary["tries_pruned"] = studio.prune(time.time())
-    try:
-        summary["portraits"] = sync_portraits(
-            cat, studio, dest, settings, today, rotate=True
-        )
-    except Exception as ex:  # noqa: BLE001 - keep what publishing did
-        log.exception("portraits: the portraits step failed")
-        summary["portraits"] = {"error": type(ex).__name__, "live": 0}
-        summary["failed"] = [*summary["failed"], "portraits"]
-    summary["failed"] = [*summary["failed"], *summary["portraits"].get("failed", [])]
+    # replaced in Task 8: portraits are published with everything else now.
+    portraits = sum(
+        1 for p in cat.published(active=True) if p.key.startswith(library.PORTRAIT)
+    )
     try:
         # Edits take a minute or more each, so their client waits longer.
         v = variants.nightly(
             cat,
             Http(timeout=300),
             data,
-            publisher(cat, http, dest, settings),
+            publisher(cat, http, data, dest, settings),
             settings,
             keys.read_key("openrouter"),
             today,
-            portraits=summary["portraits"]["live"],
+            portraits=portraits,
         )
     except Exception as ex:  # noqa: BLE001 - keep what publishing did
         log.exception("variants: the seasonal step failed")
@@ -187,6 +174,27 @@ def nightly(
     # A failed edit or swap makes the run partial, like a failed publish.
     summary["failed"] = [*summary["failed"], *v["gen_failed"], *v["swap_failed"]]
     return summary
+
+
+def _interleave(cands: list[pipeline.Candidate], seed: int) -> list[pipeline.Candidate]:
+    """Order by score with some jitter, then interleave sources round-robin.
+
+    Photos all come from a few sites where a handful of photographers supply
+    most of the pictures, so they interleave by photographer instead.
+    """
+    rng = random.Random(seed)
+    by_source: dict[str, list[tuple[float, pipeline.Candidate]]] = defaultdict(list)
+    for c in cands:
+        group = c.work.artist if c.work.kind == "photograph" else c.work.source
+        by_source[group or ""].append((c.score + rng.uniform(0, 2), c))
+    queues = [sorted(v, key=lambda t: t[0], reverse=True) for v in by_source.values()]
+    rng.shuffle(queues)
+    out: list[pipeline.Candidate] = []
+    while any(queues):
+        for q in queues:
+            if q:
+                out.append(q.pop(0)[1])
+    return out
 
 
 def compare(
@@ -202,7 +210,7 @@ def compare(
         imaging.CROP_LEVELS["loose"], allow_nudes=settings.allow_nudes
     )
     cands, _ = pipeline.filter_works(works, None, loose)
-    order = diversify(cands, seed=0)
+    order = _interleave(cands, seed=0)
 
     def band_rows(lo: float, hi: float) -> list[report.Comparison]:
         rows = []

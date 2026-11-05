@@ -136,7 +136,7 @@ def live(cat: Catalogue, all_items: dict[str, Item]) -> list[Live]:
     """Active published files, oldest first, version files mapped to their variant."""
     files = cat.published_variants()
     out = []
-    for p in cat.published(active=True, portraits=True):
+    for p in cat.published(active=True):
         key = f"{VARIANT}{files[p.filename]}" if p.filename in files else p.key
         out.append(Live(p.filename, p.folder, key, p.key, p.published_at))
     return out

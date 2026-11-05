@@ -1,11 +1,16 @@
-"""Keep a rotating pool of rendered works in the folder Home Assistant uploads from.
+"""Keep the TV's share of the Library rendered in the folder Home Assistant uploads from.
+
+One publisher handles every kind of item: museum works, Brian's photos, saved
+Studio portraits and AI versions of any of them. ``mix.plan`` decides what
+retires and what fills each slice; the publisher carries that out, keeping an
+original and its versions off the TV together.
 
 Layout under the destination folder:
 
     full/      3840x2160 renders; HA uploads these with no matte
     matted/    native-shape works (pad style "matte"); HA uploads with a matte
     .staging/  renders in progress, renamed into place when complete
-    _meta/index.json   filename -> title/artist/date/source for what's live
+    _meta/index.json   filename -> title/artist/date/source for live museum works
 
 What HA has to do next (uploads, and TV content ids to delete) goes to HA over
 MQTT rather than into this folder, which HA serves publicly at /local/.
@@ -20,21 +25,22 @@ would upload a duplicate.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import logging
-import random
 import time
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
 
-from . import imaging, pipeline
-from .catalogue import Catalogue, Published, Variant
+from . import imaging, library, mix, pipeline
+from .catalogue import NON_MUSEUM, Catalogue, Published
+from .library import Item, Live
 from .model import Work
 from .net import Http
+from .photos import PhotoStore
+from .schedules import Schedule
+from .studio import StudioStore
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +48,6 @@ SIDECAR = ".samsungtv_upload.json"
 FOLDERS = ("full", "matted")
 # Keep listing retired ids this long, so a night HA misses doesn't leak art onto the TV.
 RETIRE_WINDOW = 14 * 24 * 3600
-# A retired work may come back after this long (collection works: repeat_days).
-COOLDOWN = 365 * 24 * 3600
-DAY = 24 * 3600
 
 
 @dataclass
@@ -52,6 +55,10 @@ class PublishResult:
     added: list[str]
     retired: list[str]
     failed: list[str]
+
+
+class Duplicate(Exception):
+    """The picture looks like one already on the TV; skipped, not rejected."""
 
 
 def _write_json(path: Path, data) -> None:
@@ -70,40 +77,39 @@ def read_sidecar(folder: Path) -> dict[str, str]:
     return {name: e["content_id"] for name, e in data.items() if e.get("content_id")}
 
 
-def diversify(cands: list[pipeline.Candidate], seed: int) -> list[pipeline.Candidate]:
-    """Order by score with some jitter, then interleave sources round-robin.
+def last_shown(cat: Catalogue) -> dict[str, float]:
+    """Item key -> when it last left the TV (or went up, if still live).
 
-    Photos all come from a few sites where a handful of photographers supply
-    most of the pictures, so they interleave by photographer instead.
+    Version files are published under their original's key, so they are read
+    back as ``variant:<id>``.
     """
-    rng = random.Random(seed)
-    by_source: dict[str, list[tuple[float, pipeline.Candidate]]] = defaultdict(list)
-    for c in cands:
-        group = c.work.artist if c.work.kind == "photograph" else c.work.source
-        by_source[group or ""].append((c.score + rng.uniform(0, 2), c))
-    queues = [sorted(v, key=lambda t: t[0], reverse=True) for v in by_source.values()]
-    rng.shuffle(queues)
-    out: list[pipeline.Candidate] = []
-    while any(queues):
-        for q in queues:
-            if q:
-                out.append(q.pop(0)[1])
+    files = cat.published_variants()
+    out: dict[str, float] = {}
+    for p in cat.published():
+        key = f"{library.VARIANT}{files[p.filename]}" if p.filename in files else p.key
+        out[key] = max(out.get(key, 0.0), p.retired_at or p.published_at)
     return out
+
+
+def stand_in(item: Item) -> Work:
+    """A Work for a photo or portrait (or a version of one), for rendering."""
+    source, source_id = item.root.split(":", 1)
+    kind = "photograph" if item.root.startswith(library.PHOTO) else "painting"
+    return Work(source=source, source_id=source_id, title=item.title, artist=None,
+                date=None, kind=kind, license="own")  # fmt: skip
 
 
 class Publisher:
     def __init__(
         self,
         cat: Catalogue,
-        http: Http,
+        http: Http | None,
         dest: Path,
         pad_style: str,
-        kinds: tuple[str, ...] = ("painting",),
-        prefs: pipeline.Prefs = pipeline.DEFAULT_PREFS,
-        photo_share: int = 0,
-        photo_prefs: pipeline.Prefs = pipeline.DEFAULT_PREFS,
-        choose_from: str = "auto",
-        repeat_days: int = 60,
+        crop: str,
+        photos: PhotoStore,
+        studio: StudioStore,
+        data: Path,
     ):
         if pad_style not in imaging.PAD_STYLES:
             raise ValueError(f"pad style must be one of {imaging.PAD_STYLES}")
@@ -111,134 +117,218 @@ class Publisher:
         self.http = http
         self.dest = dest
         self.pad_style = pad_style
-        self.kinds = kinds
-        self.prefs = prefs
-        # Percent of each run's new works that are photographs.
-        self.photo_share = photo_share
-        self.photo_prefs = photo_prefs
-        # "collection_first", "collection" (only) or "auto"; see settings.
-        self.choose_from = choose_from
-        self.repeat = repeat_days * DAY
+        self.crop = crop
+        self.photos = photos
+        self.studio = studio
+        self.data = data
+        # What's in the Library is Brian's choice, so nothing is left out for
+        # its shape or its subject: only the crop level applies.
+        self.prefs = pipeline.Prefs(
+            imaging.CROP_LEVELS[crop], full_screen_only=False, allow_nudes=True
+        )
 
     def run(
-        self, count: int, pool: int, season: str | None, seed: int
+        self,
+        layers: list[Schedule],
+        pool: int,
+        count: int,
+        seed: int,
+        now: float | None = None,
     ) -> PublishResult:
-        added, failed = self._add(count, season, seed)
-        retired = self._retire(pool)
+        """Retire and fill per today's slices (``layers``, narrowest first)."""
+        now = time.time() if now is None else now
+        all_items = library.items(self.cat, self.photos, self.studio)
+        ok = library.eligible(self.cat, all_items)
+        live = library.live(self.cat, all_items)
+        pinned = self._pins(live)
+        favorites = set(self.cat.collection())
+        plan = mix.plan(layers, ok, live, pool, count, pinned, favorites,
+                        last_shown(self.cat), now, seed)  # fmt: skip
+        rows = {p.filename: p for p in self.cat.published(active=True)}
+        retired = self._retire_files([rows[f] for f in plan.retire if f in rows])
+        gone = set(plan.retire)
+        live = [f for f in live if f.filename not in gone]
+        added, failed = self._fill(plan, ok, live, pinned, rows, retired)
         self._write_meta()
         return PublishResult(added, retired, failed)
 
+    def _pins(self, live: list[Live]) -> set[str]:
+        """Pinned keys; a pinned work live as one of its versions pins that version."""
+        pins = {k for k, s in self.cat.overrides().items() if s == "pinned"}
+        return pins | {f.key for f in live if f.root in pins}
+
+    def _fill(
+        self,
+        plan: mix.Plan,
+        ok: list[Item],
+        live: list[Live],
+        pinned: set[str],
+        rows: dict[str, Published],
+        retired: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Publish from each slice's waiting items until it reaches its target.
+
+        A root (an original and its versions) is live at most once. A version
+        whose original is live (not pinned, not put up in this run) replaces
+        it; the original's slice is refilled when its turn comes. Retirements
+        are appended to ``retired``.
+        """
+        by_key = {it.key: it for it in ok}
+        named = plan.slices[:-1]
+
+        def slice_of(key: str) -> int | None:
+            it = by_key.get(key)
+            return None if it is None else mix.member(it, named)
+
+        here = [0] * len(plan.slices)
+        for f in live:
+            if (i := slice_of(f.key)) is not None:
+                here[i] += 1
+        showing = {f.root: f for f in live}
+        fresh: set[str] = set()  # roots put up in this run
+        tried: set[str] = set()
+        added: list[str] = []
+        failed: list[str] = []
+        # A replaced original can leave an earlier slice short, so sweep again
+        # until a pass adds nothing.
+        progress = True
+        while progress:
+            progress = False
+            for i, keys in enumerate(plan.fill):
+                for key in keys:
+                    if here[i] >= plan.targets[i]:
+                        break
+                    if key in tried:
+                        continue
+                    item = by_key[key]
+                    cur = showing.get(item.root)
+                    if cur is not None and not (
+                        item.kind == "version"
+                        and cur.key == item.root
+                        and cur.key not in pinned
+                        and item.root not in fresh
+                    ):
+                        continue
+                    tried.add(key)
+                    try:
+                        out = self.publish_item(item)
+                    except (pipeline.Rejected, Duplicate) as ex:
+                        log.info("%s: skipped: %s", key, ex)
+                        continue
+                    except Exception as ex:  # noqa: BLE001 - one bad image must not stop the run
+                        log.warning("%s: render failed: %s: %s",
+                                    key, type(ex).__name__, ex)  # fmt: skip
+                        failed.append(key)
+                        continue
+                    added.append(out)
+                    here[i] += 1
+                    progress = True
+                    if cur is not None:
+                        retired += self._retire_files([rows[cur.filename]])
+                        if (j := slice_of(cur.key)) is not None:
+                            here[j] -= 1
+                    folder, filename = out.split("/", 1)
+                    showing[item.root] = Live(filename, folder, key, item.root, 0.0)
+                    fresh.add(item.root)
+        return added, failed
+
     def sync(self) -> list[str]:
-        """Apply bans to the live pool now, without adding anything."""
-        retired = self._retire(pool=None)
+        """Retire live files that are no longer eligible, now; adds nothing."""
+        all_items = library.items(self.cat, self.photos, self.studio)
+        ok = {it.key for it in library.eligible(self.cat, all_items)}
+        doomed = {
+            f.filename for f in library.live(self.cat, all_items) if f.key not in ok
+        }
+        retired = self._retire_files(
+            [p for p in self.cat.published(active=True) if p.filename in doomed]
+        )
         self._write_meta()
         return retired
 
-    def _add(
-        self, count: int, season: str | None, seed: int
-    ) -> tuple[list[str], list[str]]:
-        now = time.time()
-        history = self.cat.published()
-        collection = self.cat.collection()
+    def publish_item(self, item: Item) -> str:
+        """Render ``item`` into the upload folders; returns ``"<folder>/<filename>"``.
 
-        def cooling(p: Published) -> bool:
-            wait = self.repeat if p.key in collection else COOLDOWN
-            return p.retired_at is None or now - p.retired_at < wait
-
-        blocked = {p.key for p in history if cooling(p)}
-        blocked |= self.cat.rejected_keys()
-        overrides = self.cat.overrides()
-        blocked |= {k for k, s in overrides.items() if s == "banned"}
-        # A pin overrides the cooldown, but not a work already live.
-        live_keys = {p.key for p in history if p.retired_at is None}
-        blocked -= {k for k, s in overrides.items() if s == "pinned"} - live_keys
-        self._live_hashes = [p.phash for p in history if p.retired_at is None]
-        works = self.cat.works()
-        if self.choose_from == "collection":
-            works = [w for w in works if w.key in collection]
-
-        def first(c: pipeline.Candidate) -> tuple[bool, bool]:
-            """Pinned works, then (unless automatic) the collection."""
-            key = c.work.key
-            return (
-                overrides.get(key) != "pinned",
-                self.choose_from == "auto" or key not in collection,
-            )
-
-        def candidates(kinds, prefs) -> list[pipeline.Candidate]:
-            pool = [w for w in works if w.kind in kinds]
-            cands, _ = pipeline.filter_works(pool, season, prefs)
-            cands = diversify([c for c in cands if c.work.key not in blocked], seed)
-            cands.sort(key=first)  # stable: keeps the diversified order within
-            return cands
-
-        added: list[str] = []
-        failed: list[str] = []
-        photos = candidates(("photograph",), self.photo_prefs)
-        self._take(photos, round(count * self.photo_share / 100), added, failed)
-        # Art fills the rest, including any photos the catalogue couldn't supply...
-        art_kinds = tuple(k for k in self.kinds if k != "photograph")
-        if len(added) < count and art_kinds:
-            self._take(candidates(art_kinds, self.prefs), count, added, failed)
-        # ...and photos fill in for art that ran out (a small collection, say).
-        if len(added) < count and self.photo_share:
-            self._take(photos, count, added, failed)
-        return added, failed
-
-    def _take(
-        self,
-        cands: list[pipeline.Candidate],
-        upto: int,
-        added: list[str],
-        failed: list[str],
-    ) -> None:
-        """Render candidates in order until ``added`` holds ``upto`` works.
-
-        Candidates are consumed from the list, so it can be resumed later.
+        Raises ``pipeline.Rejected`` (recorded, so it isn't tried again),
+        ``Duplicate``, or whatever downloading or rendering raised.
         """
-        while cands and len(added) < upto:
-            cand = cands.pop(0)
-            try:
-                out = pipeline.render(self.http, cand, self.pad_style)
-            except pipeline.Rejected as ex:
-                log.info("%s: skipped for good: %s", cand.work.key, ex)
-                self.cat.record_reject(cand.work.key, str(ex))
-                continue
-            except pipeline.NotFullScreen as ex:
-                log.info("%s: skipped: %s", cand.work.key, ex)
-                continue
-            except Exception as ex:  # noqa: BLE001 - one bad image must not stop the run
-                log.warning("%s: render failed: %s", cand.work.key, ex)
-                failed.append(cand.work.key)
-                continue
-            if any(
-                imaging.hamming(out.phash, h) <= pipeline.PHASH_DISTANCE
-                for h in self._live_hashes
-            ):
-                log.info(
-                    "%s: looks like a work already in the pool; skipping", cand.work.key
-                )
-                continue
-            folder = pipeline.folder_for(out.plan, self.pad_style)
-            path = self.dest / folder / pipeline.filename(cand.work)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            pipeline.write_atomic(out.image, path, self.dest / ".staging")
-            self.cat.record_publish(path.name, folder, cand.work.key, out.phash)
-            if out.colors:
-                self.cat.set_palette(cand.work.key, out.colors)
-            self._live_hashes.append(out.phash)
-            added.append(f"{folder}/{path.name}")
-            log.info("published %s/%s", folder, path.name)
+        if item.kind == "museum":
+            return self._publish_museum(item)
+        try:
+            im = library.source_image(item, self.http, self.data, self.crop)  # type: ignore[arg-type]
+            work = item.work or stand_in(item)
+            museum = item.work is not None
+            # HA uploads only full/, so Brian's own pictures are padded to the
+            # panel even when the pad style is "matte" (R5).
+            style = self.pad_style if museum or self.pad_style != "matte" else "blur"
+            out = pipeline.render_image(work, im, self.prefs, style)
+        except pipeline.Rejected as ex:
+            self.cat.record_reject(item.key, str(ex))
+            raise
+        folder = pipeline.folder_for(out.plan, self.pad_style) if museum else "full"
+        stem = (
+            Path(pipeline.filename(work)).stem
+            if museum
+            else item.root.replace(":", "-", 1)
+        )
+        if item.kind != "version":
+            path = self._write(out.image, folder, f"{stem}.jpg")
+            self.cat.record_publish(path.name, folder, item.key, out.phash)
+        else:
+            v = self.cat.variant(item.variant_id)  # type: ignore[arg-type]
+            n = v.n if v else item.variant_id
+            path = self._write(out.image, folder, f"{stem}--{item.vtype}-{n}.jpg")
+            # Published under its original's key, with the original's picture
+            # hash where known, so the duplicate check still recognises it.
+            self.cat.record_publish(path.name, folder, item.root,
+                                    self._root_hash(item.root, out.phash),
+                                    variant=item.variant_id)  # fmt: skip
+        log.info("published %s as %s/%s", item.key, folder, path.name)
+        return f"{folder}/{path.name}"
 
-    def _retire(self, pool: int | None) -> list[str]:
-        """Retire banned works, then the oldest unpinned ones beyond ``pool``."""
-        overrides = self.cat.overrides()
-        live = self.cat.published(active=True)
-        banned = [p for p in live if overrides.get(p.key) == "banned"]
-        rest = [p for p in live if p not in banned and overrides.get(p.key) != "pinned"]
-        excess = 0 if pool is None else len(live) - len(banned) - pool
-        doomed = banned + rest[: max(0, excess)]  # oldest first
-        return self._retire_files(doomed)
+    def _publish_museum(self, item: Item) -> str:
+        w = item.work
+        assert w is not None
+        plan = pipeline.exclusion(w, self.prefs)
+        if isinstance(plan, str):
+            self.cat.record_reject(item.key, plan)
+            raise pipeline.Rejected(plan)
+        try:
+            cand = pipeline.Candidate(w, plan, 0.0, self.prefs)
+            out = pipeline.render(self.http, cand, self.pad_style)
+        except pipeline.Rejected as ex:
+            self.cat.record_reject(item.key, str(ex))
+            raise
+        live = [
+            p.phash
+            for p in self.cat.published(active=True)
+            if not p.key.startswith(NON_MUSEUM)
+        ]
+        if any(imaging.hamming(out.phash, h) <= pipeline.PHASH_DISTANCE for h in live):
+            raise Duplicate("looks like a work already on the TV")
+        folder = pipeline.folder_for(out.plan, self.pad_style)
+        path = self._write(out.image, folder, pipeline.filename(w))
+        self.cat.record_publish(path.name, folder, item.key, out.phash)
+        if out.colors:
+            self.cat.set_palette(item.key, out.colors)
+        log.info("published %s/%s", folder, path.name)
+        return f"{folder}/{path.name}"
+
+    def _root_hash(self, root: str, default: int) -> int:
+        """The picture hash the original was last published with, else ``default``."""
+        versions = self.cat.published_variants()
+        prior = [
+            p.phash
+            for p in self.cat.published()
+            if p.key == root and p.filename not in versions
+        ]
+        return prior[-1] if prior else default
+
+    def _write(self, im: Image.Image, folder: str, name: str) -> Path:
+        """Save under a filename never published before, so HA uploads it as new."""
+        path = self.dest / folder / self.cat.unused_filename(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pipeline.write_atomic(im, path, self.dest / ".staging")
+        return path
 
     def _retire_files(self, doomed: list[Published]) -> list[str]:
         """Delete these live files and note the TV ids HA must delete."""
@@ -259,47 +349,8 @@ class Publisher:
             )
         return retired
 
-    def prefs_for(self, w: Work) -> pipeline.Prefs:
-        return self.photo_prefs if w.kind == "photograph" else self.prefs
-
-    def swap(self, p: Published, im: Image.Image, variant: Variant | None) -> str:
-        """Replace live file ``p`` with ``im`` (a variant, or None for the original).
-
-        The new file gets a name never published before, so HA uploads it as new
-        art, and the old one is retired like any other. Unlike adding a work,
-        there is no duplicate-picture check, and no full-screen-only gate: it is
-        the same work, already live.
-        """
-        w = find_work(self.cat, p.key)
-        if w is None:
-            raise LookupError(f"{p.key} is not in the catalogue")
-        name = pipeline.filename(w)
-        if variant is not None:
-            name = f"{Path(name).stem}--{variant.type}-{variant.n}.jpg"
-        prefs = dataclasses.replace(self.prefs_for(w), full_screen_only=False)
-        out = pipeline.render_image(w, im, prefs, self.pad_style)
-        folder = pipeline.folder_for(out.plan, self.pad_style)
-        path = self.dest / folder / self.cat.unused_filename(name)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pipeline.write_atomic(out.image, path, self.dest / ".staging")
-        # A variant keeps the original's hash, so the duplicate check still
-        # recognises the painting while its Halloween take is live.
-        phash = out.phash if variant is None else p.phash
-        # It keeps the original's publish time too, so the work keeps its age
-        # (retirement order, newest-first ordering).
-        self.cat.record_publish(
-            path.name,
-            folder,
-            p.key,
-            phash,
-            variant=variant.id if variant else None,
-            published_at=p.published_at,
-        )
-        self._retire_files([p])
-        log.info("swapped %s/%s for %s/%s", p.folder, p.filename, folder, path.name)
-        return f"{folder}/{path.name}"
-
     def _write_meta(self) -> None:
+        """The public index lists museum works only: photos never leave the LAN."""
         works = {w.key: w for w in self.cat.works()}
         index = {}
         for p in self.cat.published(active=True):
@@ -321,7 +372,7 @@ class Publisher:
 def pending(cat: Catalogue, dest: Path) -> dict:
     """What HA still has to do: live files not yet uploaded, TV ids to delete."""
     sidecars = {f: read_sidecar(dest / f) for f in FOLDERS}
-    live = cat.published(active=True, portraits=True)
+    live = cat.published(active=True)
     to_upload = [
         f"{p.folder}/{p.filename}"
         for p in live
@@ -330,7 +381,7 @@ def pending(cat: Catalogue, dest: Path) -> dict:
     cutoff = time.time() - RETIRE_WINDOW
     deleted = cat.deleted_ids()
     retire = []
-    for p in cat.published(active=False, portraits=True):
+    for p in cat.published(active=False):
         if not p.retired_at or p.retired_at < cutoff:
             continue
         content_id = p.content_id or sidecars.get(p.folder, {}).get(p.filename)
@@ -354,7 +405,7 @@ def content_index(cat: Catalogue, dest: Path) -> dict[str, Published]:
     """
     sidecars = {f: read_sidecar(dest / f) for f in FOLDERS}
     index: dict[str, Published] = {}
-    for p in cat.published(portraits=True):
+    for p in cat.published():
         for cid in (p.content_id, sidecars.get(p.folder, {}).get(p.filename)):
             if cid:
                 index.setdefault(cid, p)

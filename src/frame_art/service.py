@@ -26,8 +26,8 @@ from . import (
     imaging,
     jobs,
     keys,
+    library,
     photo_kind,
-    portraits,
     providers,
     studio,
     variants,
@@ -272,19 +272,23 @@ class Service:
                 s.sources,
             )
         if kind == "publish":
-            res = jobs.publish(cat, http, self.dest, s)
+            res = jobs.publish(cat, http, self.data, self.dest, s, today=self.today())
             return {"added": res.added, "retired": res.retired, "failed": res.failed}
         if kind == "compare":
             sheets = jobs.compare(cat, http, self.compare_dir, s)
             return {"sheets": [p.name for p in sheets]}
         if kind == "sync":
-            return {"retired": jobs.publisher(cat, http, self.dest, s).sync()}
+            return {
+                "retired": jobs.publisher(cat, http, self.data, self.dest, s).sync()
+            }
         if kind == "portraits":
-            return jobs.sync_portraits(cat, self.studio(), self.dest, s, self.today())
+            # replaced in Task 8: a removed painting goes when it is no longer eligible.
+            pub = jobs.publisher(cat, http, self.data, self.dest, s)
+            return {"retired": pub.sync()}
         if kind == "generate":
             return self._generate(cat, s, **job.args)
         if kind == "versions":
-            pub = jobs.publisher(cat, http, self.dest, s)
+            pub = jobs.publisher(cat, http, self.data, self.dest, s)
             return variants.apply_versions(
                 cat, http, self.data, pub, keys=set(job.args["keys"])
             )
@@ -343,7 +347,7 @@ class Service:
         """Make a ``type`` variant of each work, by hand (outside the nightly limit)."""
         http = Http(timeout=300)  # edits take a minute or more each
         provider = _image_provider(http)
-        pub = jobs.publisher(cat, http, self.dest, s)
+        pub = jobs.publisher(cat, http, self.data, self.dest, s)
         live = {p.key for p in cat.published(active=True)}
         today = s.today_shares(self.today(), {t.slug for t in cat.variant_types()})
         generated: list[str] = []
@@ -555,7 +559,7 @@ class Service:
             "ours": False,
         }
         p = find_content(cat, self.dest, cid) if cid else None
-        if p is not None and portraits.is_portrait(p.key):
+        if p is not None and p.key.startswith(library.PORTRAIT):
             # A saved Studio painting: nothing about it beyond what it is.
             info.update(ours=True, kind="portrait", title="Portrait",
                         file=f"{p.folder}/{p.filename}")  # fmt: skip

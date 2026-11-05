@@ -121,7 +121,7 @@ def cmd_compare(args, cat: Catalogue, http: Http) -> None:
 
 
 def cmd_publish(args, cat: Catalogue, http: Http) -> None:
-    jobs.publish(cat, http, args.dest, _settings(args), args.season, args.seed)
+    jobs.publish(cat, http, args.data, args.dest, _settings(args), args.seed)
 
 
 def cmd_nightly(args, cat: Catalogue, http: Http) -> None:

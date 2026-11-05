@@ -41,9 +41,9 @@ from . import (
     google_photos,
     imaging,
     keys,
+    library,
     photos,
     pipeline,
-    portraits,
     schedules,
     studio,
     variants,
@@ -462,7 +462,7 @@ def create_app(svc: Service) -> Starlette:
         cat = svc.catalogue()
         works = {w.key: w for w in cat.works()}
         overrides, collection = cat.overrides(), cat.collection()
-        published = cat.published(portraits=True)
+        published = cat.published()
         # Oldest first, so the last wins; live rows go last, as a swapped-out
         # version shares its replacement's publish time.
         latest = {
@@ -500,7 +500,7 @@ def create_app(svc: Service) -> Starlette:
                     "state": state,
                     "collected": collected,
                     "variant": variant["type"] if variant else None,
-                    "portrait": bool(key) and portraits.is_portrait(key),
+                    "portrait": bool(key) and key.startswith(library.PORTRAIT),
                     # None: never published (frame-art didn't put it there).
                     "live": (key in live) if key in latest else None,
                     "image": f"/thumb/{p.folder}/{p.filename}"
