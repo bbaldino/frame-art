@@ -100,7 +100,8 @@ def test_full_screen_only_drops_padded_works():
     assert rep.rejected["not full screen at this crop level"] == 1
 
 
-def test_nudes_are_filtered_unless_allowed():
+def test_nudes_are_not_filtered():
+    # Only works Brian adds to the Library are published, so subject is his call.
     works = [
         work(source_id="1", title="Venus and Adonis"),
         work(source_id="2", title="Woman with a Parrot", tags=["nude"]),
@@ -108,10 +109,7 @@ def test_nudes_are_filtered_unless_allowed():
         work(source_id="4", title="The Harvesters"),
     ]
     cands, rep = pipeline.filter_works(works, None)
-    assert [c.work.source_id for c in cands] == ["4"]
-    assert rep.rejected["nude"] == 3
-    cands, _ = pipeline.filter_works(works, None, pipeline.Prefs(allow_nudes=True))
-    assert len(cands) == 4
+    assert len(cands) == 4 and "nude" not in rep.rejected
 
 
 def test_nude_title_needs_whole_words():

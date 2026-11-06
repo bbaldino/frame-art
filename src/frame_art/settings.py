@@ -51,9 +51,7 @@ class Settings:
     variant_limit: int = 10  # AI edits made per nightly run
 
     def prefs(self) -> pipeline.Prefs:
-        return pipeline.Prefs(
-            imaging.CROP_LEVELS[self.crop], full_screen_only=False, allow_nudes=True
-        )
+        return pipeline.Prefs(imaging.CROP_LEVELS[self.crop], full_screen_only=False)
 
     def crawl_kinds(self) -> tuple[str, ...]:
         """Art kinds, plus photographs whenever a photo source is enabled.

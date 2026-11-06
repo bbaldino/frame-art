@@ -6,8 +6,8 @@ Status: draft for Brian's review. Nothing in Home Assistant or on the TV has bee
 > the whole catalogue, a collection or a photo share. Brian adds works (museum works, his photos,
 > Studio portraits, AI versions) to the **Library**, and the **Schedule**'s tag slices set the mix;
 > the rest of the Library fills the remainder. Crawling still works as below, and `kinds` only
-> decides what is crawled. The nudes and full-screen-only filters are Library filters, not
-> settings. See `docs/superpowers/specs/2026-11-05-library-and-schedule-design.md`.
+> decides what is crawled. The full-screen-only filter is a Library filter, not a
+> setting. See `docs/superpowers/specs/2026-11-05-library-and-schedule-design.md`.
 
 ## Facts checked (read-only, 2026-10-25)
 - HA is **Home Assistant Container** (core-2026.9.1) on a Proxmox VM at 192.168.1.73, with config at `/config`.
@@ -261,7 +261,8 @@ Source API probes (keyless, all worked):
   Met tags, NGA keywords), Wikidata depicts/genre (nude, nudity, female/male nudity, male nude), and a multilingual title
   match on nudes and classical nude subjects (Venus, Susanna, Danaë, bathers, nymphs...). It is deliberately broad. A
   known miss: an untitled or obliquely titled nude from Cleveland, Rijks or SMK with no Wikidata depicts statement.
-  *(0.12.0: the nudes filter is a Library filter; nothing is published unless Brian adds it to the Library.)*
+  *(0.12.0: no longer applied. Nothing is published unless Brian adds it to the Library, so subject is his
+  call. Crawls still tag nudes, which nothing reads now.)*
 - Folder: `/config/frame_art_pool/` (outside `www`) is the one deployed.
 - samsungtv_smart: Brian upgraded it to 8.14.2 himself.
 

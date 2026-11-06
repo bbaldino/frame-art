@@ -214,9 +214,7 @@ def source_image(item: Item, http: Http, data: Path, crop: str) -> Image.Image:
     """The full-size source for any item, ready to be fitted to the screen."""
     if item.kind == "museum":
         assert item.work is not None
-        prefs = pipeline.Prefs(
-            imaging.CROP_LEVELS[crop], full_screen_only=False, allow_nudes=True
-        )
+        prefs = pipeline.Prefs(imaging.CROP_LEVELS[crop], full_screen_only=False)
         return load_source(http, data, item.work, prefs)
     assert item.path is not None
     if item.kind == "photo":

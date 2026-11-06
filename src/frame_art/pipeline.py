@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from . import classify, imaging
+from . import imaging
 from .model import Work
 from .net import Http
 
@@ -32,8 +32,6 @@ class Prefs:
     max_crop: float = imaging.CROP_LEVELS["strict"]
     # Skip anything that would need a pad rather than crop.
     full_screen_only: bool = False
-    # Nudes (museum subject tags, Wikidata, or the title) are left out unless allowed.
-    allow_nudes: bool = False
 
 
 DEFAULT_PREFS = Prefs()
@@ -100,8 +98,6 @@ def exclusion(w: Work, prefs: Prefs = DEFAULT_PREFS) -> str | imaging.Plan:
         return "no pixel size"
     if not (w.iiif or w.image_url):
         return "no image url"
-    if not prefs.allow_nudes and ("nude" in w.tags or classify.nude_title(w.title)):
-        return "nude"
     if TONDO.search(w.title or ""):
         return "round (tondo)"
     if not imaging.AR_MIN <= w.width / w.height <= imaging.AR_MAX:

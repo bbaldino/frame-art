@@ -36,7 +36,6 @@
   </select>
   <label class="small">Added since <input type="date" name="added_since" value="{{ q.get('added_since', '') }}"></label>
   <label class="small"><input type="checkbox" name="versions" value="1" {% if f.versions %}checked{% endif %}> Show versions</label>
-  <label class="small"><input type="checkbox" name="nudes" value="hide" {% if f.hide_nudes %}checked{% endif %}> Hide nudes</label>
   <label class="small"><input type="checkbox" name="full_screen" value="1" {% if f.full_screen %}checked{% endif %}> Full screen only</label>
   <button>Filter</button>
 </form>

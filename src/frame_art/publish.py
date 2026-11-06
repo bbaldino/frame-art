@@ -128,10 +128,8 @@ class Publisher:
         self.studio = studio
         self.data = data
         # What's in the Library is Brian's choice, so nothing is left out for
-        # its shape or its subject: only the crop level applies.
-        self.prefs = pipeline.Prefs(
-            imaging.CROP_LEVELS[crop], full_screen_only=False, allow_nudes=True
-        )
+        # its shape: only the crop level applies.
+        self.prefs = pipeline.Prefs(imaging.CROP_LEVELS[crop], full_screen_only=False)
 
     def run(
         self,

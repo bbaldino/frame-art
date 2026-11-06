@@ -489,7 +489,6 @@ def create_app(svc: Service) -> Starlette:
             "sort": q.get("sort") if q.get("sort") in SORTS else "added",
             "since": since,
             "versions": q.get("versions") == "1",
-            "hide_nudes": q.get("nudes") == "hide",
             "full_screen": q.get("full_screen") == "1",
         }  # fmt: skip
 
@@ -505,7 +504,7 @@ def create_app(svc: Service) -> Starlette:
         lib, starred, rejected = cat.library(), cat.collection(), cat.rejected()
         live = {x.key for x in library.live(cat, items)}
         max_crop = imaging.CROP_LEVELS[s.crop]
-        strict = pipeline.Prefs(max_crop, f["full_screen"], not f["hide_nudes"])
+        strict = pipeline.Prefs(max_crop, f["full_screen"])
         versions = f["versions"] or any(t.startswith("ai-variant:") for t in f["tags"])
         counts = Counter(it.root for it in items.values() if it.kind == "version")
         rows = []
@@ -526,12 +525,13 @@ def create_app(svc: Service) -> Starlette:
                 continue
             if f["text"] and f["text"] not in item_text(it):
                 continue
-            # Today's Settings filters, as the publisher used to apply them.
-            if it.work is not None and (f["hide_nudes"] or f["full_screen"]):
+            # The old full-screen-only setting, as the publisher used to apply it.
+            if it.work is not None and f["full_screen"]:
                 why = pipeline.exclusion(it.work, strict)
-                if why == "nude" or (f["full_screen"] and why in (
-                    "not full screen at this crop level", "too tall or too wide"
-                )):  # fmt: skip
+                if why in (
+                    "not full screen at this crop level",
+                    "too tall or too wide",
+                ):
                     continue
             if f["scope"] == "library" and st == "in" and it.key in lib:
                 at, label = lib[it.key][1], "in Library since"

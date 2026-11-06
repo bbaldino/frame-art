@@ -79,7 +79,7 @@ def test_dropped_settings_are_ignored(tmp_path):
 
 def test_prefs_are_fixed():
     assert Settings(crop="loose").prefs() == pipeline.Prefs(
-        imaging.CROP_LEVELS["loose"], full_screen_only=False, allow_nudes=True
+        imaging.CROP_LEVELS["loose"], full_screen_only=False
     )
 
 

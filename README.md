@@ -71,7 +71,8 @@ keys are ignored):
 | `choose_from` | gone: the TV draws only from the Library |
 | `photo_share` | becomes a `kind:photograph` slice in Everyday |
 | `photo_crop` | gone: photographs render at the `crop` setting like everything else |
-| `allow_nudes`, `full_screen_only` | Library filters instead of settings |
+| `allow_nudes` | gone: nothing is published unless you add it to the Library |
+| `full_screen_only` | a Library filter instead of a setting |
 | `repeat_days` | gone |
 
 `kinds` stays, but only controls what is crawled ("Kinds to crawl"); it no
