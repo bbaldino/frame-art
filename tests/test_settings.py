@@ -44,6 +44,26 @@ def test_photo_share_joins_an_existing_everyday(tmp_path):
     ]
 
 
+def test_photo_share_survives_a_renamed_everyday_keeping_its_id(tmp_path):
+    # The first Everyday, renamed and re-dated, still carries the fixed id.
+    sched = {
+        "id": "everyday",
+        "name": "Halloween",
+        "start": "10-01",
+        "end": "10-31",
+        "shares": {"halloween": 30},
+    }
+    s = load(tmp_path, {"photo_share": 75, "schedules": [sched]})
+    assert [x.name for x in s.schedules] == ["Halloween", "Everyday"]
+    every = s.schedules[1]
+    assert every.id == "everyday-photos"
+    assert [(sl.tags, sl.share) for sl in every.slices] == [(["kind:photograph"], 75)]
+    assert (
+        load(tmp_path, {"photo_share": 75, "schedules": [sched]}).schedules[1].id
+        == every.id
+    )
+
+
 def test_photo_share_not_added_again_once_slices_exist(tmp_path):
     sched = {
         "id": "everyday",

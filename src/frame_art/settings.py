@@ -168,7 +168,11 @@ class Settings:
             None,
         )
         if every is None:
-            new = replace(schedules.everyday([photo]), id="everyday")
+            # A fixed id, as for the old mix; that one may already hold
+            # "everyday" under another name.
+            taken = {x.id for x in self.schedules}
+            sid = "everyday" if "everyday" not in taken else "everyday-photos"
+            new = replace(schedules.everyday([photo]), id=sid)
             scheds = [*self.schedules, new]
         else:
             scheds = [
