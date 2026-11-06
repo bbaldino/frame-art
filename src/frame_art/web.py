@@ -7,9 +7,11 @@ thumbnail, loaded by the browser.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import datetime
 import hashlib
+import io
 import logging
 import math
 import re
@@ -17,10 +19,12 @@ import secrets
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
+import httpx
 import uvicorn
 from PIL import Image
 from starlette.applications import Starlette
@@ -31,6 +35,7 @@ from starlette.responses import (
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
+    Response,
 )
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
@@ -216,7 +221,7 @@ def _span(seconds: float) -> str:
     return f"{h}h {m}m" if h < 24 else f"{h // 24}d {h % 24}h"
 
 
-def create_app(svc: Service) -> Starlette:
+def create_app(svc: Service, http: Http | None = None) -> Starlette:
     templates = Jinja2Templates(directory=HERE / "templates")
     env = templates.env
     env.globals.update(
@@ -584,8 +589,13 @@ def create_app(svc: Service) -> Starlette:
                 f"/variant-file/{it.variant_id}?thumb=1",
                 f"/variant-file/{it.variant_id}",
             )
-        t = pipeline.thumb_url(it.work)
-        return t, pipeline.preview_url(it.work) or t
+        # Works' pictures come through work_image, not straight from the
+        # museum: Wikimedia rate-limits a page of hotlinked thumbnails, and the
+        # server can pace its requests, cache the result and say what failed.
+        if not pipeline.thumb_url(it.work):
+            return None, None
+        key = quote(it.key, safe=":")
+        return f"/work-image/thumb/{key}", f"/work-image/preview/{key}"
 
     def here_of(request: Request) -> str:
         return request.url.path + ("?" + request.url.query if request.url.query else "")
@@ -1790,6 +1800,65 @@ def create_app(svc: Service) -> Starlette:
         out = cached_thumb(src, thumbs / folder / name)
         return FileResponse(out, headers={"Cache-Control": "max-age=86400"})
 
+    # One client for every work_image request, so its per-host pacing holds
+    # across a page of thumbnails.
+    image_http = http or Http(timeout=20)
+    # Its own few threads: a page of thumbnails waiting on a museum's pacing
+    # must not take the threads that serve pages.
+    image_pool = ThreadPoolExecutor(4, thread_name_prefix="work-image")
+    # (work key, size) -> when its picture last failed; retried after an hour.
+    image_failed: dict[tuple[str, str], float] = {}
+
+    def fetch_work_image(key: str, size: str) -> Path | tuple[bytes, str] | None:
+        """The cached thumbnail's path, or a preview's bytes and media type."""
+        out = thumbs / "works" / f"{hashlib.sha1(key.encode()).hexdigest()}.jpg"
+        if size == "thumb" and out.exists():
+            return out
+        if time.time() - image_failed.get((key, size), 0) < 3600:
+            return None
+        w = svc.catalogue().work(key)
+        url = w and (
+            pipeline.thumb_url(w) if size == "thumb" else pipeline.preview_url(w)
+        )
+        if not url:
+            return None
+        try:
+            data = image_http.get_bytes(url, retries=1)
+            with Image.open(io.BytesIO(data)) as im:
+                if size == "preview":
+                    im.verify()
+                    return data, Image.MIME.get(im.format or "", "image/jpeg")
+                im = im.convert("RGB")
+                im.thumbnail((400, 400), Image.LANCZOS)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                tmp = out.with_suffix(f".{threading.get_ident()}.tmp")
+                im.save(tmp, "JPEG", quality=85)
+                tmp.replace(out)
+            return out
+        except Exception as ex:  # an HTTP error, a timeout or not an image
+            log.info("no picture for %s from %s: %s", key, url, ex)
+            # Remember only answers that won't change soon. A 403 or 429 (the
+            # Met and Wikimedia under load), a 5xx or a timeout is tried again
+            # on the next request.
+            status = getattr(getattr(ex, "response", None), "status_code", None)
+            if status in (404, 410) or not isinstance(ex, httpx.HTTPError):
+                image_failed[(key, size)] = time.time()
+            return None
+
+    async def work_image(request: Request):
+        """A museum work's thumbnail (cached) or preview, served from here."""
+        size, key = request.path_params["size"], request.path_params["key"]
+        if size not in ("thumb", "preview"):
+            return PlainTextResponse("not found", 404)
+        loop = asyncio.get_running_loop()
+        got = await loop.run_in_executor(image_pool, fetch_work_image, key, size)
+        headers = {"Cache-Control": "max-age=86400"}
+        if isinstance(got, Path):
+            return FileResponse(got, media_type="image/jpeg", headers=headers)
+        if got is not None:
+            return Response(got[0], media_type=got[1], headers=headers)
+        return PlainTextResponse("not found", 404)
+
     async def variant_file(request: Request):
         """A variant's JPEG, found by id so the request never names a path."""
         v = svc.catalogue().variant(request.path_params["id"])
@@ -2002,6 +2071,7 @@ def create_app(svc: Service) -> Starlette:
             Route("/works/{key:path}/delete", delete_item, methods=["POST"]),
             Route("/works/{key:path}", work_page),  # last: it matches any key
             Route("/variant-file/{id:int}", variant_file),
+            Route("/work-image/{size}/{key:path}", work_image),
             Route("/thumb/{folder}/{name}", thumb),
             Route("/healthz", healthz),
             Mount("/static", StaticFiles(directory=HERE / "static"), name="static"),

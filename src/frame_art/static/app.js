@@ -333,3 +333,23 @@ if (tvPanel()) {
   });
   if (tvPanel().hasAttribute("data-live")) timer = setTimeout(refresh, 2000);
 }
+
+// A work whose museum no longer serves its picture shows "No preview", not a
+// broken image. Error events don't bubble, hence the capture; the sweep
+// catches pictures that failed before this script ran.
+function noPreview(img) {
+  if (!img.src.includes("/work-image/") || img.dataset.broken) return;
+  img.dataset.broken = "1";
+  img.removeAttribute("data-full");
+  img.src = "/static/noimg.svg";
+}
+document.addEventListener(
+  "error",
+  (e) => {
+    if (e.target.tagName === "IMG") noPreview(e.target);
+  },
+  true,
+);
+document.querySelectorAll("img").forEach((img) => {
+  if (img.complete && img.naturalWidth === 0 && img.getAttribute("src")) noPreview(img);
+});

@@ -237,6 +237,18 @@ class Catalogue:
             for d, m in self.db.execute(q, args)
         ]
 
+    def work(self, key: str) -> Work | None:
+        row = self.db.execute(
+            "select w.data, m.data from works w left join work_meta m using (key)"
+            " where w.key = ?",
+            (key,),
+        ).fetchone()
+        return (
+            Work.from_dict({**json.loads(row[0]), **json.loads(row[1] or "{}")})
+            if row
+            else None
+        )
+
     def record_render(
         self, key: str, phash: int, mode: str, scale: float, path: Path
     ) -> None:

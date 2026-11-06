@@ -197,3 +197,18 @@ def test_preview_urls_are_screen_sized():
     )
     cma = "https://openaccess-cdn.clevelandart.org/1916.1/1916.1_full.tif"
     assert preview_url(work(source="cleveland", image_url=cma)).endswith("_print.jpg")
+
+
+def test_aic_pictures_use_sizes_its_iiif_allows():
+    # AIC's IIIF answers "!w,h" with 403 (an allowlist); "w," widths work.
+    w = Work(source="aic", source_id="1", title="t", artist=None, date=None,
+             kind="painting", license="CC0", width=4000, height=3000,
+             iiif="https://www.artic.edu/iiif/2/abc")  # fmt: skip
+    assert (
+        pipeline.thumb_url(w)
+        == "https://www.artic.edu/iiif/2/abc/full/400,/0/default.jpg"
+    )
+    assert (
+        pipeline.preview_url(w)
+        == "https://www.artic.edu/iiif/2/abc/full/1686,/0/default.jpg"
+    )

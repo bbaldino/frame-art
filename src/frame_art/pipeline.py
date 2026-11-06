@@ -151,6 +151,9 @@ def image_request(w: Work, width: int | None = None) -> str:
 
 def thumb_url(w: Work) -> str | None:
     """A small image the museum serves, for browsing the catalogue."""
+    # AIC's IIIF allows only some sizes: "!400,400" is a 403, "400," is fine.
+    if w.iiif and w.source == "aic":
+        return f"{w.iiif}/full/400,/0/default.jpg"
     if w.iiif:
         return f"{w.iiif}/full/!400,400/0/default.jpg"
     if not w.image_url:
@@ -173,6 +176,8 @@ def thumb_url(w: Work) -> str | None:
 
 def preview_url(w: Work) -> str | None:
     """A screen-sized image the museum serves, for a closer look."""
+    if w.iiif and w.source == "aic":
+        return f"{w.iiif}/full/1686,/0/default.jpg"
     if w.iiif:
         return f"{w.iiif}/full/!1920,1920/0/default.jpg"
     if w.source == "commons" and w.image_url:

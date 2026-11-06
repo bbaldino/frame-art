@@ -26,7 +26,8 @@ HOST_INTERVALS = {
     "images.metmuseum.org": 0.15,
     "api.artic.edu": 0.25,
     "commons.wikimedia.org": 0.5,
-    "upload.wikimedia.org": 0.5,
+    # Wikimedia answers a burst of about 20 thumbnails with 429s; 1/s holds.
+    "upload.wikimedia.org": 1.0,
     "thumb.wikimedia.org": 0.5,
     # loc.gov limits its JSON API to about 20 requests per 10 seconds.
     "www.loc.gov": 1.0,
@@ -36,6 +37,15 @@ DEFAULT_INTERVAL = 0.1
 
 # The Met's Cloudflare front answers bursts with 403 rather than 429.
 RETRY_STATUS = {403, 429, 500, 502, 503, 504}
+# The longest Retry-After we honour; beyond it, the attempt fails sooner.
+MAX_RETRY_AFTER = 30
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    try:
+        return min(float(resp.headers["retry-after"]), MAX_RETRY_AFTER)
+    except (KeyError, ValueError):
+        return None
 
 
 def _headers_for(url: str, headers: dict | None) -> dict | None:
@@ -71,6 +81,7 @@ class Http:
         kw["headers"] = _headers_for(url, kw.get("headers"))
         for attempt in range(retries + 1):
             self._wait_turn(url)
+            wait = None
             try:
                 resp = self._client.request(method, url, **kw)
             except httpx.TransportError as ex:
@@ -81,7 +92,8 @@ class Http:
                 if resp.status_code not in RETRY_STATUS or attempt == retries:
                     return resp
                 log.debug("HTTP %s on %s, retrying", resp.status_code, url)
-            time.sleep(2**attempt)
+                wait = _retry_after(resp)
+            time.sleep(2**attempt if wait is None else wait)
         raise AssertionError("unreachable")
 
     def get_json(self, url: str, **kw):
