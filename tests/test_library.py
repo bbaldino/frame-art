@@ -1,3 +1,4 @@
+import dataclasses
 import io
 
 import pytest
@@ -237,3 +238,12 @@ def test_source_image_for_photo_and_portrait(setup, tmp_path):
     assert im.size == (40, 30)
     portrait = next(i for i in all_items.values() if i.kind == "portrait")
     assert source_image(portrait, None, tmp_path, "strict").size == (320, 180)
+
+
+def test_crawl_tags_and_nude_titles_are_subjects():
+    # So the Library can filter on them by hand: nothing is filtered for you.
+    w = dataclasses.replace(monet(), title="Bathers", tags=["nude", "winter"])
+    assert {"subject:nude", "subject:winter"} <= work_tags(w)
+    w = dataclasses.replace(monet(), title="Venus and Adonis", tags=[])
+    assert "subject:nude" in work_tags(w)
+    assert "subject:nude" not in work_tags(monet())

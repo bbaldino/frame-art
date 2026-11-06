@@ -13,7 +13,7 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from . import imaging, pipeline
+from . import classify, imaging, pipeline
 from .catalogue import Catalogue
 from .model import Work
 from .net import Http
@@ -57,6 +57,11 @@ def work_tags(w: Work) -> set[str]:
         if value:
             tags.add(f"{group}:{value}")
     tags.update(f"subject:{s}" for s in w.subjects if s)
+    # The crawl's own tags (seasons, "nude") are subjects too, so the Library can
+    # filter on them; a title that names a nude counts as tagged.
+    tags.update(f"subject:{t}" for t in w.tags if t)
+    if classify.nude_title(w.title):
+        tags.add("subject:nude")
     return {t.lower() for t in tags}
 
 
